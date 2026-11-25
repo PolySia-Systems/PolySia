@@ -135,6 +135,7 @@ class PublicPortfolioTests(unittest.TestCase):
         fixture = book(timestamp=str(now), bids=[{"price": "0.49", "size": "12"}],
                        asks=[{"price": "0.50", "size": "1"}])
         for override in ({}, {"bids": []}, {"asks": []}, {"market": "wrong"},
+                         {"timestamp": str(now - 10_000)},
                          {"timestamp": str(now - 60_001)}, {"timestamp": str(now + 1000)},
                          {"bids": [{"price": "0.50", "size": "3"}]}):
             with self.subTest(override=override), patch.object(public_marks, "read_public_json", return_value=fixture | override), patch.object(public_marks.time, "time_ns", return_value=now * 1_000_000):

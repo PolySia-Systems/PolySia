@@ -146,14 +146,14 @@ def _check_control(status, action):
 def position_basis(db, run_id, token, revision):
     row = _run(db, run_id)
     _check_revision(row, revision)
-    positions = db.execute("""SELECT condition_id, sum(shares), sum(gross+fee) FROM public_decisions
+    positions = db.execute("""SELECT condition_id, sum(shares), sum(gross+fee), max(recorded) FROM public_decisions
                               WHERE run_id=? AND token_id=? AND kind='entry' GROUP BY condition_id""",
                            (run_id, token)).fetchall()
     if len(positions) != 1:
         raise ValueError("Choose an existing position with an unambiguous market.")
-    condition, shares, cost = positions[0]
+    condition, shares, cost, last_entry = positions[0]
     return {"runId": run_id, "revision": revision, "conditionId": condition, "tokenId": token,
-            "shares": str(shares), "cost": units(cost)}
+            "shares": str(shares), "cost": units(cost), "lastEntryAt": last_entry}
 
 
 def control(db, run_id, revision, action):

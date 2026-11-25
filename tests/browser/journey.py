@@ -755,9 +755,11 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
             expect(page.locator("dd").filter(has_text="15.14256")).to_be_visible()
             page.get_by_text("Observation details", exact=True).first.click()
             expect(page.get_by_text("Polygon exchange and source order", exact=True)).to_be_visible()
-            current_book = book(timestamp=str(int(time.time() * 1000)), bids=[{"price": "0.49", "size": "5"}],
+            mark_ms = int((future + timedelta(seconds=2)).timestamp() * 1000)
+            current_book = book(timestamp=str(mark_ms), bids=[{"price": "0.49", "size": "5"}],
                                 asks=[{"price": "0.51", "size": "2"}])
-            with patch.object(public_marks, "read_public_json", side_effect=[current_book, TimeoutError()]):
+            with (patch.object(public_marks, "read_public_json", side_effect=[current_book, TimeoutError()]),
+                  patch.object(public_marks.time, "time_ns", return_value=mark_ms * 1_000_000)):
                 page.get_by_role("button", name="Check price estimate").click()
                 expect(page.get_by_text("9.5 pUSD estimated value", exact=True)).to_be_visible()
                 expect(page.get_by_text("-0.35744 pUSD versus purchase cost", exact=False)).to_be_visible()

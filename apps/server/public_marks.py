@@ -1,6 +1,7 @@
 """One explicit midpoint check for an existing simulated position."""
 
 import time
+from datetime import datetime
 from decimal import Decimal, InvalidOperation, localcontext
 from http.client import HTTPException
 
@@ -24,6 +25,8 @@ def read_mark(basis):
                       ask=asks[0]["price"] if asks else None)
         if not 0 <= received - book["sourceTimeMs"] <= MAX_BOOK_AGE_MS:
             reason = "The book timestamp fell outside the one-minute freshness window."
+        elif book["sourceTimeMs"] < round(datetime.fromisoformat(basis["lastEntryAt"]).timestamp() * 1000):
+            reason = "The book was last updated before this position’s most recent purchase."
         elif not bid or not asks or Decimal(book["spreadPerShare"]) <= 0:
             reason = "A midpoint needs a bid below the ask on the same book."
         else:
