@@ -11,6 +11,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from .provider import decimal_value, validate_address
+from .store import create_schema_v1
 
 
 def _cents(value):
@@ -112,6 +113,17 @@ def _verify_records(db, stored_account):
             raise ValueError(f"Saved replay {run_id} failed its integrity check: {exc}") from exc
 
 
+def _verify_schema(db):
+    # Compare definitions, including SQLite's implicit primary-key index. Root
+    # page numbers describe physical placement and may differ between copies.
+    catalog = "SELECT type, name, tbl_name, sql FROM main.sqlite_schema ORDER BY type, name"
+    with closing(sqlite3.connect(":memory:")) as reference:
+        create_schema_v1(reference)
+        expected = reference.execute(catalog).fetchall()
+    if db.execute(catalog).fetchmany(len(expected) + 1) != expected:
+        raise ValueError("The database schema differs from the supported PolySia workspace schema.")
+
+
 def copy_workspace(source: Path, destination: Path):
     source = source.expanduser().resolve(strict=True)
     destination = destination.expanduser().absolute()
@@ -126,15 +138,12 @@ def copy_workspace(source: Path, destination: Path):
         with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as reader:
             with closing(sqlite3.connect(staging.name)) as writer:
                 reader.backup(writer, pages=256)
-                if writer.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
-                    raise ValueError("The copied database failed the SQLite integrity check.")
+                writer.execute("PRAGMA trusted_schema = OFF")
                 if writer.execute("PRAGMA user_version").fetchone()[0] != 1:
                     raise ValueError("This file is not a supported PolySia workspace.")
-                tables = set(writer.execute(
-                    "SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN ('workspace', 'runs')"
-                ))
-                if tables != {("workspace",), ("runs",)}:
-                    raise ValueError("The workspace schema is incomplete.")
+                _verify_schema(writer)
+                if writer.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+                    raise ValueError("The copied database failed the SQLite integrity check.")
                 row = writer.execute(
                     "SELECT theme, account_revision, settings_revision, account FROM workspace WHERE id = 1"
                 ).fetchone()

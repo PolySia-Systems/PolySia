@@ -292,6 +292,26 @@ class WorkspaceHttpTest(unittest.TestCase):
         self.assertIsNone(second["nextCursor"])
         self.assertEqual(400, self.request("GET", "/api/v1/runs?before=missing")[0])
 
+    def test_restore_requires_the_exact_workspace_schema(self):
+        additions = (
+            "CREATE TRIGGER audit_insert AFTER INSERT ON runs BEGIN SELECT 1; END",
+            "CREATE VIEW run_ids AS SELECT id FROM runs",
+            "CREATE INDEX by_theme ON workspace(theme)",
+            "CREATE TABLE notes (body TEXT)",
+            "ALTER TABLE runs ADD COLUMN label TEXT",
+        )
+        for index, ddl in enumerate(additions):
+            with self.subTest(ddl=ddl):
+                source = self.root / f"source-{index}.db"
+                destination = self.root / f"restore-{index}.db"
+                Workspace(source)
+                with sqlite3.connect(source) as db:
+                    db.execute(ddl)
+                with self.assertRaisesRegex(ValueError, "workspace schema"):
+                    copy_workspace(source, destination)
+                self.assertFalse(destination.exists())
+                self.assertEqual(list(self.root.glob(".polysia-backup-*")), [])
+
     def test_restore_refuses_unreadable_history_and_disagreeing_balances(self):
         store = self.server.store
         old = store.create_run("atlas", "100", "10")
@@ -361,7 +381,10 @@ class WorkspaceHttpTest(unittest.TestCase):
         self.assertIn(b"already exists", duplicate.stderr)
         self.request("POST", route + "/stop", {"revision": expected["run"]["revision"]})
         invoke("restore", "--from", backup, "--to", restored)
-        self.assertEqual(expected, Workspace(restored).read())
+        recovered = Workspace(restored)
+        self.assertEqual(expected, recovered.read())
+        recovered.set_theme(1, expected["settings"]["revision"], "light")
+        self.assertEqual(expected["run"], recovered.get_run(run["id"]))
         self.assertEqual("paused", expected["run"]["status"])
         self.assertGreater(int(expected["run"]["quantity"]), 0)
         conflict = invoke("restore", "--from", backup, "--to", self.root / "workspace.db", check=False)

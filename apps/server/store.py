@@ -18,6 +18,23 @@ def timestamp():
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def create_schema_v1(db):
+    """Create the version-1 catalog used by installations and archive verification."""
+    # SQLite retains whitespace inside CREATE TABLE. Preserve the released DDL.
+    db.execute("""
+                    CREATE TABLE workspace (
+                        id INTEGER PRIMARY KEY CHECK (id = 1),
+                        theme TEXT NOT NULL CHECK (theme IN ('light', 'dark')),
+                        settings_revision INTEGER NOT NULL,
+                        account TEXT,
+                        account_revision INTEGER NOT NULL
+                    )
+    """)
+    db.execute("INSERT INTO workspace VALUES (1, 'light', 0, NULL, 0)")
+    db.execute("CREATE TABLE runs (id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+    db.execute("PRAGMA user_version = 1")
+
+
 class Workspace:
     def __init__(self, path: Path):
         self.path = path
@@ -27,18 +44,7 @@ class Workspace:
             if version not in (0, 1):
                 raise ValueError(f"Unsupported workspace database version {version}")
             if version == 0:
-                db.execute("""
-                    CREATE TABLE workspace (
-                        id INTEGER PRIMARY KEY CHECK (id = 1),
-                        theme TEXT NOT NULL CHECK (theme IN ('light', 'dark')),
-                        settings_revision INTEGER NOT NULL,
-                        account TEXT,
-                        account_revision INTEGER NOT NULL
-                    )
-                """)
-                db.execute("INSERT INTO workspace VALUES (1, 'light', 0, NULL, 0)")
-                db.execute("CREATE TABLE runs (id TEXT PRIMARY KEY, record TEXT NOT NULL)")
-                db.execute("PRAGMA user_version = 1")
+                create_schema_v1(db)
 
     @contextmanager
     def connection(self, write=True):
