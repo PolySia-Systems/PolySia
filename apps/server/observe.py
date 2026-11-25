@@ -6,10 +6,10 @@ import math
 import re
 import signal
 import time
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 from http.client import HTTPException
 
-from .provider import read_public_json, unpack_page, validate_address
+from .provider import decimal_value, read_public_json, unpack_page, validate_address
 
 
 ACTIVITY = "https://data-api.polymarket.com/v2/activity"
@@ -18,13 +18,9 @@ LIMIT = 20
 
 
 def _quantity(value, *, price=False):
-    if type(value) not in (Decimal, int, str):
-        raise ValueError("Missing numeric field")
-    number = Decimal(value)
-    if not number.is_finite() or number <= 0 or number.adjusted() > 80 or abs(number.as_tuple().exponent) > 80:
-        raise ValueError("Invalid quantity")
-    if price and number > 1:
-        raise ValueError("Invalid price")
+    number = decimal_value(value)
+    if number == 0 or (price and number > 1):
+        raise ValueError("Invalid quantity or price")
     return format(number, "f")
 
 
@@ -68,21 +64,28 @@ def _book(payload, event):
     levels = [{"price": _quantity(level["price"], price=True), "shares": _quantity(level["size"])}
               for level in asks]
     levels.sort(key=lambda level: Decimal(level["price"]))
-    return {"sourceTimeMs": int(timestamp), "askLevelCount": len(levels), "bestAsks": levels[:3]}
+    return {
+        "sourceTimeMs": int(timestamp), "askLevelCount": len(levels), "bestAsks": levels[:3],
+        "minimumOrderShares": _quantity(payload["min_order_size"]) if "min_order_size" in payload else None,
+        "priceTick": _quantity(payload["tick_size"], price=True) if "tick_size" in payload else None,
+    }
 
 
-def observe(address: str, seconds: int) -> dict:
+def observe(address: str, seconds: int, index_wait_seconds: int = 0) -> dict:
     """Use one new window and at most two GETs. All clock values are UTC Unix times."""
     address = validate_address(address)
     if type(seconds) is not int or not 1 <= seconds <= 30:
         raise ValueError("Choose an observation window between 1 and 30 seconds.")
+    if type(index_wait_seconds) is not int or not 0 <= index_wait_seconds <= 300:
+        raise ValueError("Choose an indexing wait between 0 and 300 seconds.")
     start = math.floor(time.time()) + 1
     end = start + seconds - 1
     result = {
         "schemaVersion": 1, "wallet": address, "windowStartSeconds": start,
-        "windowEndSeconds": end, "activitySource": ACTIVITY, "status": "unavailable",
+        "windowEndSeconds": end, "indexWaitSeconds": index_wait_seconds,
+        "activitySource": ACTIVITY, "status": "unavailable",
     }
-    time.sleep(max(0, end + 1 - time.time()))
+    time.sleep(max(0, end + 1 + index_wait_seconds - time.time()))
     try:
         payload = read_public_json(ACTIVITY, {
             "user": address, "type": "TRADE", "side": "BUY", "sort_direction": "ASC",
@@ -102,9 +105,19 @@ def observe(address: str, seconds: int) -> dict:
         payload = read_public_json(BOOK, {"token_id": event["tokenId"]})
         result["bookReceivedMs"] = time.time_ns() // 1_000_000
         book = _book(payload, event)
+        book["sourceAgeAtDetectionMs"] = result["activityReceivedMs"] - book["sourceTimeMs"]
+        # Both validated probabilities are in (0, 1] with at most 80 decimal places.
+        with localcontext() as arithmetic:
+            arithmetic.prec = 81
+            book["bestAskMinusLeaderPrice"] = (
+                format(Decimal(book["bestAsks"][0]["price"]) - Decimal(event["price"]), "f")
+                if book["bestAsks"] else None
+            )
         result["book"] = book
-        if not event["eventTimeSeconds"] * 1000 <= book["sourceTimeMs"] <= result["bookReceivedMs"]:
-            return dict(result, reason="Book source time predates the event or exceeds receipt time. Check freshness and clock skew.")
+        if not event["eventTimeSeconds"] * 1000 <= result["activityReceivedMs"] <= result["bookRequestedMs"] <= result["bookReceivedMs"]:
+            return dict(result, reason="Local sampling times are inconsistent. Check clock synchronization.")
+        if not result["activityReceivedMs"] <= book["sourceTimeMs"] <= result["bookReceivedMs"]:
+            return dict(result, reason="Book timestamp falls outside the interval from detection to receipt. Post-detection depth is unverified.")
         if not book["bestAsks"]:
             return dict(result, reason="The returned book has no displayed asks.")
         return dict(result, status="observed", reason="Displayed depth only. Fill identity, executable price and fees remain unverified.")
@@ -118,15 +131,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("wallet", type=validate_address)
     parser.add_argument("--seconds", type=int, choices=range(1, 31), default=5, metavar="1..30")
+    parser.add_argument("--index-wait", type=int, choices=range(301), default=0, metavar="0..300",
+                        help="Wait after the predeclared window before reading potentially delayed activity.")
     args = parser.parse_args()
 
     def deadline(*_):
         raise TimeoutError("Observation deadline exceeded")
 
     signal.signal(signal.SIGALRM, deadline)
-    signal.alarm(args.seconds + 12)
+    signal.alarm(args.seconds + args.index_wait + 12)
     try:
-        result = observe(args.wallet, args.seconds)
+        result = observe(args.wallet, args.seconds, args.index_wait)
         print(json.dumps(result, indent=2))
         return 0 if result["status"] in ("observed", "waiting") else 2
     finally:

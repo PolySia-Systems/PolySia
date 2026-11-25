@@ -58,8 +58,9 @@ class Workspace:
             run = self.latest_run(db)
             return {
                 "settings": self.settings(row),
+                "accountRevision": row["account_revision"],
                 "account": json.loads(row["account"]) if row["account"] is not None else None,
-                "run": run,
+                "run": shadow.run_report(run) if run else None,
             }
 
     def set_theme(self, version, revision, theme):
@@ -81,22 +82,36 @@ class Workspace:
         with self.connection(write=False) as db:
             return db.execute("SELECT account_revision FROM workspace WHERE id = 1").fetchone()[0]
 
+    def check_account_revision(self, revision):
+        if type(revision) is not int or not 0 <= revision < 2**63:
+            raise ValueError("Provide the integer revision of the displayed account watch.")
+        if revision != self.account_revision():
+            raise Conflict("The watched account changed. Review the current watch and try again.")
+
     def save_account(self, account, revision):
         # Provider I/O runs outside the transaction. A slow refresh must never
         # reconnect a watch that was disconnected or switched while it was away.
         with self.connection() as db:
+            if account and account["status"] == "unavailable":
+                row = db.execute(
+                    "SELECT account FROM workspace WHERE id = 1 AND account_revision = ?", (revision,)
+                ).fetchone()
+                previous = json.loads(row["account"]) if row and row["account"] else None
+                if previous and previous["address"] == account["address"]:
+                    if previous["status"] == "available":
+                        retained = {key: previous[key] for key in ("source", "observedAt", "positions", "complete")}
+                    else:
+                        retained = previous.get("lastSuccessful")
+                    if retained is not None:
+                        account = {**account, "lastSuccessful": retained}
             result = db.execute(
                 """UPDATE workspace SET account = ?, account_revision = account_revision + 1
                    WHERE id = 1 AND account_revision = ?""",
-                (json.dumps(account), revision),
+                (json.dumps(account) if account is not None else None, revision),
             )
             if not result.rowcount:
-                raise Conflict("The watched account changed. Reload before refreshing.")
+                raise Conflict("The watched account changed. Review the current watch and try again.")
         return account
-
-    def disconnect(self):
-        with self.connection() as db:
-            db.execute("UPDATE workspace SET account = NULL, account_revision = account_revision + 1 WHERE id = 1")
 
     @staticmethod
     def latest_run(db):
@@ -105,7 +120,7 @@ class Workspace:
 
     def get_run(self, run_id):
         with self.connection(write=False) as db:
-            return self.find_run(db, run_id)
+            return shadow.run_report(self.find_run(db, run_id))
 
     def run_history(self, before):
         with self.connection(write=False) as db:
@@ -146,7 +161,7 @@ class Workspace:
             now = timestamp()
             run.update(id=uuid4().hex, revision=1, createdAt=now, updatedAt=now)
             db.execute("INSERT INTO runs (id, record) VALUES (?, ?)", (run["id"], json.dumps(run)))
-            return run
+            return shadow.run_report(run)
 
     def change_run(self, run_id, action, revision):
         if type(revision) is not int:
@@ -158,4 +173,4 @@ class Workspace:
             run = shadow.apply_action(current, action)
             run.update(id=run_id, revision=revision + 1, createdAt=current["createdAt"], updatedAt=timestamp())
             db.execute("UPDATE runs SET record = ? WHERE id = ?", (json.dumps(run), run_id))
-            return run
+            return shadow.run_report(run)

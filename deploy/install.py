@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -28,12 +29,30 @@ def install(archive: Path, prefix: Path):
         fcntl.flock(lock, fcntl.LOCK_EX)
         if current.is_symlink():
             previous = Path(os.readlink(current))
-            if previous.parent != Path("releases") or len(previous.name) != 64:
+            if previous.parent != Path("releases") or not re.fullmatch(r"[0-9a-f]{64}", previous.name):
                 raise ValueError("The installation prefix contains an unrelated current symlink.")
         elif current.exists():
             raise ValueError("The installation prefix already contains an unrelated current entry.")
+        if release.parent.is_symlink() or release.is_symlink():
+            raise ValueError("Choose a dedicated prefix with a local releases directory.")
         release.parent.mkdir(mode=0o700, exist_ok=True)
-        if not release.exists():
+        if release.exists():
+            # A directory named after the archive does not prove its contents
+            # survived intact. Preserve local modifications and report them.
+            with ZipFile(archive) as bundle:
+                expected = set(bundle.namelist()) - {"__main__.py"}
+                for item in release.rglob("*"):
+                    if item.is_dir() and not item.is_symlink():
+                        continue
+                    name = item.relative_to(release).as_posix()
+                    if item.is_symlink() or not item.is_file() or name not in expected:
+                        raise ValueError(f"Unexpected installed file: {item}. Preserve the directory and install in a fresh prefix.")
+                    if item.read_bytes() != bundle.read(name):
+                        raise ValueError(f"Installed file differs from the artifact: {item}. Preserve the directory and install in a fresh prefix.")
+                    expected.remove(name)
+                if expected or not os.access(release / "polysia", os.X_OK):
+                    raise ValueError("Installed release is incomplete. Preserve the directory and install in a fresh prefix.")
+        else:
             with tempfile.TemporaryDirectory(prefix=".prepare-", dir=release.parent) as stage:
                 staged = Path(stage) / "release"
                 staged.mkdir()

@@ -38,6 +38,7 @@ class ShadowReplayTests(unittest.TestCase):
         self.assertEqual(event["source_order"], "entry-1")  # Pre-run trade never replayed.
         self.assertEqual((event["quantity"], event["filled"], event["fee"]), ("19", "9.57", "0.10"))
         self.assertEqual(first["cash"], "90.33")
+        self.assertEqual(Decimal(shadow.run_report(first)["marked_net_result"]), Decimal("-0.265"))
         self.assertEqual(first["cost_basis"], "9.67")
         self.assertGreater(Decimal(event["price"]), Decimal(event["leader_price"]))
         self.assertGreater(event["book_at"], event["observed_at"])
@@ -75,6 +76,7 @@ class ShadowReplayTests(unittest.TestCase):
         original_cash = run["cash"]
         gap = steps(run, 1)
         self.assertIsNone(gap["marked_value"])
+        self.assertIsNone(shadow.run_report(gap)["marked_net_result"])
         self.assertIsNone(gap["liquidation_value"])
         delayed = steps(gap, 1)
         self.assertEqual(delayed["cash"], original_cash)

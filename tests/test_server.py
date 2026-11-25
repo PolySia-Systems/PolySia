@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event, Thread
@@ -77,6 +78,59 @@ class WorkspaceHttpTest(unittest.TestCase):
         self.launch()
         self.assertEqual(updated, self.request("GET", "/api/v1/workspace")[1]["settings"])
 
+    def test_budget_check_counts_complete_partial_and_unknown_without_creating_run(self):
+        def compare(allocation, cap):
+            return self.request("POST", "/api/v1/leaders/coverage", {"allocation": allocation, "orderSize": cap})
+
+        status, result = compare("500.00", "500.00")
+        self.assertEqual((200, "500.00", "500.00", "scenario"),
+                         (status, result["allocation"], result["orderSize"], result["source"]))
+        candidates = {row["leaderId"]: row for row in result["candidates"]}
+        atlas = candidates["atlas"]
+        self.assertEqual((1, 1, 2, 1), (atlas["full"], atlas["partial"], atlas["skipped"], atlas["missingBook"]))
+        self.assertEqual(0, candidates["cobalt"]["full"])
+        self.assertTrue(all(row["full"] == 0 for row in compare("1000", "1000")[1]["candidates"]))
+        self.assertEqual(400, compare("5", "50")[0])
+        self.assertIsNone(self.request("GET", "/api/v1/workspace")[1]["run"])
+
+    def test_public_observation_is_explicit_fixed_window_and_serialized(self):
+        address = ADDRESS.lower()
+        endpoint = f"/api/v1/public/traders/{address}/observe"
+        entered, release = Event(), Event()
+        result = {"status": "waiting", "wallet": address}
+
+        def observe(command, **kwargs):
+            self.assertEqual(command, [sys.executable, "-B", "-m", "apps.server.observe", address, "--seconds", "5"])
+            self.assertEqual(kwargs["timeout"], 20)
+            entered.set()
+            self.assertTrue(release.wait(3))
+            return subprocess.CompletedProcess(command, 0, json.dumps(result).encode())
+
+        with patch("apps.server.http.subprocess.run", side_effect=observe) as process:
+            self.assertEqual(self.request("GET", endpoint)[0], 405)
+            self.assertEqual(self.request("POST", endpoint, {"seconds": 99})[0], 400)
+            self.assertEqual(self.request("GET", f"/api/v1/public/traders/{address}")[0], 200)
+            process.assert_not_called()
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                first = pool.submit(self.request, "POST", endpoint, {})
+                try:
+                    self.assertTrue(entered.wait(3))
+                    self.assertEqual(self.request("POST", endpoint, {})[0], 409)
+                finally:
+                    release.set()
+                self.assertEqual(first.result(), (200, result))
+            process.assert_called_once()
+        with patch("apps.server.http.subprocess.run", side_effect=subprocess.TimeoutExpired("probe", 20)):
+            self.assertEqual(self.request("POST", endpoint, {})[0], 504)
+        self.assertIsNone(self.request("GET", "/api/v1/workspace")[1]["run"])
+
+    def test_public_profile_is_stateless_and_rejects_invalid_wallets(self):
+        status, inspected = self.request("GET", "/api/v1/public/traders/" + ADDRESS)
+        self.assertEqual((status, inspected["address"]), (200, ADDRESS.lower()))
+        self.assertIsNone(self.request("GET", "/api/v1/workspace")[1]["account"])
+        self.assertEqual(self.request("GET", "/api/v1/public/traders/unknown")[0], 400)
+        self.assertEqual(self.request("GET", "/api/v1/public/leaders?period=unknown")[0], 400)
+
     def test_watch_refresh_failure_and_disconnect(self):
         calls = []
 
@@ -89,21 +143,35 @@ class WorkspaceHttpTest(unittest.TestCase):
             return result
 
         self.server.inspect_account = inspect
-        self.assertEqual(400, self.request("POST", "/api/v1/account", {"address": "invalid"})[0])
+        self.assertEqual(400, self.request("POST", "/api/v1/account", {"address": "invalid", "revision": 0})[0])
         self.assertEqual([], calls)
         with self.assertLogs("apps.server.http", level="INFO") as logs:
-            status, account = self.request("POST", "/api/v1/account", {"address": ADDRESS})
+            status, account = self.request("POST", "/api/v1/account", {"address": ADDRESS, "revision": 0})
         self.assertEqual(len(logs.output), 2)
         self.assertEqual(logs.records[0].args[0], logs.records[1].args[0])
         self.assertIn("positions lookup available", logs.output[0])
         self.assertNotIn(ADDRESS.lower(), " ".join(logs.output).lower())
         self.assertEqual((200, ADDRESS.lower(), "2.50"), (status, account["address"], account["positions"][0]["shares"]))
         self.assertEqual(account, self.request("GET", "/api/v1/workspace")[1]["account"])
-        _, refresh = self.request("POST", "/api/v1/account", {"address": ADDRESS})
+        _, refresh = self.request("POST", "/api/v1/account", {"address": ADDRESS, "revision": 1})
         self.assertEqual(("unavailable", None, False), (refresh["status"], refresh["observedAt"], refresh["complete"]))
-        self.assertEqual((200, {"account": None}), self.request("DELETE", "/api/v1/account"))
+        self.assertEqual((200, {"account": None}), self.request("DELETE", "/api/v1/account", {"revision": 2}))
         self.assertIsNone(self.request("GET", "/api/v1/workspace")[1]["account"])
         self.assertEqual([ADDRESS.lower()] * 2, calls)
+
+    def test_stale_tab_cannot_replace_or_forget_a_different_account(self):
+        path = "/api/v1/account"
+        revision = self.request("GET", "/api/v1/workspace")[1]["accountRevision"]
+        second_address = "0x" + "01" * 20
+        status, second = self.request("POST", path, {"address": second_address, "revision": revision})
+        self.assertEqual(200, status)
+        self.server.inspect_account = lambda _: self.fail("A stale request reached the provider")
+        self.assertEqual(409, self.request("POST", path, {"address": ADDRESS, "revision": revision})[0])
+        self.assertEqual(409, self.request("DELETE", path, {"revision": revision})[0])
+        self.assertEqual(400, self.request("DELETE", path, {"revision": True})[0])
+        workspace = self.request("GET", "/api/v1/workspace")[1]
+        self.assertEqual(second, workspace["account"])
+        self.assertEqual(revision + 1, workspace["accountRevision"])
 
     def test_disconnect_wins_over_inflight_watch(self):
         started, released = Event(), Event()
@@ -115,10 +183,10 @@ class WorkspaceHttpTest(unittest.TestCase):
 
         self.server.inspect_account = delayed
         with ThreadPoolExecutor(max_workers=1) as pool:
-            attempt = pool.submit(self.request, "POST", "/api/v1/account", {"address": ADDRESS})
+            attempt = pool.submit(self.request, "POST", "/api/v1/account", {"address": ADDRESS, "revision": 0})
             try:
                 self.assertTrue(started.wait(2))
-                self.assertEqual(200, self.request("DELETE", "/api/v1/account")[0])
+                self.assertEqual(200, self.request("DELETE", "/api/v1/account", {"revision": 0})[0])
             finally:
                 released.set()
             self.assertEqual(409, attempt.result(timeout=3)[0])

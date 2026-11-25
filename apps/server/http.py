@@ -5,6 +5,9 @@ import logging
 import mimetypes
 import re
 import sqlite3
+import subprocess
+import sys
+from threading import Lock
 from time import monotonic
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,7 +15,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 from uuid import uuid4
 
-from . import provider, shadow
+from . import provider, public_history, public_leaders, shadow
 from .store import Conflict, Workspace
 
 API = "/api/v1"
@@ -29,10 +32,30 @@ class RequestError(Exception):
 
 class LocalServer(ThreadingHTTPServer):
     def __init__(self, port, store: Workspace, static_dir=STATIC, inspect_account=None):
+        self.observation_lock = Lock()
         self.store = store
         self.static_dir = Path(static_dir).resolve()
         self.inspect_account = inspect_account or provider.inspect_account
         super().__init__(("127.0.0.1", port), Handler)
+
+    def sample_buy(self, address):
+        # Run the same CLI as an operator. Its process deadline also bounds slow
+        # provider reads that can outlast an individual socket timeout.
+        if not self.observation_lock.acquire(blocking=False):
+            raise RequestError(409, "One public observation is already in progress. Try again after it finishes.")
+        try:
+            sample = subprocess.run(
+                [sys.executable, "-B", "-m", "apps.server.observe", address, "--seconds", "5"],
+                cwd=Path(__file__).resolve().parents[2],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=20, check=False,
+            )
+            if sample.returncode not in (0, 2) or not sample.stdout:
+                raise RequestError(503, "The public observation could not complete. Try a new window.")
+            return json.loads(sample.stdout)
+        except subprocess.TimeoutExpired:
+            raise RequestError(504, "Observation timed out. A post-detection book could not be verified.") from None
+        finally:
+            self.observation_lock.release()
 
     def get_request(self):
         connection, address = super().get_request()
@@ -132,18 +155,45 @@ class Handler(BaseHTTPRequestHandler):
             return {"status": "ok", "mode": "local", "liveExecution": False, "version": VERSION}
         if path == API + "/workspace" and method == "GET":
             return store.read()
+        if path == API + "/public/leaders" and self.command == "GET":
+            query = parse_qs(urlsplit(self.path).query, keep_blank_values=True, max_num_fields=1)
+            if query.keys() - {"period"}:
+                raise ValueError("Use the period filter for public rankings.")
+            self.operation = "public-rankings"
+            return public_leaders.leaderboard(query.get("period", ["month"])[0])
+        observation = re.fullmatch(API + r"/public/traders/(0x[0-9a-fA-F]{40})/observe", path)
+        if observation:
+            if self.command != "POST":
+                raise RequestError(405, "Start an observation with an explicit request.")
+            self.body(())
+            self.operation = "public-observation"
+            return self.server.sample_buy(provider.validate_address(observation[1]))
+        history = re.fullmatch(API + r"/public/traders/(0x[0-9a-fA-F]{40})/history", path)
+        if history and self.command == "GET":
+            self.operation = "public-history"
+            return public_history.pnl_history(history[1])
+        if path.startswith(API + "/public/traders/") and self.command == "GET":
+            address = provider.validate_address(path.removeprefix(API + "/public/traders/"))
+            self.operation = "public-trader"
+            return self.server.inspect_account(address)
         if path == API + "/leaders" and method == "GET":
             return {"leaders": shadow.leaders(), "policy": shadow.POLICY, "limits": shadow.LIMITS}
+        if path == API + "/leaders/coverage" and method == "POST":
+            data = self.body(("allocation", "orderSize"))
+            return shadow.compare_entry_coverage(data["allocation"], data["orderSize"])
         if path == API + "/settings" and method == "PUT":
             return store.set_theme(**self.body(("version", "revision", "theme")))
         if path == API + "/account":
             if method == "DELETE":
-                store.disconnect()
+                revision = self.body(("revision",))["revision"]
+                store.check_account_revision(revision)
+                store.save_account(None, revision)
                 return {"account": None}
             if method == "POST":
-                data = self.body(("address",))
+                data = self.body(("address", "revision"))
                 address = provider.validate_address(data["address"])
-                revision = store.account_revision()
+                revision = data["revision"]
+                store.check_account_revision(revision)
                 snapshot = self.server.inspect_account(address)
                 outcome = "available" if snapshot.get("status") == "available" else "unavailable"
                 log.info("%s positions lookup %s", self.request_id, outcome)

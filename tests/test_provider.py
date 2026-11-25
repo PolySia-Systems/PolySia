@@ -30,18 +30,19 @@ class AccountReadTests(unittest.TestCase):
 
     def test_network_contract_and_precision(self):
         # Insert an unquoted JSON decimal to exercise parsing before any float conversion.
-        body = json.dumps(envelope([row()])).replace('"100.000001"', '100.000000000000000001')
+        body = json.dumps(envelope([row(condition_id="0x" + "CD" * 32)])).replace('"100.000001"', '100.000000000000000001')
         with patch.object(provider, "build_opener") as opener:
             opener.return_value.open.return_value = io.BytesIO(body.encode())
             result = provider.inspect_account("0x" + "AB" * 20)
         request = opener.return_value.open.call_args.args[0]
         url = urlsplit(request.full_url)
         self.assertEqual(request.get_method(), "GET")
+        self.assertEqual(request.get_header("User-agent"), provider.USER_AGENT)
         self.assertEqual(url.scheme, "https")
         self.assertEqual((url.netloc, url.path), ("data-api.polymarket.com", "/v2/positions"))
         self.assertEqual(parse_qs(url.query), {"user": [WALLET], "status": ["OPEN"], "limit": ["20"]})
         self.assertEqual(result["positions"], [
-            {"market": "Sample market?", "outcome": "Yes", "shares": "100.000000000000000001"}])
+            {"conditionId": "0x" + "cd" * 32, "market": "Sample market?", "outcome": "Yes", "shares": "100.000000000000000001", "status": "OPEN"}])
         self.assertEqual(result["status"], "available")
         self.assertTrue(result["complete"])
         self.assertEqual(result["observedAt"], result["checkedAt"])
@@ -50,7 +51,8 @@ class AccountReadTests(unittest.TestCase):
         empty = self.read(envelope([]))
         self.assertTrue(empty["complete"])
         self.assertEqual(empty["positions"], [])
-        partial = self.read(envelope([row(title=None, outcome=None)], more=True))
+        partial = self.read(envelope([row(title=None, outcome=None, status="REDEEMABLE")], more=True))
+        self.assertEqual(partial["positions"][0]["status"], "REDEEMABLE")
         self.assertEqual(partial["status"], "available")
         self.assertFalse(partial["complete"])
         self.assertEqual(partial["nextCursor"], "opaque")
@@ -68,7 +70,7 @@ class AccountReadTests(unittest.TestCase):
             [], {}, {"data": []}, {"data": [], "pagination": {"has_more": False}},
             {"data": [], "pagination": {"has_more": True, "next_cursor": None}},
             envelope([row(), row()]), envelope([row(proxy_wallet="0x" + "00" * 20)]),
-            envelope([row(status="CLOSED")]), envelope([row(current_size=True)]),
+            envelope([row(condition_id="same market title")]), envelope([row(status="CLOSED")]), envelope([row(current_size=True)]),
             envelope([row(current_size="1e500000000")]), envelope([row(current_size="-1")]),
             envelope([row(current_size="malformed")]), envelope([row(current_size="NaN")]),
         ]

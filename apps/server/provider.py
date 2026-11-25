@@ -13,6 +13,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 POSITIONS_ENDPOINT = "https://data-api.polymarket.com/v2/positions"
 SOURCE = "Polymarket Data API v2 · open positions"
 PAGE_SIZE = 20
+USER_AGENT = "PolySia/0.1.0 (+https://github.com/PolySia-Systems/PolySia)"
 MAX_BODY_BYTES = 256 * 1024
 
 
@@ -31,7 +32,7 @@ class _FixedOrigin(HTTPRedirectHandler):
 
 def read_public_json(endpoint: str, params: dict) -> dict:
     query = urlencode(params)
-    request = Request(f"{endpoint}?{query}", headers={"Accept": "application/json"})
+    request = Request(f"{endpoint}?{query}", headers={"Accept": "application/json", "User-Agent": USER_AGENT})
     with build_opener(_FixedOrigin()).open(request, timeout=4) as response:
         body = response.read(MAX_BODY_BYTES + 1)
     if len(body) > MAX_BODY_BYTES:
@@ -51,13 +52,14 @@ def _optional_label(value: object, fallback: str) -> str:
     return value
 
 
-def _size(value: object) -> str:
+def decimal_value(value: object, *, signed: bool = False) -> Decimal:
     if type(value) not in (Decimal, int, str):
-        raise ValueError("Unexpected share quantity")
-    size = Decimal(value)
-    if not size.is_finite() or size < 0 or abs(size.as_tuple().exponent) > 80 or size.adjusted() > 80:
-        raise ValueError("Unexpected share quantity")
-    return format(size, "f")
+        raise ValueError("Invalid public numeric field")
+    number = Decimal(value)
+    if (not number.is_finite() or (not signed and number < 0)
+            or abs(number.as_tuple().exponent) > 80 or number.adjusted() > 80):
+        raise ValueError("Invalid public numeric field")
+    return number
 
 
 def unpack_page(payload: object, limit: int) -> tuple[list, str | None]:
@@ -89,15 +91,31 @@ def _positions(payload: object, address: str) -> tuple[list[dict], str | None]:
             raise ValueError("Invalid token identity")
         if not isinstance(condition, str) or not re.fullmatch(r"0x[0-9a-fA-F]{64}", condition):
             raise ValueError("Invalid market identity")
-        if token in seen or row.get("status") != "OPEN":
+        if token in seen or row.get("status") not in ("OPEN", "REDEEMABLE"):
             raise ValueError("Unexpected position identity or status")
         seen.add(token)
         positions.append({
+            "conditionId": condition.lower(),
             "market": _optional_label(row.get("title"), condition),
             "outcome": _optional_label(row.get("outcome"), "Outcome unavailable"),
-            "shares": _size(row["current_size"]),
+            "shares": format(decimal_value(row["current_size"]), "f"),
+            "status": row["status"],
         })
     return positions, cursor
+
+
+def provider_error(error: Exception) -> str:
+    if isinstance(error, HTTPError):
+        status = error.code
+        error.close()
+        if status == 429:
+            return "Polymarket rate-limited this lookup. Try again later."
+        if status == 403:
+            return "Polymarket denied this public lookup (HTTP 403). Check access before refreshing."
+        return f"Polymarket returned HTTP {status}. The requested public data is unavailable."
+    if isinstance(error, (OSError, HTTPException)):
+        return "Could not reach Polymarket. Check access to data-api.polymarket.com and refresh."
+    return "The response did not match the supported provider contract."
 
 
 def inspect_account(address: str) -> dict:
@@ -114,16 +132,8 @@ def inspect_account(address: str) -> dict:
             message = "Polymarket returned no open ordinary positions for this address."
         else:
             message = "Open ordinary positions reported by Polymarket."
-    except HTTPError as error:
-        if error.code == 429:
-            message = "Polymarket rate-limited this lookup. Try again later."
-        else:
-            message = f"Public position lookup returned HTTP {error.code}. Try refreshing later."
-        error.close()
-    except (OSError, HTTPException):
-        message = "Could not reach Polymarket. Check access to data-api.polymarket.com and refresh."
-    except (KeyError, ValueError, InvalidOperation, RecursionError):
-        message = "The position response did not match the supported provider contract."
+    except (OSError, HTTPException, KeyError, ValueError, InvalidOperation, RecursionError) as error:
+        message = provider_error(error)
     checked = datetime.now(timezone.utc).isoformat(timespec="seconds")
     return {
         "address": address, "status": "available" if available else "unavailable",

@@ -22,7 +22,8 @@ def page(rows, cursor=None):
 
 def book(**changes):
     return {
-        "market": "0x" + "12" * 32, "asset_id": "734", "timestamp": str(START * 1000),
+        "market": "0x" + "12" * 32, "asset_id": "734", "timestamp": str((START + 2) * 1000),
+        "min_order_size": "5", "tick_size": "0.01",
         "asks": [{"price": "0.97", "size": "19"}, {"price": "0.95", "size": "2.3"}],
         **changes,
     }
@@ -39,6 +40,20 @@ class ObservationTests(unittest.TestCase):
             result = observe.observe(WALLET, 2)
         return result, reader.call_args_list
 
+    def test_delayed_read_preserves_the_predeclared_window(self):
+        with (
+            patch.object(observe.time, "time", return_value=START - 1),
+            patch.object(observe.time, "sleep") as wait,
+            patch.object(observe, "read_public_json", return_value=page([])) as fetch,
+        ):
+            result = observe.observe(WALLET, 4, index_wait_seconds=60)
+        self.assertEqual(result["indexWaitSeconds"], 60)
+        self.assertEqual(result["status"], "waiting")
+        self.assertEqual(fetch.call_args.args[1]["end"], START + 3)
+        wait.assert_called_once_with(65)
+        with self.assertRaises(ValueError):
+            observe.observe(WALLET, 4, index_wait_seconds=301)
+
     def test_new_observation_followed_by_matching_book(self):
         result, calls = self.probe(page([activity(is_combo=True), activity()]), book())
         endpoint, query = calls[0].args
@@ -50,6 +65,10 @@ class ObservationTests(unittest.TestCase):
         self.assertIsNone(result["event"]["fillId"])
         self.assertEqual(result["event"]["price"], "0.9300000035")
         self.assertEqual(result["book"]["bestAsks"][0], {"price": "0.95", "shares": "2.3"})
+        self.assertEqual(result["book"]["minimumOrderShares"], "5")
+        self.assertEqual(result["book"]["priceTick"], "0.01")
+        self.assertEqual(result["book"]["sourceAgeAtDetectionMs"], 0)
+        self.assertEqual(result["book"]["bestAskMinusLeaderPrice"], "0.0199999965")
         self.assertLessEqual(result["activityReceivedMs"], result["bookRequestedMs"])
         self.assertLessEqual(result["bookRequestedMs"], result["bookReceivedMs"])
 
@@ -77,8 +96,18 @@ class ObservationTests(unittest.TestCase):
                 self.assertNotIn("book", result)
 
     def test_missing_or_stale_offers_preserve_partial_evidence(self):
-        for response in [book(asks=[]), book(timestamp=str((START-10)*1000))]:
+        for response in [book(asks=[]), book(timestamp=str((START-10)*1000)),
+                         book(timestamp=str((START+1)*1000)), book(timestamp=str((START+3)*1000))]:
             with self.subTest(response=response):
                 result, _ = self.probe(page([activity()]), response)
                 self.assertEqual(result["status"], "incomplete")
                 self.assertIn("book", result)
+
+    def test_measurements_remain_descriptive_on_stale_depth(self):
+        older = book(timestamp=str((START + 2) * 1000 - 245))
+        result, _ = self.probe(page([activity(price="0.95")]), older)
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(result["book"]["sourceAgeAtDetectionMs"], 245)
+        self.assertEqual(result["book"]["bestAskMinusLeaderPrice"], "0.00")
+        empty, _ = self.probe(page([activity()]), book(asks=[]))
+        self.assertIsNone(empty["book"]["bestAskMinusLeaderPrice"])

@@ -47,7 +47,7 @@ PROFILES = (
             (0, -1200, 640, 1080, 2420, 1900, 3200, 2900, 5400, 4720, 7510, 9320)),
     Profile("solstice", "Solstice", "Climate", "Follows temperature thresholds and forecast revisions.",
             "Will the city exceed its monthly temperature record?", "#b16c8f", 216800, 39, 22, 61,
-            (0, 180, 500, 120, 1400, 970, 2320, 2820, 2490, 4100, 5010, 6840)),
+            (0, 180, 500, 120, 1400, 970, 80, -470, -920, 250, -2100, -3840)),
 )
 
 
@@ -270,6 +270,16 @@ def _apply_signal(run: dict, signal: Signal, book: Book | None) -> dict:
     return event
 
 
+def run_report(run: dict) -> dict:
+    """Derive the whole-run estimate from recorded balances, including older saved runs."""
+    marked_value = run["marked_value"]
+    net = None
+    if marked_value is not None:
+        # The initial allocation is the only external cash flow supported by this tape.
+        net = format(Decimal(run["cash"]) + Decimal(marked_value) - Decimal(run["capital"]), "f")
+    return {**run, "marked_net_result": net}
+
+
 def apply_action(original: dict, action: str) -> dict:
     """Apply one action to an immutable persisted snapshot; caller commits by revision."""
     if action != "stop" and (original["scenario"] != SCENARIO or original["policy"] != POLICY):
@@ -298,3 +308,23 @@ def apply_action(original: dict, action: str) -> dict:
     else:
         raise ValueError("This action is unavailable in the current run state.")
     return run
+
+
+def compare_entry_coverage(allocation: str, order_size: str) -> dict:
+    """Compare independent scenario replays using the operator's exact cash limits."""
+    rows = []
+    for profile in sorted(PROFILES, key=lambda profile: profile.name):
+        run = create_run(profile.id, allocation, order_size)
+        while run["remaining_steps"]:
+            run = apply_action(run, "step")
+        entries = [event for event in run["events"] if event["side"] == "BUY"]
+        rows.append({
+            "leaderId": profile.id,
+            "name": profile.name,
+            "full": sum(entry["status"] == "filled" for entry in entries),
+            "partial": sum(entry["status"] == "partial" for entry in entries),
+            "skipped": sum(entry["status"] == "skipped" for entry in entries),
+            "missingBook": sum(entry["book_at"] is None for entry in entries),
+        })
+    return {"source": "scenario", "scenario": SCENARIO, "allocation": allocation,
+            "orderSize": order_size, "candidates": rows}

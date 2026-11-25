@@ -27,9 +27,11 @@ class Assets(HTMLParser):
 
 
 @contextmanager
-def app(launcher, cwd, database=None):
+def app(launcher, cwd, database=None, offline=False):
     # Use an ephemeral OS-selected port. Exclude development workspace overrides.
     env = {k: v for k, v in os.environ.items() if k not in ("POLYSIA_DB", "PYTHONPATH")}
+    if offline:
+        env.update(https_proxy="http://127.0.0.1:1", no_proxy="127.0.0.1,localhost")
     if database is not None:
         env["POLYSIA_DB"] = str(database)
     with subprocess.Popen([launcher, "--port", "0"], cwd=cwd, env=env,
@@ -64,7 +66,7 @@ def verify():
         prefix = cwd / "test installation"
         command = [sys.executable, str(bundle), "--prefix", str(prefix), "--json"]
         installed = json.loads(subprocess.check_output(command, cwd=cwd))
-        with app(installed["launcher"], cwd) as url:
+        with app(installed["launcher"], cwd, offline=True) as url:
             assert json.loads(request(url, "/api/v1/health"))
             assets = Assets()
             assets.feed(request(url, "/").decode())
@@ -72,6 +74,12 @@ def verify():
             for script in assets.scripts:
                 assert script.startswith("/assets/")
                 assert len(request(url, script)) > 100, f"Missing installed script {script}"
+            # An explicitly started offline probe must leave the installed code
+            # directory intact for subsequent integrity-checked reinstalls.
+            path = "/api/v1/public/traders/0x" + "1" * 40 + "/observe"
+            probe = Request(url + path, data=b"{}", headers={"Content-Type": "application/json"})
+            with urlopen(probe, timeout=22) as response:
+                assert json.loads(response.read())["status"] == "unavailable"
             settings = json.loads(request(url, "/api/v1/workspace"))["settings"]
             assert settings["theme"] == "light"
             settings["theme"] = "dark"
@@ -91,6 +99,12 @@ def verify():
         assert len(list((prefix / "releases").iterdir())) == 1
         with app(repeated["launcher"], cwd) as url:
             assert json.loads(request(url, "/api/v1/workspace"))["settings"] == updated
+        # A damaged code directory cannot be reported as a successful reinstall.
+        index = Path(repeated["launcher"]).parent / "apps/web/dist/index.html"
+        index.write_text("changed locally")
+        damaged = subprocess.run(command, cwd=cwd, capture_output=True, text=True)
+        assert damaged.returncode and "differs from the artifact" in damaged.stderr
+        assert index.read_text() == "changed locally"
         print(f"Offline install {installed['artifactSha256'][:12]} served the SPA and API. "
               "Reinstall, restart and restoring a backup preserved the preference and its revision.")
 

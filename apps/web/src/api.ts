@@ -1,5 +1,9 @@
 export type Theme = 'light' | 'dark'
-export interface SettingsRecord { version: 1; revision: number; theme: Theme }
+export interface SettingsRecord {
+  version: 1
+  revision: number
+  theme: Theme
+}
 export interface Account {
   address: string
   status: 'available' | 'unavailable'
@@ -7,9 +11,10 @@ export interface Account {
   observedAt: string | null
   checkedAt: string
   message: string
-  positions: {market: string; outcome: string; shares: string}[]
+  positions: { conditionId?: string; market: string; outcome: string; shares: string; status?: 'OPEN' | 'REDEEMABLE' }[]
   complete: boolean
   nextCursor: string | null
+  lastSuccessful?: Pick<Account, 'source' | 'observedAt' | 'positions' | 'complete'>
 }
 export interface Leader {
   id: string
@@ -25,13 +30,35 @@ export interface Leader {
   color: string
   market: string
 }
+export interface ScenarioPolicy {
+  version: number
+  fee_bps: number
+  delay_seconds: number
+  max_age_seconds: number
+  max_slippage_cents: number
+  lot_shares: number
+}
+
+export interface ScenarioLimits {
+  min_allocation: string
+  max_allocation: string
+  min_order_size: string
+  max_order_size: string
+}
+
+export interface Directory {
+  leaders: Leader[]
+  policy: ScenarioPolicy
+  limits: ScenarioLimits
+}
+
 export interface Signal {
   id: string
   market: string
   side: string
   status: string
   reason: string
-  requested: string
+  requested: string | null
   filled: string
   quantity: string
   price: string | null
@@ -53,6 +80,7 @@ export interface Run {
   fees: string
   realized_pnl: string
   marked_value: string | null
+  marked_net_result: string | null
   liquidation_value: string | null
   events: Signal[]
   cursor: number
@@ -62,11 +90,16 @@ export interface Run {
   observation_start: string
   remaining_steps: number
 }
-export interface Workspace { settings: SettingsRecord; account: Account | null; run: Run | null }
+export interface Workspace {
+  accountRevision: number
+  settings: SettingsRecord
+  account: Account | null
+  run: Run | null
+}
 export async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
-  const options: RequestInit = {method, cache: 'no-store', credentials: 'same-origin'}
+  const options: RequestInit = { method, cache: 'no-store', credentials: 'same-origin' }
   if (body !== undefined) {
-    options.headers = {'Content-Type': 'application/json'}
+    options.headers = { 'Content-Type': 'application/json' }
     options.body = JSON.stringify(body)
   }
   const response = await fetch('/api/v1/' + path, options)
@@ -77,6 +110,13 @@ export async function api<T>(path: string, method = 'GET', body?: unknown): Prom
   return response.json()
 }
 export const money = (value: number | string, digits = 2) =>
-  Number(value).toLocaleString('en-US', {style:'currency', currency:'USD', minimumFractionDigits: digits, maximumFractionDigits: digits})
-export const signed = (value: number | string, digits = 0) => (Number(value) > 0 ? '+' : '') + money(value, digits)
-export const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'The request could not be completed.'
+  Number(value).toLocaleString('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })
+export const signed = (value: number | string, digits = 0) =>
+  (Number(value) > 0 ? '+' : '') + money(value, digits)
+export const errorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : 'The request could not be completed.'

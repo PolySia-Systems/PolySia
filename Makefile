@@ -7,7 +7,7 @@ WEB_TOOLS := $(WEB)/node_modules/.polysia-installed
 BROWSER_ENV := .venv
 BROWSER_TOOLS := $(BROWSER_ENV)/.polysia-installed
 
-.PHONY: setup web build run check browser-test install-test verify
+.PHONY: setup web build run check browser-test provider-test install-test verify
 .DEFAULT_GOAL := setup
 
 setup: web
@@ -35,6 +35,9 @@ $(BROWSER_TOOLS): tests/browser/requirements.txt
 
 browser-test: web $(BROWSER_TOOLS)
 	$(BROWSER_ENV)/bin/python tests/browser/journey.py $(BROWSER_ARGS)
+
+provider-test: build $(BROWSER_TOOLS)
+	$(BROWSER_ENV)/bin/python tests/browser/journey.py --public-smoke $(BROWSER_ARGS)
 
 install-test: build
 	$(PYTHON) tests/install_smoke.py
