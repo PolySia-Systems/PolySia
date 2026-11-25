@@ -182,7 +182,7 @@ export function SavedReplay({ id }: { id: string }) {
   return (
     <div className="stack">
       <a className="text-link" href="#/runs">
-        Back to shadow runs
+        Back to scenario replays
       </a>
       {run ? (
         <Shadow run={run} />
@@ -227,7 +227,7 @@ export function Shadow({ run, refresh }: { run: Run | null; refresh?: () => Prom
           <div className="section-glyph">
             <FlaskConical size={24} />
           </div>
-          <h2>No shadow runs yet</h2>
+          <h2>No scenario replays yet</h2>
           <p>Choose a sample leader to replay a copy with simulated cash.</p>
           <a href="#/discover" className="btn primary">
             Discover leaders <ArrowRight size={16} />
@@ -310,7 +310,7 @@ export function Shadow({ run, refresh }: { run: Run | null; refresh?: () => Prom
                 : active
                   ? refresh
                     ? 'Waiting for the next scenario signal. Advance the scenario to evaluate it.'
-                    : 'Saved state. Open Shadow runs to manage the current replay.'
+                    : 'Saved state. Open Scenario replays to manage the current replay.'
                   : 'The run has ended. Remaining shares stay open in this simulation.'}
             </div>
             {active && refresh && (

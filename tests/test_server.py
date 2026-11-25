@@ -15,6 +15,7 @@ from threading import Event, Thread
 from apps.server.archive import copy_workspace
 from apps.server.http import LocalServer
 from apps.server.store import Workspace
+from test_public_shadow import ID, WALLET, observed_buy
 
 ADDRESS = "0x" + "AB" * 20
 
@@ -138,6 +139,42 @@ class WorkspaceHttpTest(unittest.TestCase):
             self.assertIn("--retry-empty", probe.call_args.args[0])
         self.assertIsNone(self.request("GET", "/api/v1/workspace")[1]["account"])
         self.assertIsNone(self.request("GET", "/api/v1/workspace")[1]["run"])
+
+    def test_public_pause_supersedes_inflight_buy_and_busy_has_no_decision(self):
+        route = "/api/v1/public-runs/" + ID
+        config = {"name": "Paper", "wallet": WALLET, "capital": "25", "cap": "10"}
+        self.assertEqual(400, self.request("PUT", route, {**config, "cap": "26"})[0])
+        self.assertEqual(200, self.request("PUT", route, config)[0])
+        self.assertEqual(400, self.request("POST", route + "/sample", {"revision": 1, "receipt": {}})[0])
+        entered, release = Event(), Event()
+
+        def delayed(wallet, budget, *, retry_empty):
+            self.assertTrue(retry_empty)
+            entered.set()
+            self.assertTrue(release.wait(3))
+            return observed_buy(wallet, budget)
+
+        with patch.object(self.server, "sample_buy", side_effect=delayed), ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(self.request, "POST", route + "/sample", {"revision": 1})
+            try:
+                self.assertTrue(entered.wait(3))
+                status, paused = self.request("POST", route + "/pause", {"revision": 1})
+                self.assertEqual((status, paused["status"]), (200, "paused"))
+            finally:
+                release.set()
+            self.assertEqual(pending.result()[0], 409)
+        self.shutdown()
+        self.launch()
+        self.assertEqual(self.request("GET", route)[1], paused)
+        self.assertEqual(self.request("POST", route + "/sample", {"revision": 2})[0], 409)
+        self.request("POST", route + "/resume", {"revision": 2})
+        with self.server.observation_lock:
+            self.assertEqual(self.request("POST", route + "/sample", {"revision": 3})[0], 409)
+        with patch("apps.server.observe.sample_once", side_effect=TimeoutError("Observation deadline reached.")):
+            status, failed = self.request("POST", route + "/sample", {"revision": 3})
+            self.assertEqual((status, failed["revision"], failed["cash"], failed["decisions"][0]["kind"]),
+                             (200, 4, "25", "unavailable"))
+        self.assertIsNone(self.request("GET", "/api/v1/workspace")[1]["account"])
 
     def test_public_profile_is_stateless_and_rejects_invalid_wallets(self):
         status, inspected = self.request("GET", "/api/v1/public/traders/" + ADDRESS)

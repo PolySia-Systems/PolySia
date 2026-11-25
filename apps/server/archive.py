@@ -11,7 +11,8 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from .provider import decimal_value, validate_address
-from .store import create_schema_v1
+from .store import add_public_runs, create_schema_v1
+from .public_shadow import verify_archive
 
 
 def _cents(value):
@@ -123,12 +124,14 @@ def _verify_records(db, stored_account):
             raise ValueError(f"Saved replay {run_id} failed its integrity check: {exc}") from exc
 
 
-def _verify_schema(db):
+def _verify_schema(db, version):
     # Compare definitions, including SQLite's implicit primary-key index. Root
     # page numbers describe physical placement and may differ between copies.
     catalog = "SELECT type, name, tbl_name, sql FROM main.sqlite_schema ORDER BY type, name"
     with closing(sqlite3.connect(":memory:")) as reference:
         create_schema_v1(reference)
+        if version == 2:
+            add_public_runs(reference)
         expected = reference.execute(catalog).fetchall()
     if db.execute(catalog).fetchmany(len(expected) + 1) != expected:
         raise ValueError("The database schema differs from the supported PolySia workspace schema.")
@@ -149,9 +152,10 @@ def copy_workspace(source: Path, destination: Path):
             with closing(sqlite3.connect(staging.name)) as writer:
                 reader.backup(writer, pages=256)
                 writer.execute("PRAGMA trusted_schema = OFF")
-                if writer.execute("PRAGMA user_version").fetchone()[0] != 1:
+                version = writer.execute("PRAGMA user_version").fetchone()[0]
+                if version not in (1, 2):
                     raise ValueError("This file is not a supported PolySia workspace.")
-                _verify_schema(writer)
+                _verify_schema(writer, version)
                 if writer.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
                     raise ValueError("The copied database failed the SQLite integrity check.")
                 row = writer.execute(
@@ -162,6 +166,12 @@ def copy_workspace(source: Path, destination: Path):
                 if any(type(revision) is not int or revision < 0 for revision in row[1:3]):
                     raise ValueError("The workspace revisions are invalid.")
                 _verify_records(writer, row[3])
+                if version == 2:
+                    writer.row_factory = sqlite3.Row
+                    try:
+                        verify_archive(writer)
+                    except (AttributeError, ArithmeticError, IndexError, KeyError, TypeError, ValueError, RecursionError) as exc:
+                        raise ValueError(f"Public shadow archive failed its integrity check: {exc}") from exc
         os.fsync(staging.fileno())
         os.link(staging.name, destination)
         dir_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)

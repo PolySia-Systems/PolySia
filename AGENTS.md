@@ -1,8 +1,8 @@
 # Working on PolySia
 
-Start with the current scope, installation command and next evidence gate in [README.md](README.md). The single authority for intent and acceptance is [Master Plan v1.9](docs/MASTER_PLAN.md). Read the relevant sections for your task. The [provider evidence](docs/provider.md) records what the adapter has actually verified. Record routine work and evidence in the PR.
+Start with the current scope, installation command and next evidence gate in [README.md](README.md). The single authority for intent and acceptance is [Master Plan v1.10](docs/MASTER_PLAN.md). Read the relevant sections for your task. The [provider evidence](docs/provider.md) records what the adapter has actually verified. Record routine work and evidence in the PR.
 
-Use the existing checkout in an isolated cloud task. Create a worktree only when requested. Before editing, check the branch, base commit, working tree and affected contracts. Use the Makefile for setup, run, checks, artifact build and end-to-end verification. Keep generated artifacts and local databases outside source control.
+Use the existing checkout in the authorized local or cloud environment. Verify the supported Linux artifact through the Makefile. Create a worktree only when requested. Before editing, check the branch, base commit, working tree and affected contracts. Use the Makefile for setup, run, checks, artifact build and end-to-end verification. Keep generated artifacts and local databases outside source control.
 
 ## Boundaries
 
@@ -14,4 +14,4 @@ Use the existing checkout in an isolated cloud task. Create a worktree only when
 
 ## Before handoff
 
-Run the relevant tests and inspect changed screens and failure states. For a release candidate, run `make verify`. Verify what ran, review the diff for secrets and generated artifacts, and identify untested claims explicitly. Financial invariants, CI enforcement and authorization controls require independent review before live use. A coding agent cannot grant itself that authority. Leave one short continuation point in the README when the next evidence gate changes.
+Run the relevant tests and inspect changed screens and failure states. For a release candidate, run `make verify`. Verify what ran, review the diff for secrets and generated artifacts, and identify untested claims explicitly. Financial invariants, CI enforcement and authorization controls require independent review before live use. Controlled product work can proceed while provider evidence or live-use review is outstanding. Leave one short continuation point in the README when the next evidence gate changes.

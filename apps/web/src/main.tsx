@@ -20,12 +20,14 @@ import { Compare, Discover, LeaderDetail } from './Discover'
 import { Preview, SavedReplay, Shadow } from './Shadow'
 import { Accounts, Settings, Status } from './Workspace'
 import { PublicRankings } from './PublicRankings'
+import { PublicRuns } from './PublicRuns'
 import './style.css'
 
 const nav = [
   { id: 'discover', name: 'Discover', icon: Compass },
   { id: 'rankings', name: 'Public rankings', icon: ChartNoAxesColumnIncreasing },
-  { id: 'runs', name: 'Shadow runs', icon: FlaskConical },
+  { id: 'paper', name: 'Public shadow', icon: Activity },
+  { id: 'runs', name: 'Scenario replays', icon: FlaskConical },
   { id: 'accounts', name: 'Accounts', icon: Wallet },
   { id: 'settings', name: 'Settings', icon: Settings2 },
   { id: 'status', name: 'System status', icon: Activity },
@@ -134,7 +136,8 @@ function App() {
       {
         discover: 'Leader discovery',
         rankings: 'Public rankings',
-        runs: id ? 'Saved replay' : 'Shadow runs',
+        paper: id === 'new' ? 'New public run' : id ? 'Public shadow portfolio' : 'Public shadow runs',
+        runs: id ? 'Saved replay' : 'Scenario replays',
         accounts: 'Accounts',
         settings: 'Settings',
         status: 'System status',
@@ -147,6 +150,7 @@ function App() {
     (
       {
         rankings: 'Inspect the traders and positions reported by Polymarket.',
+        paper: 'Observe a public leader with simulated cash and keep a record of each decision.',
         discover: 'Explore public trading data or practice a copy with a simulated wallet.',
         runs: 'See how simulated decisions change your cash and open positions.',
         accounts: 'Inspect public wallet positions and read-only connection status.',
@@ -228,7 +232,7 @@ function App() {
         </div>
         <nav aria-label="Workspace navigation">
           <div className="nav-label">Workspace</div>
-          {nav.slice(0, 4).map(({ id, name, icon: Icon }) => (
+          {nav.slice(0, 5).map(({ id, name, icon: Icon }) => (
             <a
               key={id}
               href={'#/' + id}
@@ -242,7 +246,7 @@ function App() {
             </a>
           ))}
           <div className="nav-label tools">Preferences</div>
-          {nav.slice(4).map(({ id, name, icon: Icon }) => (
+          {nav.slice(5).map(({ id, name, icon: Icon }) => (
             <a
               key={id}
               href={'#/' + id}
@@ -359,6 +363,7 @@ function App() {
                   <Shadow run={workspace.run} refresh={refresh} />
                 ))}
               {page === 'rankings' && <PublicRankings />}
+              {page === 'paper' && <PublicRuns key={location.hash} id={id}/>}
               {page === 'accounts' && (
                 <Accounts
                   key={id}

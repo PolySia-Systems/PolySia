@@ -73,7 +73,7 @@ def _levels(rows):
     return [{"price": _quantity(level["price"], price=True), "shares": _quantity(level["size"])} for level in rows]
 
 
-def _book(payload, event):
+def normalize_book(payload, event):
     if not isinstance(payload, dict) or payload.get("asset_id", payload.get("token_id")) != event["tokenId"]:
         raise ValueError("Book token mismatch")
     if str(payload.get("market")).lower() != event["conditionId"]:
@@ -237,7 +237,7 @@ def _sample_book(result, event):
         result["bookRequestedMs"] = time.time_ns() // 1_000_000
         payload = read_public_json(BOOK, {"token_id": event["tokenId"]})
         result["bookReceivedMs"] = time.time_ns() // 1_000_000
-        book = _book(payload, event)
+        book = normalize_book(payload, event)
         book["sourceAgeAtDetectionMs"] = result["activityReceivedMs"] - book["sourceTimeMs"]
         # Both validated probabilities are in (0, 1] with at most 80 decimal places.
         with localcontext() as arithmetic:

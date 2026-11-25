@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 from uuid import uuid4
 
-from . import VERSION, observe, provider, public_depth, public_history, public_leaders, shadow
+from . import VERSION, observe, provider, public_depth, public_history, public_leaders, public_marks, public_shadow, shadow
 from .store import Conflict, Workspace
 
 API = "/api/v1"
@@ -95,7 +95,8 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self.send_json(400, {"error": str(exc)})
         except KeyError:
-            self.send_json(404, {"error": "Replay not found."})
+            message = "Public shadow run not found." if self.operation == "public-runs" else "Replay not found."
+            self.send_json(404, {"error": message})
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             self.close_connection = True
         except (sqlite3.Error, OSError) as exc:
@@ -144,13 +145,15 @@ class Handler(BaseHTTPRequestHandler):
         # Only known route names enter logs. Exclude query strings, wallet
         # addresses, run IDs, provider body content and user-controlled labels.
         resource = path.removeprefix(API + "/").partition("/")[0]
-        self.operation = resource if resource in ("health", "workspace", "leaders", "settings", "account", "runs") else "unknown"
+        self.operation = resource if resource in ("health", "workspace", "leaders", "settings", "account", "runs", "public-runs") else "unknown"
         if path == API + "/health" and method == "GET":
             store.account_revision()  # Confirm an initialized database is actually readable.
             return {"status": "ok", "mode": "local", "liveExecution": False, "version": VERSION,
                     "artifactSha256": self.server.artifact_sha256}
         if path == API + "/workspace" and method == "GET":
             return store.read()
+        if path == API + "/public-runs" or path.startswith(API + "/public-runs/"):
+            return self.public_runs_api(path, method)
         if path == API + "/public/leaders" and self.command == "GET":
             query = parse_qs(urlsplit(self.path).query, keep_blank_values=True, max_num_fields=1)
             if query.keys() - {"period"}:
@@ -224,6 +227,55 @@ class Handler(BaseHTTPRequestHandler):
                 revision = self.body(("revision",))["revision"]
                 return store.change_run(run_id, action, revision)
         raise RequestError(404, "Unknown API operation.")
+
+    def public_runs_api(self, path, method):
+        store = self.server.store
+        mark = re.fullmatch(API + r"/public-runs/([0-9a-f]{32})/positions/([0-9]{1,78})/mark", path)
+        if mark:
+            if method != "POST" or urlsplit(self.path).query:
+                raise RequestError(405, "Request a position mark with its displayed run revision.")
+            revision = self.body(("revision",))["revision"]
+            with store.connection(write=False) as db:
+                basis = public_shadow.position_basis(db, mark[1], mark[2], revision)
+            return public_marks.read_mark(basis)
+        match = re.fullmatch(API + r"/public-runs(?:/([0-9a-f]{32})(?:/(sample|pause|resume|stop|export))?)?", path)
+        if not match:
+            raise RequestError(404, "Unknown public shadow run.")
+        run_id, action = match.groups()
+        query = urlsplit(self.path).query
+        before = None
+        if query:
+            pattern = r"before=([1-9][0-9]{0,17})" if run_id else r"before=([0-9a-f]{32})"
+            cursor = re.fullmatch(pattern, query)
+            if method != "GET" or action or not cursor:
+                raise ValueError("Unsupported public run query.")
+            before = int(cursor[1]) if run_id else cursor[1]
+        if method == "GET" and action in (None, "export"):
+            with store.connection(write=False) as db:
+                if run_id is None:
+                    return public_shadow.listing(db, before)
+                return public_shadow.report(db, run_id, export=action == "export", before=before)
+        if method == "PUT" and run_id and not action:
+            config = self.body(("wallet", "name", "capital", "cap"))
+            with store.connection() as db:
+                return public_shadow.create(db, run_id, **config)
+        if method == "POST" and action in ("sample", *public_shadow.CONTROLS):
+            revision = self.body(("revision",))["revision"]
+            if action != "sample":
+                with store.connection() as db:
+                    return public_shadow.control(db, run_id, revision, action)
+            with store.connection(write=False) as db:
+                wallet, budget = public_shadow.sampling_terms(db, run_id, revision)
+            try:
+                receipt = self.server.sample_buy(wallet, budget, retry_empty=True)
+            except RequestError as exc:
+                if exc.status not in (503, 504):
+                    raise
+                receipt = {"status": "unavailable", "reason": str(exc), "wallet": wallet, "researchBudget": budget}
+            # A stop, pause or concurrent decision while the provider was reading supersedes this result.
+            with store.connection() as db:
+                return public_shadow.record(db, run_id, revision, receipt)
+        raise RequestError(405, "Unsupported method for this public shadow operation.")
 
     def static(self, path):
         root = self.server.static_dir

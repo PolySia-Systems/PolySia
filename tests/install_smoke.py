@@ -156,14 +156,20 @@ def verify_upgrade(previous):
             assert stopped["revision"] == saved["run"]["revision"] + 1
             assert stopped["quantity"] == saved["run"]["quantity"] and stopped["events"] == saved["run"]["events"]
             end_state = json.loads(request(url, "/api/v1/workspace"))
+            public_route = "/api/v1/public-runs/" + "a1" * 16
+            public_run = json.loads(request(url, public_route, {"wallet": "0x" + "ab" * 20,
+                             "name": "Upgrade trial", "capital": "30", "cap": "10"}))
+            assert public_run["status"] == "running" and public_run["cash"] == "30"
+            public_end = json.loads(request(url, public_route + "/pause", {"revision": 1}, "POST"))
         backup, recovered = cwd / "backup.db", cwd / "restored.db"
         env = {k: v for k, v in os.environ.items() if k not in ("POLYSIA_DB", "PYTHONPATH")}
         subprocess.run([launcher, "backup", "--to", backup], cwd=cwd, env=env, check=True)
         subprocess.run([launcher, "restore", "--from", backup, "--to", recovered], cwd=cwd, env=env, check=True)
         with app(launcher, cwd, recovered, offline=True) as url:
             assert json.loads(request(url, "/api/v1/workspace")) == end_state
+            assert json.loads(request(url, public_route)) == public_end
         print(f"Upgrade {prior_version} to {health['version']} preserved a paused position, "
-              "settings and revisions. Stop and restore retained the recorded fills.")
+              "settings and revisions. Restore retained recorded fills and the new public shadow run.")
 
 
 if __name__ == "__main__":
