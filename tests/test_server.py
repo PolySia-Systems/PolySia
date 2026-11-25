@@ -1,0 +1,216 @@
+import http.client
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Event, Thread
+
+from apps.server.http import LocalServer
+from apps.server.store import Workspace
+
+ADDRESS = "0x" + "AB" * 20
+
+
+def public_snapshot(address):
+    return {
+        "address": address, "status": "available",
+        "source": "HTTP test fixture", "observedAt": "2026-11-01T00:00:00Z",
+        "checkedAt": "2026-11-01T00:00:00Z", "message": "One fixture position.",
+        "positions": [{"market": "Fixture", "outcome": "Yes", "shares": "2.50"}],
+        "complete": True, "nextCursor": None,
+    }
+
+
+class WorkspaceHttpTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.dist = self.root / "dist"
+        self.dist.mkdir()
+        (self.dist / "index.html").write_text("<!doctype html>PolySia")
+        self.launch()
+        self.addCleanup(self.shutdown)
+
+    def launch(self):
+        self.server = LocalServer(0, Workspace(self.root / "workspace.db"), self.dist, public_snapshot)
+        self.thread = Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01})
+        self.thread.start()
+
+    def shutdown(self):
+        self.server.shutdown()
+        self.thread.join(timeout=3)
+        self.server.server_close()
+
+    def request(self, method, path, body=None, headers=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
+        try:
+            header_values = {"Content-Type": "application/json"}
+            header_values.update(headers or {})
+            conn.request(method, path, json.dumps(body) if body is not None else None, header_values)
+            result = conn.getresponse()
+            data = result.read()
+            self.assertTrue(result.getheader("X-Request-ID"))
+            if result.getheader("Content-Type").startswith("application/json") and data:
+                data = json.loads(data)
+            return result.status, data
+        finally:
+            conn.close()
+
+    def test_startup_browser_and_preferences_survive_restart(self):
+        self.assertEqual((200, b"<!doctype html>PolySia"), self.request("GET", "/discover"))
+        self.assertEqual(404, self.request("GET", "/assets/missing.js")[0])
+        status, health = self.request("GET", "/api/v1/health")
+        self.assertEqual((200, "ok", False), (status, health["status"], health["liveExecution"]))
+        self.assertEqual((200, b""), self.request("HEAD", "/api/v1/health"))
+        status, workspace = self.request("GET", "/api/v1/workspace")
+        self.assertEqual((200, None, None, "light"), (status, workspace["run"], workspace["account"], workspace["settings"]["theme"]))
+        preference = {**workspace["settings"], "theme": "dark"}
+        status, updated = self.request("PUT", "/api/v1/settings", preference)
+        self.assertEqual(200, status)
+        self.assertEqual(409, self.request("PUT", "/api/v1/settings", preference)[0])
+        self.shutdown()
+        self.launch()
+        self.assertEqual(updated, self.request("GET", "/api/v1/workspace")[1]["settings"])
+
+    def test_watch_refresh_failure_and_disconnect(self):
+        calls = []
+
+        def inspect(address):
+            calls.append(address)
+            result = public_snapshot(address)
+            if len(calls) > 1:
+                result.update(status="unavailable", positions=[], observedAt=None, complete=False,
+                              message="Provider unavailable.")
+            return result
+
+        self.server.inspect_account = inspect
+        self.assertEqual(400, self.request("POST", "/api/v1/account", {"address": "invalid"})[0])
+        self.assertEqual([], calls)
+        with self.assertLogs("apps.server.http", level="INFO") as logs:
+            status, account = self.request("POST", "/api/v1/account", {"address": ADDRESS})
+        self.assertEqual(len(logs.output), 2)
+        self.assertEqual(logs.records[0].args[0], logs.records[1].args[0])
+        self.assertIn("positions lookup available", logs.output[0])
+        self.assertNotIn(ADDRESS.lower(), " ".join(logs.output).lower())
+        self.assertEqual((200, ADDRESS.lower(), "2.50"), (status, account["address"], account["positions"][0]["shares"]))
+        self.assertEqual(account, self.request("GET", "/api/v1/workspace")[1]["account"])
+        _, refresh = self.request("POST", "/api/v1/account", {"address": ADDRESS})
+        self.assertEqual(("unavailable", None, False), (refresh["status"], refresh["observedAt"], refresh["complete"]))
+        self.assertEqual((200, {"account": None}), self.request("DELETE", "/api/v1/account"))
+        self.assertIsNone(self.request("GET", "/api/v1/workspace")[1]["account"])
+        self.assertEqual([ADDRESS.lower()] * 2, calls)
+
+    def test_disconnect_wins_over_inflight_watch(self):
+        started, released = Event(), Event()
+
+        def delayed(address):
+            started.set()
+            released.wait(3)
+            return public_snapshot(address)
+
+        self.server.inspect_account = delayed
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            attempt = pool.submit(self.request, "POST", "/api/v1/account", {"address": ADDRESS})
+            try:
+                self.assertTrue(started.wait(2))
+                self.assertEqual(200, self.request("DELETE", "/api/v1/account")[0])
+            finally:
+                released.set()
+            self.assertEqual(409, attempt.result(timeout=3)[0])
+        self.assertIsNone(self.request("GET", "/api/v1/workspace")[1]["account"])
+
+    def test_replay_duplicate_steps_restart_and_stop_leave_attributed_position(self):
+        _, directory = self.request("GET", "/api/v1/leaders")
+        creation = {"leaderId": directory["leaders"][0]["id"], "allocation": "100.00", "orderSize": "10.00"}
+        status, run = self.request("POST", "/api/v1/runs", creation)
+        self.assertEqual((200, "shadow", "0", []), (status, run["mode"], run["quantity"], run["events"]))
+        self.assertEqual(409, self.request("POST", "/api/v1/runs", creation)[0])
+        route = "/api/v1/runs/" + run["id"]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            attempts = [pool.submit(self.request, "POST", route + "/step", {"revision": run["revision"]}) for _ in range(2)]
+            self.assertEqual([200, 409], sorted(f.result()[0] for f in attempts))
+        _, first = self.request("GET", route)
+        self.assertEqual(1, len(first["events"]))
+        self.assertGreater(int(first["quantity"]), 0)
+        _, paused = self.request("POST", route + "/pause", {"revision": first["revision"]})
+        self.shutdown()
+        self.launch()
+        self.assertEqual(paused, self.request("GET", "/api/v1/workspace")[1]["run"])
+        _, stopped = self.request("POST", route + "/stop", {"revision": paused["revision"]})
+        self.assertEqual(("stopped", first["quantity"], first["cash"]), (stopped["status"], stopped["quantity"], stopped["cash"]))
+        self.assertEqual(400, self.request("POST", route + "/resume", {"revision": stopped["revision"]})[0])
+        status, second = self.request("POST", "/api/v1/runs", creation)
+        self.assertEqual((200, "0", "100.00"), (status, second["quantity"], second["cash"]))
+        self.assertEqual(stopped, self.request("GET", route)[1])
+
+    def test_foreign_origins_unsupported_fields_and_authority_rejected(self):
+        data = {"version": 1, "revision": 0, "theme": "dark"}
+        for header in ({"Host": "unrelated.example"}, {"Origin": "https://unrelated.example"},
+                       {"X-Forwarded-For": "192.0.2.1"}):
+            self.assertEqual(403, self.request("PUT", "/api/v1/settings", data, header)[0])
+        self.assertEqual(415, self.request("PUT", "/api/v1/settings", data, {"Content-Type": "text/plain"})[0])
+        for invalid in ({**data, "live": True}, {**data, "version": True}, {**data, "revision": "0"},
+                        {**data, "theme": []}, {**data, "theme": "other"}):
+            self.assertEqual(400, self.request("PUT", "/api/v1/settings", invalid)[0])
+        self.assertEqual(404, self.request("POST", "/api/v1/trade", {})[0])
+        self.assertEqual("light", self.request("GET", "/api/v1/workspace")[1]["settings"]["theme"])
+
+    def test_history_pagination_is_stable_across_new_runs(self):
+        creation = {"leaderId": "atlas", "allocation": "100", "orderSize": "10"}
+
+        def finished_run():
+            _, run = self.request("POST", "/api/v1/runs", creation)
+            self.request("POST", "/api/v1/runs/" + run["id"] + "/stop", {"revision": run["revision"]})
+            return run["id"]
+
+        ids = [finished_run() for _ in range(21)]
+        _, first = self.request("GET", "/api/v1/runs")
+        self.assertEqual(ids[:0:-1], [r["id"] for r in first["runs"]])
+        self.assertNotIn("events", first["runs"][0])
+        finished_run()
+        _, second = self.request("GET", "/api/v1/runs?before=" + first["nextCursor"])
+        self.assertEqual([ids[0]], [r["id"] for r in second["runs"]])
+        self.assertIsNone(second["nextCursor"])
+        self.assertEqual(400, self.request("GET", "/api/v1/runs?before=missing")[0])
+
+    def test_online_backup_and_restore_to_new_database_preserve_workspace(self):
+        env = {**os.environ, "POLYSIA_DB": str(self.root / "workspace.db")}
+        self.request("PUT", "/api/v1/settings", {"version": 1, "revision": 0, "theme": "dark"})
+        _, run = self.request("POST", "/api/v1/runs", {"leaderId": "atlas", "allocation": "100", "orderSize": "10"})
+        route = "/api/v1/runs/" + run["id"]
+        _, filled = self.request("POST", route + "/step", {"revision": run["revision"]})
+        self.request("POST", route + "/pause", {"revision": filled["revision"]})
+        expected = self.request("GET", "/api/v1/workspace")[1]
+        backup, restored = self.root / "backup.sqlite3", self.root / "restored.sqlite3"
+        cli = [sys.executable, "-m", "apps.server"]
+
+        def invoke(*args, check=True):
+            return subprocess.run([*cli, *args], cwd=Path(__file__).resolve().parents[1],
+                                  env=env, capture_output=True, check=check, timeout=5)
+
+        invoke("backup", "--to", backup)
+        duplicate = invoke("backup", "--to", backup, check=False)
+        self.assertNotEqual(0, duplicate.returncode)
+        self.assertIn(b"already exists", duplicate.stderr)
+        self.request("POST", route + "/stop", {"revision": expected["run"]["revision"]})
+        invoke("restore", "--from", backup, "--to", restored)
+        self.assertEqual(expected, Workspace(restored).read())
+        self.assertEqual("paused", expected["run"]["status"])
+        self.assertGreater(int(expected["run"]["quantity"]), 0)
+        conflict = invoke("restore", "--from", backup, "--to", self.root / "workspace.db", check=False)
+        self.assertNotEqual(0, conflict.returncode)
+        self.assertEqual("stopped", self.request("GET", route)[1]["status"])
+        invalid = self.root / "invalid.sqlite3"
+        invalid.write_text("unrelated data")
+        bad_dest = self.root / "bad-restore.sqlite3"
+        self.assertNotEqual(0, invoke("restore", "--from", invalid, "--to", bad_dest, check=False).returncode)
+        self.assertFalse(bad_dest.exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

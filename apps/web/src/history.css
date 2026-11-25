@@ -1,0 +1,15 @@
+.replay-history { min-width: 0; }
+.replay-history h2 { display: flex; align-items: center; gap: .6rem; }
+.history-note { margin: 0 0 .8rem; line-height: 1.5; }
+.history-row { display: flex; align-items: center; flex-wrap: wrap; gap: .8rem 1.2rem; padding: 1rem 0; border-top: 1px solid color-mix(in srgb, currentColor 16%, transparent); }
+.history-identity { flex: 1 1 10rem; display: grid; gap: .35rem; }
+.history-identity > span, .history-note { font-size: .84rem; }
+.history-facts { flex: 4 1 24rem; display: grid; grid-template-columns: repeat(4, auto); gap: .8rem; margin: 0; font-variant-numeric: tabular-nums; }
+.history-facts dt { font-size: .76rem; margin-bottom: .3rem; opacity: .8; }
+.history-facts dd { margin: 0; font-size: .88rem; }
+.history-paging { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .75rem; }
+.history-export { text-decoration: none; }
+@media (max-width: 700px) {
+  .history-facts { grid-template-columns: repeat(2, 1fr); }
+  .history-identity { flex-basis: 100%; }
+}
