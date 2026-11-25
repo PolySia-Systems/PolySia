@@ -1,0 +1,2 @@
+# The bundled Linux launcher uses a shebang, including when built on Windows.
+deploy/start.py text eol=lf

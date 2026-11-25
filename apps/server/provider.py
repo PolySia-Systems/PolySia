@@ -34,7 +34,13 @@ class _FixedOrigin(HTTPRedirectHandler):
 
 def read_public_json(endpoint: str, params: dict) -> dict:
     query = urlencode(params)
-    request = Request(f"{endpoint}?{query}", headers={"Accept": "application/json", "User-Agent": USER_AGENT})
+    request = Request(f"{endpoint}?{query}" if query else endpoint)
+    return read_json_response(request)
+
+
+def read_json_response(request: Request) -> dict:
+    request.add_header("Accept", "application/json")
+    request.add_header("User-Agent", USER_AGENT)
     with build_opener(_FixedOrigin()).open(request, timeout=4) as response:
         body = response.read(MAX_BODY_BYTES + 1)
     if len(body) > MAX_BODY_BYTES:

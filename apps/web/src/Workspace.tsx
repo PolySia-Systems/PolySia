@@ -435,8 +435,9 @@ export function Status({ workspace }: Props) {
           simulated wallet.
         </p>
         <p>
-          Next proof: observe a real leader fill and the follower’s available book after detection.
-          Live execution and economic performance remain unverified.
+          A budgeted observation checks the wallet’s order and market fees before measuring
+          displayed depth. The next test is how often a usable quote survives those checks across
+          different wallets and market conditions.
         </p>
       </section>
     </div>

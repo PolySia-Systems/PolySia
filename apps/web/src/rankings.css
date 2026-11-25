@@ -80,6 +80,38 @@
 .observation-result dd {
   overflow-wrap: anywhere;
 }
+.observation-form {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: .75rem;
+}
+.observation-form .field {
+  margin: 0;
+}
+.observation-form input {
+  display: block;
+  width: 10rem;
+  margin-top: .35rem;
+}
+.capacity-result {
+  background: var(--soft);
+  border-inline-start: 3px solid var(--accent);
+  padding: .8rem 1rem;
+}
+.capacity-result h4, .capacity-result p {
+  margin: .35rem 0;
+}
+.capacity-result strong {
+  font-size: 1.35rem;
+}
+.observation-evidence {
+  margin: .9rem 0;
+}
+.observation-evidence summary {
+  cursor: pointer;
+  font-weight: 600;
+}
 .public-compare-tools {
   display: flex;
   align-items: center;

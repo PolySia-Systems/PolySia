@@ -5,8 +5,6 @@ import logging
 import mimetypes
 import re
 import sqlite3
-import subprocess
-import sys
 from threading import Lock
 from time import monotonic
 from http import HTTPStatus
@@ -15,7 +13,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 from uuid import uuid4
 
-from . import VERSION, provider, public_history, public_leaders, shadow
+from . import VERSION, observe, provider, public_depth, public_history, public_leaders, shadow
 from .store import Conflict, Workspace
 
 API = "/api/v1"
@@ -38,22 +36,17 @@ class LocalServer(ThreadingHTTPServer):
         self.inspect_account = inspect_account or provider.inspect_account
         super().__init__(("127.0.0.1", port), Handler)
 
-    def sample_buy(self, address):
+    def sample_buy(self, address, budget=None):
         # Run the same CLI as an operator. Its process deadline also bounds slow
         # provider reads that can outlast an individual socket timeout.
         if not self.observation_lock.acquire(blocking=False):
             raise RequestError(409, "One public observation is already in progress. Try again after it finishes.")
         try:
-            sample = subprocess.run(
-                [sys.executable, "-B", "-m", "apps.server.observe", address, "--seconds", "5"],
-                cwd=Path(__file__).resolve().parents[2],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=20, check=False,
-            )
-            if sample.returncode not in (0, 2) or not sample.stdout:
-                raise RequestError(503, "The public observation could not complete. Try a new window.")
-            return json.loads(sample.stdout)
-        except subprocess.TimeoutExpired:
-            raise RequestError(504, "Observation timed out. A post-detection book could not be verified.") from None
+            return observe.sample_once(address, 2 if budget is not None else 5, budget)
+        except TimeoutError as exc:
+            raise RequestError(504, str(exc)) from None
+        except OSError:
+            raise RequestError(503, "The public observation could not complete. Try a new window.") from None
         finally:
             self.observation_lock.release()
 
@@ -126,7 +119,7 @@ class Handler(BaseHTTPRequestHandler):
         if any(key in self.headers for key in ("Forwarded", "X-Forwarded-For", "X-Forwarded-Host")):
             raise RequestError(403, "This workspace requires a direct local connection.")
 
-    def body(self, fields):
+    def body(self, fields, optional=()):
         content_length = self.headers.get_all("Content-Length", [])
         if self.headers.get_content_type() != "application/json":
             raise RequestError(415, "Use application/json for this request.")
@@ -139,7 +132,9 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(length).decode("utf-8"))
         except (UnicodeError, ValueError, RecursionError):
             raise RequestError(400, "Provide a valid UTF-8 JSON object.") from None
-        if type(data) is not dict or set(data) != set(fields):
+        if type(data) is not dict or not set(fields) <= set(data) <= set(fields) | set(optional):
+            if optional:
+                raise RequestError(400, "Supported optional fields: " + ", ".join(optional) + ".")
             raise RequestError(400, "Expected exactly these fields: " + ", ".join(fields) + ".")
         return data
 
@@ -166,9 +161,10 @@ class Handler(BaseHTTPRequestHandler):
         if observation:
             if self.command != "POST":
                 raise RequestError(405, "Start an observation with an explicit request.")
-            self.body(())
+            options = self.body((), optional=("budget",))
+            budget = public_depth.budget_amount(options["budget"]) if "budget" in options else None
             self.operation = "public-observation"
-            return self.server.sample_buy(provider.validate_address(observation[1]))
+            return self.server.sample_buy(provider.validate_address(observation[1]), budget)
         history = re.fullmatch(API + r"/public/traders/(0x[0-9a-fA-F]{40})/history", path)
         if history and self.command == "GET":
             self.operation = "public-history"
