@@ -13,6 +13,7 @@ from . import VERSION
 
 
 POSITIONS_ENDPOINT = "https://data-api.polymarket.com/v2/positions"
+VALUE_ENDPOINT = "https://data-api.polymarket.com/v2/value"
 SOURCE = "Polymarket Data API v2 · open positions"
 PAGE_SIZE = 20
 USER_AGENT = f"PolySia/{VERSION} (+https://github.com/PolySia-Systems/PolySia)"
@@ -68,6 +69,12 @@ def decimal_value(value: object, *, signed: bool = False) -> Decimal:
             or abs(number.as_tuple().exponent) > 80 or number.adjusted() > 80):
         raise ValueError("Invalid public numeric field")
     return number
+
+
+def units_from_micros(micros: int) -> str:
+    """Format a nonnegative base-unit quantity for JSON without binary rounding."""
+    whole, fraction = divmod(micros, 1_000_000)
+    return f"{whole}.{fraction:06d}".rstrip("0").rstrip(".")
 
 
 def unpack_page(payload: object, limit: int) -> tuple[list, str | None]:
@@ -148,4 +155,31 @@ def inspect_account(address: str) -> dict:
         "source": SOURCE, "checkedAt": checked, "observedAt": checked if available else None,
         "message": message, "positions": positions, "complete": available and cursor is None,
         "nextCursor": cursor,
+    }
+
+
+def holdings_value(address: str) -> dict:
+    """Read the provider's unfiltered wallet aggregate independently of the positions page."""
+    address = validate_address(address)
+    value = None
+    try:
+        payload = read_public_json(VALUE_ENDPOINT, {"user": address})
+        if not isinstance(payload, dict) or "pagination" in payload or not isinstance(payload.get("data"), dict):
+            raise ValueError("Expected one aggregate")
+        data = payload["data"]
+        if validate_address(data["proxy_wallet"]) != address:
+            raise ValueError("Unexpected portfolio wallet")
+        amount = decimal_value(data["value"])
+        if 10_000 % amount.as_integer_ratio()[1]:
+            raise ValueError("Unsupported holdings precision")
+        value = format(amount, "f")
+        message = ("Polymarket marks single-market holdings to market and values unresolved combos at cost. "
+                   "Cash and trading fees for a possible sale are outside this estimate.")
+    except (KeyError, ValueError, OSError, HTTPException, InvalidOperation, RecursionError) as error:
+        message = provider_error(error)
+    checked = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return {
+        "address": address, "status": "available" if value is not None else "unavailable",
+        "source": "Polymarket Data API v2 · portfolio value", "value": value, "unit": "USDC",
+        "checkedAt": checked, "observedAt": checked if value is not None else None, "message": message,
     }

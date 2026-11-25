@@ -147,3 +147,16 @@
 .artifact-digest {
   overflow-wrap: anywhere;
 }
+.holdings-value .panel-head {
+  flex-wrap: wrap;
+  gap: .75rem;
+}
+.holdings-amount {
+  display: block;
+  margin-top: .75rem;
+  font-variant-numeric: tabular-nums;
+  font-size: 1.3rem;
+}
+.holdings-value {
+  overflow-wrap: anywhere;
+}

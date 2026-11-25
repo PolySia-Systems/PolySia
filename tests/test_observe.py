@@ -88,6 +88,18 @@ class ObservationTests(unittest.TestCase):
                 self.assertEqual(len(calls), 1)
                 self.assertNotIn("book", result)
 
+    def test_activity_collateral_preserves_missing_or_exact_provider_value(self):
+        for row, expected in [(activity(usdc_size="6.359370"), "6.359370"), (activity(usdc_size=None), None)]:
+            result, _ = self.probe(page([row]), book())
+            self.assertEqual(result["event"]["reportedCollateral"], expected)
+        result, _ = self.probe(page([activity()]), book())
+        self.assertNotIn("reportedCollateral", result["event"])
+        for invalid in ("not-an-amount", True, "1e1000"):
+            with self.subTest(invalid=invalid):
+                result, calls = self.probe(page([activity(usdc_size=invalid)]))
+                self.assertEqual(result["status"], "unavailable")
+                self.assertEqual(len(calls), 1)
+
     def test_capped_page_keeps_pairable_evidence_without_claiming_complete_coverage(self):
         rows = [activity()] * observe.LIMIT
         result, reads = self.probe(page(rows, "more"), book())

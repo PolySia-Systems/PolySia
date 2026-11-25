@@ -145,6 +145,7 @@ export function Accounts({
           </button>
         </PositionSnapshot>
       )}
+      {account && <HoldingsValue key={account.address} address={account.address} />}
       {!account && (
         <section className="panel workspace-panel">
           <header>
@@ -158,6 +159,65 @@ export function Accounts({
         </section>
       )}
     </div>
+  )
+}
+
+interface HoldingsValueRead {
+  address: string
+  status: 'available' | 'unavailable'
+  value: string | null
+  unit: string | null
+  source: string
+  checkedAt: string
+  observedAt: string | null
+  message: string
+}
+
+export function HoldingsValue({ address }: { address: string }) {
+  const [result, setResult] = useState<HoldingsValueRead | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  async function load() {
+    setBusy(true)
+    setResult(null)
+    setError('')
+    try {
+      const read = await api<HoldingsValueRead>('public/traders/' + address + '/value')
+      if (read.address !== address) throw new Error('The holdings value identified a different wallet.')
+      setResult(read)
+    } catch (cause) {
+      setError(errorText(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="panel workspace-panel holdings-value" aria-label="Holdings value">
+      <div className="panel-head">
+        <h2>Holdings value</h2>
+        <button className="btn" disabled={busy} onClick={load}>
+          {busy ? 'Reading value…' : result || error ? 'Refresh holdings value' : 'Load holdings value'}
+        </button>
+      </div>
+      <div role="status">
+        {result && (
+          <>
+            <strong className="holdings-amount">
+              {result.status === 'available' && result.value !== null
+                ? `${result.value} ${result.unit ?? '(unit unavailable)'}`
+                : 'Value unavailable'}
+            </strong>
+            <p>{result.message}</p>
+            <p className="workspace-note">{result.source} · Checked {timestamp(result.checkedAt)}
+              {result.observedAt && result.observedAt !== result.checkedAt && <> · Retrieved {timestamp(result.observedAt)}</>}
+            </p>
+          </>
+        )}
+      </div>
+      {error && <p className="error" role="alert">{error}</p>}
+    </section>
   )
 }
 

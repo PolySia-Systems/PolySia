@@ -24,6 +24,31 @@ def envelope(rows, more=False):
 
 
 class AccountReadTests(unittest.TestCase):
+    def test_wallet_aggregate_keeps_reported_precision_and_real_zero(self):
+        for raw in ("248434.9443", "100000000000000000000000.0001", "0.00"):
+            with self.subTest(raw=raw), patch.object(provider, "build_opener") as opener:
+                response = '{"data":{"proxy_wallet":"' + WALLET + '","value":' + raw + '}}'
+                opener.return_value.open.return_value = io.BytesIO(response.encode())
+                result = provider.holdings_value(WALLET)
+                request = opener.return_value.open.call_args.args[0]
+                self.assertEqual(request.full_url, provider.VALUE_ENDPOINT + "?user=" + WALLET)
+                self.assertEqual((result["status"], result["value"], result["unit"]), ("available", raw, "USDC"))
+                self.assertEqual(result["observedAt"], result["checkedAt"])
+
+    def test_wallet_aggregate_failure_preserves_unknown(self):
+        valid = {"proxy_wallet": WALLET, "value": "10"}
+        for response in (None, [], {"data": []}, {"data": None}, {"data": valid, "pagination": {}},
+                         {"data": {**valid, "proxy_wallet": "0x" + "cd" * 20}},
+                         *({"data": {**valid, "value": v}} for v in (None, True, "-1", "NaN", "3.00001"))):
+            with self.subTest(response=response), patch.object(provider, "read_public_json", return_value=response):
+                result = provider.holdings_value(WALLET)
+                self.assertEqual(result["status"], "unavailable")
+                self.assertIsNone(result["value"])
+                self.assertIsNone(result["observedAt"])
+                self.assertTrue(result["checkedAt"])
+        with patch.object(provider, "read_public_json", side_effect=TimeoutError()):
+            self.assertIn("Could not reach", provider.holdings_value(WALLET)["message"])
+
     def read(self, payload):
         with patch.object(provider, "_read_page", return_value=payload):
             return provider.inspect_account(WALLET)

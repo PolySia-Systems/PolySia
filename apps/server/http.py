@@ -172,6 +172,12 @@ class Handler(BaseHTTPRequestHandler):
         if history and self.command == "GET":
             self.operation = "public-history"
             return public_history.pnl_history(history[1])
+        valuation = re.fullmatch(API + r"/public/traders/(0x[0-9a-fA-F]{40})/value", path)
+        if valuation and self.command == "GET":
+            if urlsplit(self.path).query:
+                raise ValueError("Holdings value covers the full trading wallet.")
+            self.operation = "public-holdings-value"
+            return provider.holdings_value(valuation[1])
         if path.startswith(API + "/public/traders/") and self.command == "GET":
             address = provider.validate_address(path.removeprefix(API + "/public/traders/"))
             self.operation = "public-trader"

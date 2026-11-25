@@ -57,6 +57,9 @@ def _buy(row, address, start, end):
         "price": _quantity(row["price"], price=True), "shares": _quantity(row["size"]),
         "fillId": None, "side": "BUY",
     }
+    if "usdc_size" in row:
+        amount = row["usdc_size"]
+        event["reportedCollateral"] = _quantity(amount) if amount is not None else None
     for source, field in (("title", "marketTitle"), ("outcome", "outcomeLabel")):
         label = row.get(source)
         if isinstance(label, str) and 0 < len(label) <= 1000 and label.strip():

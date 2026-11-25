@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from http.client import HTTPException
 
-from .provider import decimal_value, read_public_json
+from .provider import decimal_value, read_public_json, units_from_micros as _units
 from .public_fill import EXCHANGES
 
 MARKETS = "https://clob.polymarket.com/clob-markets/"
@@ -32,11 +32,6 @@ def _micros(value):
     if number.denominator != 1:
         raise ValueError("Unsupported base-unit precision")
     return int(number)
-
-
-def _units(micros):
-    whole, fraction = divmod(micros, SCALE)
-    return f"{whole}.{fraction:06d}".rstrip("0").rstrip(".")
 
 
 def _terms(payload, event):

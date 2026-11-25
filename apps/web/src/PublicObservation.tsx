@@ -25,7 +25,8 @@ interface Receipt {
   researchBudget?: string
   evidenceCheckedMs?: number
   participant?:
-    | { status: 'matched'; role: 'maker' | 'taker'; logIndex: number; blockNumber: number }
+    | { status: 'matched'; role: 'maker' | 'taker'; logIndex: number; blockNumber: number;
+        grossCollateral?: string; chargedFee?: string; totalCollateral?: string }
     | { status: 'unresolved' | 'unavailable'; reason: string }
   capacity?: {
     status: 'estimated' | 'skipped' | 'incomplete'
@@ -184,6 +185,11 @@ export function PublicObservation({ address }: { address: string }) {
               <p><b>Wallet BUY</b> · {receipt.event.shares} shares
                 {receipt.event.outcomeLabel && <> on <b>{receipt.event.outcomeLabel}</b></>} at {receipt.event.price} pUSD per share.</p>
             </div>
+          )}
+          {receipt.participant?.status === 'matched' && receipt.participant.grossCollateral != null &&
+            receipt.participant.chargedFee != null && receipt.participant.totalCollateral != null && (
+            <p><b>Wallet spend</b> · {receipt.participant.grossCollateral} pUSD in shares +{' '}
+              {receipt.participant.chargedFee} pUSD charged fee = {receipt.participant.totalCollateral} pUSD total.</p>
           )}
           {!receipt.capacity && receipt.researchBudget && (
             <p className="workspace-note">Budget for this window · {receipt.researchBudget} pUSD</p>

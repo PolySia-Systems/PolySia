@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowRight, ArrowUpRight, RefreshCw, Search } from 'lucide-react'
 import { api, type Account, errorMessage } from './api'
-import { PositionSnapshot } from './Workspace'
+import { HoldingsValue, PositionSnapshot } from './Workspace'
 import { PublicObservation } from './PublicObservation'
 import { PublicHistory } from './PublicHistory'
 import './rankings.css'
@@ -262,6 +262,7 @@ function Profile({
           </button>
         </div>
       )}
+      <HoldingsValue key={address} address={address} />
       <PublicObservation address={address} />
     </div>
   )
