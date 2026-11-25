@@ -55,6 +55,7 @@ def _verify_journal(record, stored_id):
     if not 0 < _cents(record["order_size"]) <= capital:
         raise ValueError("Invalid replay allocation or order cap.")
     cash, shares, fees = capital, 0, 0
+    basis = realized = 0
     for event in events:
         if event["side"] not in ("BUY", "SELL") or event["status"] not in ("skipped", "partial", "filled"):
             raise ValueError("Unknown journal entry.")
@@ -64,6 +65,15 @@ def _verify_journal(record, stored_id):
         if event["status"] != "skipped" and (not gross or not count):
             raise ValueError("Recorded fill has no shares or notional.")
         direction = 1 if event["side"] == "BUY" else -1
+        if direction == 1:
+            basis += gross + fee
+        elif count:
+            if count > shares:
+                raise ValueError("The journal sells unavailable shares.")
+            # Schema 1 releases proportional cost basis in whole cents on each sale.
+            released = basis * count // shares
+            basis -= released
+            realized += gross - fee - released
         cash -= direction * gross + fee
         shares += direction * count
         fees += fee
@@ -71,7 +81,7 @@ def _verify_journal(record, stored_id):
             raise ValueError("The journal spends unavailable cash or shares.")
     if (cash, shares, fees) != (_cents(record["cash"]), _shares(record["quantity"]), _cents(record["fees"])):
         raise ValueError("Journal totals disagree with the saved balances.")
-    if cash + _cents(record["cost_basis"]) != capital + _cents(record["realized_pnl"]):
+    if (basis, realized) != (_cents(record["cost_basis"]), _cents(record["realized_pnl"])):
         raise ValueError("Cost basis and realized result do not reconcile.")
 
 

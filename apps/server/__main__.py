@@ -1,6 +1,7 @@
 """Start the local workspace with python3 -m apps.server."""
 
 import argparse
+import json
 import logging
 import os
 import sqlite3
@@ -9,6 +10,7 @@ from pathlib import Path
 from .archive import copy_workspace
 from .http import LocalServer
 from .store import Workspace
+from .study import record_study
 
 
 def main(*, artifact_sha256=None):
@@ -20,6 +22,14 @@ def main(*, artifact_sha256=None):
     restore = commands.add_parser("restore", help="Verify and restore a backup to a new database file")
     restore.add_argument("--from", required=True, type=Path, dest="source", metavar="BACKUP")
     restore.add_argument("--to", required=True, type=Path, metavar="NEW_DB")
+    study = commands.add_parser("study", help="Record a finite public BUY study to a new JSON Lines file")
+    study.add_argument("wallet", help="Public trading wallet")
+    study.add_argument("--budget", required=True, metavar="pUSD", help="Unfunded budget for each window")
+    study.add_argument("--windows", required=True, type=int, metavar="1..10")
+    study.add_argument("--seconds", type=int, default=5, metavar="1..30")
+    study.add_argument("--recheck-after", type=int, default=0, metavar="0..300",
+                       help="After the series, wait this many seconds and reread each activity page (0 disables)")
+    study.add_argument("--to", required=True, type=Path, metavar="NEW_JSONL")
     args = parser.parse_args()
     if not 0 <= args.port <= 65535:
         parser.error("choose a port from 0 to 65535")
@@ -28,6 +38,11 @@ def main(*, artifact_sha256=None):
     os.umask(0o077)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     try:
+        if args.command == "study":
+            summary = record_study(args.to, args.wallet, args.budget, args.seconds, args.windows,
+                                   recheck_after=args.recheck_after)
+            print(json.dumps(summary))
+            return
         if args.command in ("backup", "restore"):
             source = args.source if args.command == "restore" else path
             copy_workspace(source, args.to)

@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal
 from pathlib import Path
 from threading import Event, Thread
 
@@ -108,7 +109,7 @@ class WorkspaceHttpTest(unittest.TestCase):
             self.assertTrue(release.wait(3))
             return subprocess.CompletedProcess(command, 0, json.dumps(result).encode())
 
-        with patch("apps.server.http.subprocess.run", side_effect=observe) as process:
+        with patch("apps.server.observe.subprocess.run", side_effect=observe) as process:
             self.assertEqual(self.request("GET", endpoint)[0], 405)
             self.assertEqual(self.request("POST", endpoint, {"seconds": 99})[0], 400)
             self.assertEqual(self.request("GET", f"/api/v1/public/traders/{address}")[0], 200)
@@ -122,8 +123,14 @@ class WorkspaceHttpTest(unittest.TestCase):
                     release.set()
                 self.assertEqual(first.result(), (200, result))
             process.assert_called_once()
-        with patch("apps.server.http.subprocess.run", side_effect=subprocess.TimeoutExpired("probe", 20)):
+        with patch("apps.server.observe.subprocess.run", side_effect=subprocess.TimeoutExpired("probe", 20)):
             self.assertEqual(self.request("POST", endpoint, {})[0], 504)
+        with patch("apps.server.observe.subprocess.run", return_value=subprocess.CompletedProcess([], 0, b"{}")) as probe:
+            for value in ("0", "1000.01", "1e2", "1.001", None, True, 5):
+                self.assertEqual(self.request("POST", endpoint, {"budget": value})[0], 400)
+            probe.assert_not_called()
+            self.assertEqual(self.request("POST", endpoint, {"budget": "12.5"})[0], 200)
+            self.assertEqual(probe.call_args.args[0][-4:], ["--seconds", "2", "--budget", "12.50"])
         self.assertIsNone(self.request("GET", "/api/v1/workspace")[1]["run"])
 
     def test_public_profile_is_stateless_and_rejects_invalid_wallets(self):
@@ -320,7 +327,10 @@ class WorkspaceHttpTest(unittest.TestCase):
         store.create_run("mira", "20", "5")  # Damage is in an older run.
         destination = self.root / "recovered.db"
         altered_fill = {**old["events"][0], "quantity": 19.9}
+        # Add exactly one dollar to each total; their difference still reconciles.
+        inflated_basis = str(Decimal(old["cost_basis"]) + 1)
         for corrupted in ("{", "{}", json.dumps({**old, "fees": "0.00"}),
+                          json.dumps({**old, "cost_basis": inflated_basis, "realized_pnl": "1.00"}),
                           json.dumps({**old, "remaining_steps": 0}),
                           json.dumps({**old, "marked_value": "NaN"}),
                           json.dumps({**old, "events": [altered_fill]})):
