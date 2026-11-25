@@ -1,6 +1,6 @@
 # PolySia
 
-Explore a leader’s history, compare a shortlist, and follow a simulated copy from a signal to its effect on cash and open positions. In **Public rankings**, open a trader, enter a research budget and select **Observe next BUY** to check a recent wallet-owned order against the displayed liquidity and fees. A separate account watch remembers one public address. The local application requires no private keys or service accounts.
+Explore a leader’s history, compare a shortlist, and follow a simulated copy from a signal to its effect on cash and open positions. In **Public rankings**, open a trader, enter a research budget and select **Observe next BUY** to check a recent wallet-owned order against the displayed liquidity and fees. Select **Load holdings value** on a public profile or saved watch to see the provider’s wallet-wide estimate in USDC. A separate account watch remembers one public address. The local application requires no private keys or service accounts.
 
 **Start with Discover.** Choose **Research public wallets** to see the provider's rankings or paste a full trading wallet address. An address lookup leaves the saved watch in place. Choose **Try a shadow replay** to preview Atlas Meridian with simulated funds. Advance two signals to compare a complete fill with a partial one. Pause entries, advance once more, then stop and inspect the remaining shares. Open a saved run by name to review its decisions or download its JSON. All six scenario profiles and their replay events are fictional.
 
@@ -42,7 +42,7 @@ The browser checks use system Chromium (`CHROMIUM_PATH` selects another binary) 
 
 ## Current state and next proof
 
-Local build **0.2.2** can check a two-second observation window twice to catch a BUY that becomes visible while there is still time to check the book. The trader screen shows when each request was made, when a page arrived, and which read first showed the BUY. The installer records its artifact SHA-256. Source and review history are in [PolySia-Systems/PolySia](https://github.com/PolySia-Systems/PolySia).
+Local build **0.2.2** can check a two-second observation window twice to catch a BUY that becomes visible while there is still time to check the book. The trader screen shows which read first detected the BUY and, when a taker settlement matches, the wallet’s gross cost, charged fee and total debit. The installer records its artifact SHA-256. Source and review history are in [PolySia-Systems/PolySia](https://github.com/PolySia-Systems/PolySia).
 
 | Journey | Evidence and boundary |
 | --- | --- |
@@ -54,7 +54,7 @@ Local build **0.2.2** can check a two-second observation window twice to catch a
 
 **Architecture decision.** React, TypeScript and Vite render the client. One loopback Python process serves the built assets and the versioned HTTP API. SQLite serializes each local replay transition and stores operator preferences. A standalone offline installer avoids a container registry, database service and execution worker for this single-user, user-stepped workflow. Revisit PostgreSQL, an isolated worker and an authenticated deployment when concurrent operators or unattended execution become requirements. Live authority must be independently enforced before enabling either a signer or venue writes.
 
-**Next evidence gate.** Measure which wallet BUYs are visible in time for a delayed book check across different wallets and markets. One of four initially empty windows later showed two BUYs. Keep late discoveries separate from prospective capacity. Reconcile follower fee rounding and order minimums before recording prospective shadow fills.
+**Next evidence gate.** Repeat the wallet-filtered Polygon trial on a second active market, with a predeclared rule for provisional logs and source age at decision time. For one matched BUY, a later activity read placed receipt of the fresh delayed book 4.46 seconds after the reported trade time. Follower fees and order minimums still need independent evidence. [Timing and coverage](docs/provider.md#wallet-filtered-polygon-trial)
 
 To run the same checks from an installation, choose a new output file in an existing directory. This example declares three two-second windows at 10 pUSD each. The study writes its plan, attempts, receipts and counts as JSON Lines. Each window has its own unfunded budget. [Sampling policy and provider evidence](docs/provider.md#budgeted-observations)
 
