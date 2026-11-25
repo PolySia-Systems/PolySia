@@ -42,7 +42,7 @@ The browser checks use system Chromium (`CHROMIUM_PATH` selects another binary) 
 
 ## Current state and next proof
 
-Local build **0.2.0** adds participant-verified BUY research and finite observation studies. Source and review history are in [PolySia-Systems/PolySia](https://github.com/PolySia-Systems/PolySia). Use `git rev-parse HEAD` to identify a checkout and the installer's SHA-256 identifier to identify a built artifact. No hosted release is certified.
+Local build **0.2.2** can check a two-second observation window twice to catch a BUY that becomes visible while there is still time to check the book. The trader screen shows when each request was made, when a page arrived, and which read first showed the BUY. The installer records its artifact SHA-256. Source and review history are in [PolySia-Systems/PolySia](https://github.com/PolySia-Systems/PolySia).
 
 | Journey | Evidence and boundary |
 | --- | --- |
@@ -60,9 +60,11 @@ To run the same checks from an installation, choose a new output file in an exis
 
 ```sh
 "$HOME/.local/share/polysia/current/polysia" study 0xc69bd5567b40ef4d11922eaa57e1f9be1c642076 \
-  --budget 10 --seconds 2 --windows 3 --recheck-after 30 --to ./buy-study.jsonl
+  --budget 10 --seconds 2 --windows 3 --retry-empty --recheck-after 30 --to ./buy-study.jsonl
 ```
 
-The optional recheck waits until all prospective windows finish, then waits the specified seconds and rereads each original activity interval once. The summary counts how many initially empty windows later showed a BUY and how many could be compared. A failed read or a partial page with zero visible BUYs leaves that comparison unknown. Gaps between sampled intervals are unobserved.
+`--retry-empty` schedules one more activity read three seconds after the same window closes, if the first page was complete, showed no ordinary BUY, and the age limit still allows a book check. The summary counts additional reads, BUY detections and capacity estimates. Omit the flag for the original one-read study.
+
+`--recheck-after 30` separately waits until the series finishes, waits 30 seconds, then rereads each interval once. Those pages can reveal later activity. They never produce a capacity estimate. A failed read or a partial page with no BUY leaves that comparison unknown. Time between windows is unobserved.
 
 [Master Plan v1.9](docs/MASTER_PLAN.md) is the single intent baseline. [Project instructions](AGENTS.md) cover contributions and acceptance.

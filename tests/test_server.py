@@ -128,9 +128,15 @@ class WorkspaceHttpTest(unittest.TestCase):
         with patch("apps.server.observe.subprocess.run", return_value=subprocess.CompletedProcess([], 0, b"{}")) as probe:
             for value in ("0", "1000.01", "1e2", "1.001", None, True, 5):
                 self.assertEqual(self.request("POST", endpoint, {"budget": value})[0], 400)
+            for options in ({"retryEmpty": True}, {"budget": "10", "retryEmpty": 1},
+                            {"budget": "10", "retryEmpty": "true"}, {"budget": "10", "retryEmpty": None}):
+                self.assertEqual(self.request("POST", endpoint, options)[0], 400)
             probe.assert_not_called()
             self.assertEqual(self.request("POST", endpoint, {"budget": "12.5"})[0], 200)
             self.assertEqual(probe.call_args.args[0][-4:], ["--seconds", "2", "--budget", "12.50"])
+            self.assertEqual(self.request("POST", endpoint, {"budget": "10", "retryEmpty": True})[0], 200)
+            self.assertIn("--retry-empty", probe.call_args.args[0])
+        self.assertIsNone(self.request("GET", "/api/v1/workspace")[1]["account"])
         self.assertIsNone(self.request("GET", "/api/v1/workspace")[1]["run"])
 
     def test_public_profile_is_stateless_and_rejects_invalid_wallets(self):

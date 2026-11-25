@@ -1,3 +1,4 @@
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -124,3 +125,127 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual(result["book"]["bestAskMinusLeaderPrice"], "0.00")
         empty, _ = self.probe(page([activity()]), book(asks=[]))
         self.assertIsNone(empty["book"]["bestAskMinusLeaderPrice"])
+
+
+class SecondReadTests(unittest.TestCase):
+    def sample(self, *pages):
+        start_ms = START * 1000
+        now = start_ms - 500
+        lookups = []
+        responses = iter(pages)
+
+        def sleep(seconds):
+            nonlocal now
+            now += round(seconds * 1000)
+
+        def fetch(endpoint, params):
+            nonlocal now
+            if endpoint == observe.BOOK:
+                return book(timestamp=str(now), neg_risk=False, asks=[{"price": "0.51", "size": "25"}],
+                            bids=[{"price": "0.49", "size": "15"}])
+            self.assertEqual(endpoint, observe.ACTIVITY)
+            lookups.append((now, params["start"], params["end"]))
+            duration_ms, response = next(responses)
+            now += duration_ms
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        def market(event):
+            return {"status": "available", "checkedMs": now, "acceptingOrders": True, "takerDelayMs": 0,
+                    "negativeRisk": False, "priceTick": "0.01", "minimumOrderSize": "5", "takerRate": "0.05"}
+
+        def participant(wallet, event):
+            standard = next(k for k, negative in observe.public_fill.EXCHANGES.items() if not negative)
+            return {"status": "matched", "checkedMs": now, "exchange": standard}
+
+        with (patch.object(observe.time, "time", side_effect=lambda: now / 1000),
+              patch.object(observe.time, "time_ns", side_effect=lambda: now * 1_000_000),
+              patch.object(observe.time, "sleep", side_effect=sleep),
+              patch.object(observe, "read_public_json", side_effect=fetch),
+              patch.object(observe.public_depth, "market_terms", side_effect=market) as terms,
+              patch.object(observe.public_fill, "identify_buy", side_effect=participant) as identity):
+            receipt = observe.observe(WALLET, 2, budget="10", retry_empty=True)
+        self.assertEqual(terms.call_count, identity.call_count)
+        self.assertEqual(len(lookups), len(pages))
+        self.assertEqual([(lower, upper) for _, lower, upper in lookups], [(START, START + 1)] * len(lookups))
+        self.assertEqual([r["requestedMs"] for r in receipt["activityReads"]], [ms for ms, _, _ in lookups])
+        return receipt, identity.call_count
+
+    def test_newly_visible_buy_uses_the_second_receipt_for_the_full_delayed_check(self):
+        result, checks = self.sample((650, page([])), (400, page([activity(price="0.50")])))
+        self.assertEqual(result["schemaVersion"], 3)
+        self.assertEqual(result["retryAfterWindowMs"], 3000)
+        self.assertEqual(result["detectionRead"], 2)
+        first, second = result["activityReads"]
+        start_ms = START * 1000
+        self.assertEqual((first["requestedMs"], first["receivedMs"]), (start_ms + 2000, start_ms + 2650))
+        self.assertEqual((second["requestedMs"], second["receivedMs"]), (start_ms + 5000, start_ms + 5400))
+        self.assertEqual(first["activityCoverage"]["ordinaryBuyRows"], 0)
+        self.assertEqual(result["activityCoverage"], second["activityCoverage"])
+        self.assertEqual(result["activityReceivedMs"], second["receivedMs"])
+        self.assertEqual(checks, 1)
+        self.assertEqual(result["bookRequestedMs"], start_ms + 7400)
+        self.assertEqual(result["capacity"]["status"], "estimated")
+
+    def test_visible_initial_buy_does_not_trigger_another_read(self):
+        result, checks = self.sample((420, page([activity(price="0.50")])))
+        self.assertEqual(result["detectionRead"], 1)
+        self.assertEqual(result["capacity"]["status"], "estimated")
+        self.assertEqual(checks, 1)
+
+    def test_slow_first_response_rechecks_immediately_and_skips_expired_buy(self):
+        result, checks = self.sample((4000, page([])), (2001, page([activity()])))
+        self.assertEqual(result["activityReads"][1]["requestedMs"], result["activityReads"][0]["receivedMs"])
+        self.assertEqual(result["detectionRead"], 2)
+        self.assertEqual(result["event"]["eventTimeSeconds"], START)
+        self.assertEqual(result["capacity"]["status"], "skipped")
+        self.assertNotIn("bookRequestedMs", result)
+        self.assertEqual(checks, 0)
+
+    def test_expired_empty_window_is_distinct_from_two_successful_empty_reads(self):
+        expired, checks = self.sample((7001, page([])))
+        self.assertEqual(expired["status"], "incomplete")
+        self.assertIn("skipped", expired["reason"])
+        self.assertEqual(checks, 0)
+        # Latest possible source second still has exactly the declared delay left.
+        empty, checks = self.sample((7000, page([])), (100, page([])))
+        self.assertEqual(empty["status"], "waiting")
+        self.assertNotIn("detectionRead", empty)
+        self.assertEqual(checks, 0)
+
+    def test_unusable_pages_never_gain_complete_coverage(self):
+        partial = page([activity(is_combo=True)], "more")
+        for pages, status in [([(100, partial)], "incomplete"), ([(100, TimeoutError())], "unavailable"),
+                              ([(100, page([])), (200, partial)], "incomplete"),
+                              ([(100, page([])), (200, TimeoutError())], "unavailable"),
+                              ([(100, page([])), (200, page([activity(timestamp=START-1)]))], "unavailable")]:
+            with self.subTest(status=status, pages=pages):
+                result, checks = self.sample(*pages)
+                self.assertEqual(result["status"], status)
+                self.assertNotIn("detectionRead", result)
+                self.assertEqual(checks, 0)
+                if status == "unavailable":
+                    self.assertIn("reason", result["activityReads"][-1])
+                    self.assertNotIn("activityCoverage", result)
+                    self.assertNotIn("activityReceivedMs", result)
+                if len(pages) == 2:
+                    self.assertEqual(result["activityReads"][0]["activityCoverage"]["ordinaryBuyRows"], 0)
+
+    def test_backward_receipt_clock_keeps_coverage_but_cannot_establish_timeliness(self):
+        result, checks = self.sample((100, page([])), (-1, page([activity()])))
+        self.assertEqual(result["status"], "incomplete")
+        self.assertIn("preceded", result["activityReads"][-1]["reason"])
+        self.assertEqual(result["activityCoverage"]["ordinaryBuyRows"], 1)
+        self.assertNotIn("detectionRead", result)
+        self.assertEqual(checks, 0)
+
+    def test_cli_opt_in_has_a_bounded_deadline_and_rejects_incompatible_windows(self):
+        for seconds, budget, wait, retry in [(1, "10", 0, True), (2, None, 0, True),
+                                             (2, "10", 1, True), (2, "10", 0, 1)]:
+            with self.subTest(seconds=seconds, budget=budget, wait=wait, retry=retry), self.assertRaises(ValueError):
+                observe.observe(WALLET, seconds, wait, budget=budget, retry_empty=retry)
+        with patch.object(observe.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, b"{}")) as run:
+            observe.sample_once(WALLET, 2, "10", retry_empty=True)
+            self.assertIn("--retry-empty", run.call_args.args[0])
+            self.assertEqual(run.call_args.kwargs["timeout"], 39)
