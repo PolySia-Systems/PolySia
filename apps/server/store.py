@@ -35,21 +35,39 @@ def create_schema_v1(db):
     db.execute("PRAGMA user_version = 1")
 
 
+def add_public_runs(db):
+    db.execute("""CREATE TABLE public_runs (
+        id TEXT PRIMARY KEY, wallet TEXT NOT NULL, name TEXT NOT NULL,
+        capital INTEGER NOT NULL, entry_cap INTEGER NOT NULL, policy TEXT NOT NULL,
+        created TEXT NOT NULL, updated TEXT NOT NULL,
+        status TEXT NOT NULL, revision INTEGER NOT NULL)""")
+    db.execute("""CREATE TABLE public_decisions (
+        run_id TEXT NOT NULL REFERENCES public_runs(id), revision INTEGER NOT NULL,
+        recorded TEXT NOT NULL, kind TEXT NOT NULL, reason TEXT NOT NULL,
+        source_order TEXT, condition_id TEXT, token_id TEXT, market TEXT, outcome TEXT,
+        shares INTEGER NOT NULL, gross INTEGER NOT NULL, fee INTEGER NOT NULL, receipt TEXT,
+        PRIMARY KEY (run_id, revision), UNIQUE (run_id, source_order))""")
+    db.execute("PRAGMA user_version = 2")
+
+
 class Workspace:
     def __init__(self, path: Path):
         self.path = path
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with self.connection() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1):
+            if version not in (0, 1, 2):
                 raise ValueError(f"Unsupported workspace database version {version}")
             if version == 0:
                 create_schema_v1(db)
+            if version < 2:
+                add_public_runs(db)
 
     @contextmanager
     def connection(self, write=True):
         with closing(sqlite3.connect(self.path, timeout=5)) as db:
             db.row_factory = sqlite3.Row
+            db.execute("PRAGMA foreign_keys = ON")
             with db:
                 db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
                 yield db

@@ -241,6 +241,9 @@ function Profile({
           {summaryNumber.format(Number(trader.pnl))} USDC
         </p>
       )}
+      <div><a className="btn primary" href={'#/paper/new?' + new URLSearchParams({wallet: address, name: trader?.name ?? 'Public wallet'})}>
+        Set up public shadow run <ArrowRight size={16} aria-hidden="true" />
+      </a></div>
       <PublicHistory address={address} />
       {snapshot && (
         <PositionSnapshot account={snapshot} heading="Open positions">

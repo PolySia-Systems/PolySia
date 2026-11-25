@@ -140,6 +140,9 @@ export function Accounts({
       </section>
       {account && (
         <PositionSnapshot account={account} heading="Position snapshot">
+          <a className="btn" href={'#/paper/new?' + new URLSearchParams({wallet: account.address})}>
+            Set up public shadow run
+          </a>
           <button className="btn subtle" disabled={busy} onClick={disconnect}>
             Remove watch
           </button>
@@ -490,9 +493,8 @@ export function Status({ workspace }: Props) {
           <h2>Project status</h2>
         </header>
         <p>
-          Public rankings and account watches read Polymarket. The scenario directory and shadow
-          runs use fictional data. Replays demonstrate how limits, cost and liquidity affect a
-          simulated wallet.
+          Public rankings and account watches read Polymarket. Public shadow runs use public BUY
+          observations and simulated funds. Scenario replays use fictional leaders, prices and funds.
         </p>
         <p>
           A budgeted observation checks the wallet’s order and market fees before measuring

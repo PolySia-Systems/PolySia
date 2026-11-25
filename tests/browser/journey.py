@@ -163,7 +163,7 @@ def exercise(browser: Browser, origin: str, output: Path | None):
     exported = json.loads(download.path().read_text())
     assert exported == stopped, "Downloaded evidence differs from the persisted replay"
     page.goto(origin)
-    expect(page.get_by_role("heading", name="Shadow runs", exact=True)).to_be_visible()
+    expect(page.get_by_role("heading", name="Scenario replays", exact=True)).to_be_visible()
     expect(page.get_by_text(re.compile("2 filled or partially filled · 1 skipped"))).to_be_visible()
     expect(page.get_by_text("Unavailable", exact=True).first).to_be_visible()
     capture(page, output, "replay-stopped")
@@ -177,6 +177,7 @@ def exercise(browser: Browser, origin: str, output: Path | None):
     page.get_by_role("button", name="Watch account", exact=True).click()
     expect(page.get_by_text("Current positions unknown", exact=True)).to_be_visible()
     expect(page.get_by_text("Public read only", exact=True)).to_be_visible()
+    expect(page.get_by_role("link", name="Set up public shadow run")).to_have_attribute("href", "#/paper/new?wallet=0x" + "1" * 40)
     # An old wallet's slow value read must never appear in a replacement watch.
     delayed_value = []
     page.route("**/api/v1/public/traders/*/value", lambda route: delayed_value.append(route))
@@ -271,7 +272,7 @@ def assisted_budget_journey(browser: Browser, origin: str, output: Path | None):
     assert json.loads(event.value.path().read_text()) == previous
     check_width(page)
     capture(page, output, "saved-replay-mobile")
-    page.get_by_role("link", name="Back to shadow runs").click()
+    page.get_by_role("link", name="Back to scenario replays").click()
     expect(page.get_by_role("button", name="Observe next signal")).to_be_enabled()
     assert page.request.get(origin + "/api/v1/workspace").json()["run"] == run
     page.close()
@@ -453,6 +454,12 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     page.get_by_label("Ranking period").select_option("month")
     lumen.click()
     expect(page.get_by_role("heading", name="Fixture Lumen", exact=True)).to_be_focused()
+    setup_link = page.get_by_role("link", name="Set up public shadow run")
+    setup = browser.new_page()
+    setup.goto(origin + "/" + setup_link.get_attribute("href"))
+    expect(setup.get_by_label("Run name")).to_have_value("Fixture Lumen")
+    expect(setup.get_by_label("Leader wallet")).to_have_value(wallet)
+    setup.close()
     expect(page.get_by_text("Fixture opening day?", exact=True)).to_be_visible()
     capture(page, output, "public-profile-fixture")
     page.set_viewport_size({"width": 390, "height": 844})
@@ -700,6 +707,121 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     print("Passed ranking filters, stale and unavailable results, direct wallet inspection, watch preservation and wallet prefill.")
 
 
+def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
+    from datetime import UTC, datetime, timedelta
+    from threading import Event, Thread
+    from unittest.mock import patch
+
+    sys.path.insert(0, str(ROOT))
+    sys.path.insert(0, str(ROOT / "tests"))
+    from apps.server import public_marks, public_shadow
+    from apps.server.http import LocalServer
+    from apps.server.store import Workspace
+    from test_public_shadow import observed_buy, WALLET
+    from test_observe import book
+
+    server = LocalServer(0, Workspace(cwd / "shadow.sqlite3"))
+    origin = f"http://127.0.0.1:{server.server_port}"
+    thread = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+    thread.start()
+    page = browser.new_page(viewport={"width": 1380, "height": 960}, reduced_motion="reduce")
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        page.goto(origin + "/#/paper")
+        expect(page.get_by_role("heading", name="Follow your first public wallet")).to_be_visible()
+        page.get_by_role("link", name="New run").click()
+        page.get_by_label("Leader wallet").fill(WALLET)
+        page.get_by_label("Run name").fill("Weekend research")
+        page.get_by_label("Starting cash").fill("25")
+        page.get_by_role("button", name="Create shadow run").click()
+        expect(page.get_by_role("heading", name="Weekend research")).to_be_visible()
+        route = page.url
+        start = int(time.time()) + 1
+        receipt = observed_buy(WALLET, "10.00", start=start)
+        unavailable = dict(wallet=WALLET, researchBudget="10.00", status="unavailable", reason="Public endpoint unreachable or denied.")
+        # Advance a controlled clock past the delayed book. Every browser action
+        # passes through the real HTTP service, SQLite transactions and UI.
+        future = datetime.fromtimestamp(start + 6, UTC)
+        times = ((future + timedelta(seconds=i)).isoformat(timespec="milliseconds") for i in range(10))
+        quiet = dict(wallet=WALLET, researchBudget="10.00", status="waiting", reason="No ordinary BUY visible.")
+        with patch.object(server, "sample_buy", side_effect=[unavailable, receipt, receipt, quiet, quiet, quiet, quiet]), patch.object(public_shadow, "timestamp", side_effect=times):
+            sample = page.get_by_role("button", name="Sample next window")
+            sample.click()
+            expect(page.get_by_text("Observation unavailable", exact=True)).to_be_visible()
+            capture(page, output, "public-run-unavailable")
+            sample.click()
+            expect(page.get_by_text("19 shares", exact=True)).to_be_visible()
+            expect(page.locator("dd").filter(has_text="15.14256")).to_be_visible()
+            page.get_by_text("Observation details", exact=True).first.click()
+            expect(page.get_by_text("Polygon exchange and source order", exact=True)).to_be_visible()
+            current_book = book(timestamp=str(int(time.time() * 1000)), bids=[{"price": "0.49", "size": "5"}],
+                                asks=[{"price": "0.51", "size": "2"}])
+            with patch.object(public_marks, "read_public_json", side_effect=[current_book, TimeoutError()]):
+                page.get_by_role("button", name="Check price estimate").click()
+                expect(page.get_by_text("9.5 pUSD estimated value", exact=True)).to_be_visible()
+                expect(page.get_by_text("-0.35744 pUSD versus purchase cost", exact=False)).to_be_visible()
+                capture(page, output, "public-run-desktop")
+                page.get_by_role("button", name="Refresh price estimate").click()
+                expect(page.get_by_text("Price estimate unavailable", exact=True)).to_be_visible()
+                expect(page.get_by_text("9.5 pUSD estimated value", exact=True)).to_have_count(0)
+            page.get_by_label("Windows to sample").select_option("5")
+            page.get_by_role("button", name="Start sampling").click()
+            expect(page.get_by_text("5 of 5 windows recorded.")).to_be_visible()
+            expect(page.get_by_text("Already modeled", exact=True)).to_be_visible()
+            page.get_by_role("button", name="Pause entries").click()
+            page.reload()
+            expect(page.get_by_role("button", name="Resume entries")).to_be_visible()
+            page.get_by_role("button", name="Resume entries").click()
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.get_by_role("button", name="Stop run").click()
+            page.get_by_role("button", name="Confirm stop").click()
+            expect(page.get_by_role("heading", name="Run closed to new entries")).to_be_visible()
+            expect(page.get_by_text("19 shares", exact=True)).to_be_visible()
+            check_width(page)
+            capture(page, output, "public-run-mobile")
+        with page.expect_download() as download:
+            page.get_by_role("link", name="Export run").click()
+        exported = json.loads(download.value.path().read_text())
+        assert [d["kind"] for d in exported["decisions"]] == ["unavailable", "entry", "duplicate", *(["waiting"] * 4), "pause", "resume", "stop"]
+        assert exported["cash"] == "15.14256" and exported["decisions"][1]["receipt"] == receipt
+        page.get_by_role("link", name="All public runs").click()
+        page.get_by_role("link", name=re.compile("Weekend research")).click()
+        expect(page).to_have_url(route)
+        expect(page.get_by_text("Stopped", exact=True)).to_be_visible()
+        page.get_by_role("link", name="All public runs").click()
+        page.get_by_role("link", name="New run").click()
+        page.get_by_label("Leader wallet").fill(WALLET)
+        page.get_by_role("button", name="Create shadow run").click()
+        page.get_by_label("Windows to sample").select_option("5")
+        second = page.url.split("/")[-1]
+        entered, release = Event(), Event()
+
+        def pending(wallet, budget, **options):
+            entered.set()
+            assert release.wait(10)
+            return dict(quiet, wallet=wallet, researchBudget=budget)
+
+        with patch.object(server, "sample_buy", side_effect=pending) as provider:
+            page.get_by_role("button", name="Start sampling").click()
+            try:
+                assert entered.wait(3)
+                page.get_by_role("link", name="All public runs").click()
+                expect(page.get_by_role("heading", name="Saved public runs")).to_be_visible()
+            finally:
+                with page.expect_response("**/api/v1/public-runs/*/sample"):
+                    release.set()
+            assert page.request.get(origin + "/api/v1/public-runs/" + second).json()["revision"] == 2
+            provider.assert_called_once()
+        assert not errors, errors
+        print("Passed public portfolio setup, unavailable window, modeled BUY, duplicate, persistent controls and export.")
+    finally:
+        page.close()
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
 def public_artifact_smoke(browser: Browser, cwd: Path, output: Path | None):
     """Opt-in. Inspect a real public ranking and persist one read-only watch."""
     # Reuse the installer test's launcher to exercise the actual shipped code.
@@ -788,6 +910,20 @@ def public_artifact_smoke(browser: Browser, cwd: Path, output: Path | None):
         print(f"Installed observation exported its {receipt.get('capacity', {}).get('status', receipt['status'])} receipt.")
         assert page.request.get(origin + "/api/v1/workspace").json() == workspace
         print(f"Direct wallet lookup returned {len(direct['positions'])} rows and preserved the original watch.")
+        page.get_by_role("link", name="Set up public shadow run").click()
+        expect(page.get_by_label("Leader wallet")).to_have_value(sample)
+        page.get_by_role("button", name="Create shadow run").click()
+        with page.expect_response("**/api/v1/public-runs/*/sample", timeout=50000) as reply:
+            page.get_by_role("button", name="Sample next window").click()
+        portfolio = reply.value.json()
+        assert reply.value.ok and portfolio["wallet"] == sample and portfolio["revision"] == 2
+        run_path = "/api/v1/public-runs/" + portfolio["id"]
+        saved = page.request.get(origin + run_path + "/export").json()
+        decision, = saved["decisions"]
+        assert decision["receipt"]["wallet"] == sample and decision["receipt"]["researchBudget"] == "10.00"
+        assert saved["cash"] == portfolio["cash"] and saved["positions"] == portfolio["positions"]
+        assert page.request.get(origin + "/api/v1/workspace").json() == workspace
+        print(f"Installed public shadow window recorded {decision['kind']}, cash {saved['cash']} pUSD, {len(saved['positions'])} positions.")
         page.get_by_role("button", name="Open navigation").click()
         page.get_by_role("dialog", name="Workspace menu").get_by_role("link", name="Accounts", exact=True).click()
         page.get_by_role("button", name="Remove watch").click()
@@ -814,6 +950,7 @@ def main():
                     exercise(browser, origin, options.screenshots)
                     assisted_budget_journey(browser, origin, options.screenshots)
                     public_rankings_journey(browser, origin, options.screenshots)
+                public_shadow_journey(browser, Path(temp), options.screenshots)
         finally:
             browser.close()
 
