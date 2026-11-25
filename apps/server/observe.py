@@ -48,12 +48,17 @@ def _buy(row, address, start, end):
     for key in ("condition_id", "transaction_hash"):
         if not isinstance(row[key], str) or not re.fullmatch(r"0x[0-9a-fA-F]{64}", row[key]):
             raise ValueError("Invalid activity reference")
-    return {
+    event = {
         "eventTimeSeconds": timestamp, "conditionId": row["condition_id"].lower(),
         "tokenId": token, "transactionHash": row["transaction_hash"].lower(),
         "price": _quantity(row["price"], price=True), "shares": _quantity(row["size"]),
         "fillId": None, "side": "BUY",
     }
+    for source, field in (("title", "marketTitle"), ("outcome", "outcomeLabel")):
+        label = row.get(source)
+        if isinstance(label, str) and 0 < len(label) <= 1000 and label.strip():
+            event[field] = label.strip()
+    return event
 
 
 def _levels(rows):
@@ -85,6 +90,17 @@ def _book(payload, event):
     }
 
 
+def read_buy_page(address, start, end):
+    payload = read_public_json(ACTIVITY, {
+        "user": address, "type": "TRADE", "side": "BUY", "sort_direction": "ASC",
+        "start": start, "end": end, "exclude_deposits_withdrawals": "false", "limit": LIMIT,
+    })
+    received = time.time_ns() // 1_000_000
+    rows, cursor = unpack_page(payload, LIMIT)
+    buys = [event for row in rows if (event := _buy(row, address, start, end)) is not None]
+    return buys, {"rowsReturned": len(rows), "complete": cursor is None, "ordinaryBuyRows": len(buys)}, received
+
+
 def observe(address: str, seconds: int, index_wait_seconds: int = 0, *, budget: str | None = None) -> dict:
     """Sample one new window. A research budget enables a delayed book and corroborating reads."""
     address = validate_address(address)
@@ -106,18 +122,11 @@ def observe(address: str, seconds: int, index_wait_seconds: int = 0, *, budget: 
                       delaySeconds=public_depth.DELAY_SECONDS)
     time.sleep(max(0, end + 1 + index_wait_seconds - time.time()))
     try:
-        payload = read_public_json(ACTIVITY, {
-            "user": address, "type": "TRADE", "side": "BUY", "sort_direction": "ASC",
-            "start": start, "end": end, "exclude_deposits_withdrawals": "false", "limit": LIMIT,
-        })
-        result["activityReceivedMs"] = time.time_ns() // 1_000_000
-        rows, cursor = unpack_page(payload, LIMIT)
-        buys = [event for row in rows if (event := _buy(row, address, start, end)) is not None]
+        buys, coverage, received = read_buy_page(address, start, end)
+        result.update(activityCoverage=coverage, activityReceivedMs=received)
         # Page completeness and evidence for one visible BUY answer different
         # questions. Never chase pagination during the sampling window.
-        result["activityCoverage"] = {"rowsReturned": len(rows), "complete": cursor is None,
-                                      "ordinaryBuyRows": len(buys)}
-        if not buys and cursor is not None:
+        if not buys and not coverage["complete"]:
             return dict(result, status="incomplete", reason="No ordinary BUY on the first page; later rows were not read.")
         if not buys:
             return dict(result, status="waiting", reason="No ordinary BUY visible in this response. Indexing may lag.")

@@ -55,7 +55,7 @@ class ObservationTests(unittest.TestCase):
             observe.observe(WALLET, 4, index_wait_seconds=301)
 
     def test_new_observation_followed_by_matching_book(self):
-        result, calls = self.probe(page([activity(is_combo=True), activity()]), book())
+        result, calls = self.probe(page([activity(is_combo=True), activity(title="Market question?", outcome="Yes")]), book())
         endpoint, query = calls[0].args
         self.assertEqual(endpoint, observe.ACTIVITY)
         self.assertEqual((query["start"], query["end"]), (START, START + 1))
@@ -64,6 +64,7 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual(result["status"], "observed")
         self.assertIsNone(result["event"]["fillId"])
         self.assertEqual(result["event"]["price"], "0.9300000035")
+        self.assertEqual((result["event"]["marketTitle"], result["event"]["outcomeLabel"]), ("Market question?", "Yes"))
         self.assertEqual(result["book"]["bestAsks"][0], {"price": "0.95", "shares": "2.3"})
         self.assertEqual(result["book"]["minimumOrderShares"], "5")
         self.assertEqual(result["book"]["priceTick"], "0.01")

@@ -54,13 +54,15 @@ Local build **0.2.0** adds participant-verified BUY research and finite observat
 
 **Architecture decision.** React, TypeScript and Vite render the client. One loopback Python process serves the built assets and the versioned HTTP API. SQLite serializes each local replay transition and stores operator preferences. A standalone offline installer avoids a container registry, database service and execution worker for this single-user, user-stepped workflow. Revisit PostgreSQL, an isolated worker and an authenticated deployment when concurrent operators or unattended execution become requirements. Live authority must be independently enforced before enabling either a signer or venue writes.
 
-**Next evidence gate.** Measure how often an identified BUY still has usable depth after the evidence checks across different wallets and markets. Keep every planned window, including misses and expired signals. Compare signal age, spread and budget-limited capacity, and reconcile the observed nine-micro-pUSD fee difference before recording prospective shadow fills. The initial estimates shared one wallet and outcome.
+**Next evidence gate.** Measure which wallet BUYs are visible in time for a delayed book check across different wallets and markets. One of four initially empty windows later showed two BUYs. Keep late discoveries separate from prospective capacity. Reconcile follower fee rounding and order minimums before recording prospective shadow fills.
 
 To run the same checks from an installation, choose a new output file in an existing directory. This example declares three two-second windows at 10 pUSD each. The study writes its plan, attempts, receipts and counts as JSON Lines. Each window has its own unfunded budget. [Sampling policy and provider evidence](docs/provider.md#budgeted-observations)
 
 ```sh
 "$HOME/.local/share/polysia/current/polysia" study 0xc69bd5567b40ef4d11922eaa57e1f9be1c642076 \
-  --budget 10 --seconds 2 --windows 3 --to ./buy-study.jsonl
+  --budget 10 --seconds 2 --windows 3 --recheck-after 30 --to ./buy-study.jsonl
 ```
+
+The optional recheck waits until all prospective windows finish, then waits the specified seconds and rereads each original activity interval once. The summary counts how many initially empty windows later showed a BUY and how many could be compared. A failed read or a partial page with zero visible BUYs leaves that comparison unknown. Gaps between sampled intervals are unobserved.
 
 [Master Plan v1.9](docs/MASTER_PLAN.md) is the single intent baseline. [Project instructions](AGENTS.md) cover contributions and acceptance.

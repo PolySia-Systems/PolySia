@@ -466,12 +466,15 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
         {"status": "observed", "reason": "A matching book update arrived after detection.",
          "capacity": {"status": "skipped", "budget": "12.50", "reason": "The book arrived 10,555 ms after the BUY. The research limit is 10,000 ms."}},
         {"status": "observed", "reason": "Displayed depth only.",
-         "event": {"eventTimeSeconds": 1795608002, "shares": "14", "price": "0.52", "fillId": None},
+         "event": {"eventTimeSeconds": 1795608002, "shares": "14", "price": "0.52", "fillId": None,
+                   "marketTitle": "Will the fixture market settle above its threshold?", "outcomeLabel": "Yes"},
          "participant": {"status": "matched", "role": "maker", "blockNumber": 123, "logIndex": 7},
          "capacity": {"status": "estimated", "budget": "12.50", "shares": "21", "gross": "11.55",
-                      "feeEstimate": "0.25988", "unspent": "0.69012", "maxPriceIncrease": "0.03", "maxLevels": 3},
-         "activityReceivedMs": 1795608005010, "bookReceivedMs": 1795608005060,
-         "book": {"sourceTimeMs": 1795608005050, "sourceAgeAtDetectionMs": -40, "bestAskMinusLeaderPrice": "0.03", "askLevelCount": 1,
+                      "feeEstimate": "0.25988", "unspent": "0.69012", "maxPriceIncrease": "0.03", "maxLevels": 3,
+                      "spreadPercentOfAsk": "3.64"},
+         "activityReceivedMs": 1795608005010, "evidenceCheckedMs": 1795608005210,
+         "bookRequestedMs": 1795608007210, "bookReceivedMs": 1795608007360,
+         "book": {"sourceTimeMs": 1795608007250, "sourceAgeAtDetectionMs": -2240, "bestAskMinusLeaderPrice": "0.03", "askLevelCount": 1,
                   "spreadPerShare": "0.02", "bestBid": {"price": "0.53", "shares": "12"},
                   "bestAsks": [{"price": "0.55", "shares": "21.25"}]}},
     ]
@@ -504,13 +507,16 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     expect(page.get_by_role("heading", name="Displayed capacity estimated")).to_be_visible()
     expect(page.get_by_text("0.02 pUSD per share", exact=True)).to_be_visible()
     expect(page.get_by_text("21 whole shares")).to_be_visible()
+    expect(page.get_by_text("Will the fixture market settle above its threshold?", exact=True)).to_be_visible()
+    expect(page.get_by_text("14 shares on Yes at 0.52 pUSD per share.", exact=False)).to_be_visible()
+    expect(page.get_by_text("3.64% of the best ask.", exact=False)).to_be_visible()
     expect(page.get_by_role("heading", name="Research budget · 12.50 pUSD")).to_be_visible()
     expect(page.get_by_text("Matched the wallet’s maker order", exact=False)).to_be_visible()
     check_width(page)
     capture(page, output, "public-capacity-mobile-fixture")
     timing.click()
     expect(page.get_by_role("cell", name="21.25", exact=True)).to_be_visible()
-    expect(page.get_by_text("40 ms after detection", exact=True)).to_be_visible()
+    expect(page.get_by_text("2240 ms after detection", exact=True)).to_be_visible()
     expect(page.get_by_text("0.03 per share", exact=True)).to_be_visible()
     assert not samples
     page.get_by_role("link", name="Watch this address").click()
@@ -621,9 +627,24 @@ def public_artifact_smoke(browser: Browser, cwd: Path, output: Path | None):
         direct = reply.value.json()
         assert direct["address"] == sample and direct["status"] == "available", direct["message"]
         expect(page.get_by_role("heading", name="Open positions")).to_be_visible()
+        page.set_viewport_size({"width": 390, "height": 844})
+        with page.expect_response("**/api/v1/public/traders/" + sample + "/observe", timeout=45000) as reply:
+            page.get_by_role("button", name="Observe next BUY").click()
+        receipt = reply.value.json()
+        assert reply.value.ok and receipt["wallet"] == sample and receipt["researchBudget"] == "10.00"
+        with page.expect_download() as download:
+            page.get_by_role("link", name="Download observation").click()
+        assert json.loads(download.value.path().read_text()) == receipt
+        check_width(page)
+        if output:
+            output.mkdir(parents=True, exist_ok=True)
+            panel = page.locator("section.panel").filter(has=page.get_by_role("heading", name="Public BUY observation"))
+            panel.screenshot(path=output / "installed-observation-mobile.png")
+        print(f"Installed observation exported its {receipt.get('capacity', {}).get('status', receipt['status'])} receipt.")
         assert page.request.get(origin + "/api/v1/workspace").json() == workspace
         print(f"Direct wallet lookup returned {len(direct['positions'])} rows and preserved the original watch.")
-        page.get_by_role("link", name="Accounts", exact=True).click()
+        page.get_by_role("button", name="Open navigation").click()
+        page.get_by_role("dialog", name="Workspace menu").get_by_role("link", name="Accounts", exact=True).click()
         page.get_by_role("button", name="Remove watch").click()
         expect(page.get_by_role("heading", name="Account scope")).to_be_visible()
         page.close()

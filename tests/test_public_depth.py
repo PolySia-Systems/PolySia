@@ -17,7 +17,8 @@ def sample():
     return {"activityReceivedMs": MS + 1000, "evidenceCheckedMs": MS + 2000,
             "activityCoverage": {"complete": True}, "participant": {"status": "matched", "checkedMs": MS + 1600, "exchange": EXCHANGE},
             "bookRequestedMs": MS + 4000, "bookReceivedMs": MS + 4200, "event": EVENT,
-            "book": {"sourceTimeMs": MS + 3800, "minimumOrderShares": "5", "priceTick": "0.01",
+            "book": {"sourceTimeMs": MS + 4000, "minimumOrderShares": "5", "priceTick": "0.01",
+                     "bestBid": {"price": "0.48", "shares": "5"},
                      "spreadPerShare": "0.02", "bidLevelCount": 1, "negativeRisk": False,
                      "bestAsks": [{"price": "0.50", "shares": "7.9"},
                                   {"price": "0.51", "shares": "100"}, {"price": "0.54", "shares": "50"}]},
@@ -29,6 +30,7 @@ class DepthTests(unittest.TestCase):
         quote = public_depth.measure_depth(sample(), "10.00")
         self.assertEqual((quote["status"], quote["shares"], quote["gross"]), ("estimated", "19", "9.62"))
         self.assertEqual(quote["feeEstimate"], "0.23744")
+        self.assertEqual(quote["spreadPercentOfAsk"], "4.00")
         self.assertEqual(sum(Decimal(quote[k]) for k in ("gross", "feeEstimate", "unspent")), 10)
 
     def test_fee_quantum_and_subminimum_boundary(self):
@@ -47,8 +49,10 @@ class DepthTests(unittest.TestCase):
         s["event"] = dict(EVENT, price="0.002", shares="5.0")
         s["market"]["priceTick"] = "0.001"
         s["book"].update(priceTick="0.001", spreadPerShare="0.001",
+                         bestBid={"price": "0.001", "shares": "10"},
                          bestAsks=[{"price": "0.002", "shares": "106339.21"}])
         q = public_depth.measure_depth(s, "10.00")
+        self.assertEqual(q["spreadPercentOfAsk"], "50.00")
         self.assertEqual((q["shares"], q["gross"], q["feeEstimate"], q["unspent"]),
                          ("4762", "9.524", "0.47525", "0.00075"))
 
@@ -111,10 +115,22 @@ class DepthTests(unittest.TestCase):
         self.assertEqual(public_depth.measure_depth(s, "10.00")["status"], "incomplete")
         s["bookRequestedMs"] += 250
         s["bookReceivedMs"] += 250
+        s["book"]["sourceTimeMs"] = s["bookRequestedMs"] - 1
+        self.assertEqual(public_depth.measure_depth(s, "10.00")["status"], "incomplete")
+        s["book"]["sourceTimeMs"] += 1
         s["market"]["negativeRisk"] = None
         self.assertEqual(public_depth.measure_depth(s, "10.00")["status"], "estimated")
         s["book"]["negativeRisk"] = None
         self.assertEqual(public_depth.measure_depth(s, "10.00")["status"], "incomplete")
+
+    def test_best_bid_tick_range_and_explicitly_empty_exit_side(self):
+        s = sample()
+        for price in ("0.495", "0", "1", "0.4999999"):
+            with self.subTest(price=price):
+                s["book"]["bestBid"]["price"] = price
+                self.assertEqual(public_depth.measure_depth(s, "10.00")["status"], "incomplete")
+        s["book"].update(bestBid=None, spreadPerShare=None, bidLevelCount=0)
+        self.assertEqual(public_depth.measure_depth(s, "10.00")["status"], "estimated")
 
     def test_multiple_rows_for_one_token_and_transaction_remain_unresolved(self):
         with (patch.object(observe.time, "time", return_value=START - 1),

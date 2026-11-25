@@ -71,15 +71,16 @@ def _estimate(sample, budget, terms):
     book = sample.get("book")
     detected = sample["activityReceivedMs"]
     checked = sample["evidenceCheckedMs"]
+    eligible_ms = checked + DELAY_SECONDS * 1000 + terms["takerDelayMs"]
     event_ms = sample["event"]["eventTimeSeconds"] * 1000
     if sample["participant"]["status"] != "matched" or not sample["activityCoverage"]["complete"]:
         return {"status": "incomplete", "reason": "The window needs complete activity coverage and one matched participant BUY."}
     if (not book or not event_ms <= detected <= checked
             or not detected <= sample["participant"]["checkedMs"] <= checked
             or not detected <= sample["market"]["checkedMs"] <= checked
-            or not checked + DELAY_SECONDS * 1000 + terms["takerDelayMs"] <= sample["bookRequestedMs"] <= sample["bookReceivedMs"]
-            or not checked <= book["sourceTimeMs"] <= sample["bookReceivedMs"] <= checked + MAX_RECEIPT_MS):
-        return {"status": "incomplete", "reason": "A timely book update after the participant and market checks was unavailable."}
+            or not eligible_ms <= sample["bookRequestedMs"] <= sample["bookReceivedMs"]
+            or not eligible_ms <= book["sourceTimeMs"] <= sample["bookReceivedMs"] <= checked + MAX_RECEIPT_MS):
+        return {"status": "incomplete", "reason": "A timely book update at or after the modeled delay was unavailable."}
     if sample["bookReceivedMs"] - event_ms > MAX_SIGNAL_AGE_MS:
         age = sample["bookReceivedMs"] - event_ms
         return {"status": "skipped", "reason": f"The book arrived {age:,} ms after the BUY. The research limit is {MAX_SIGNAL_AGE_MS:,} ms."}
@@ -97,6 +98,11 @@ def _estimate(sample, budget, terms):
         return {"status": "incomplete", "reason": "Book and market size or tick constraints were missing or differed."}
 
     rate, tick = _micros(terms["takerRate"]), _micros(terms["priceTick"])
+    bid = book["bestBid"]
+    if bid is not None:
+        bid_price = _micros(bid["price"])
+        if not 0 < bid_price < SCALE or bid_price % tick:
+            return {"status": "incomplete", "reason": "The displayed best bid was outside the valid price range or off tick."}
     cap = Fraction(sample["event"]["price"]) * SCALE + PRICE_ALLOWANCE
     remaining = _micros(budget)
     total_shares = gross = fees = 0
@@ -125,7 +131,13 @@ def _estimate(sample, budget, terms):
         total_shares += quantity
     if total_shares * SCALE < _micros(book["minimumOrderShares"]):
         return {"status": "skipped", "reason": "The displayed asks within the price and budget limits could not cover the minimum size."}
+    spread_pct = None
+    if bid is not None:
+        ask_price = _micros(book["bestAsks"][0]["price"])
+        hundredths = ((ask_price - bid_price) * 10_000 + ask_price // 2) // ask_price
+        spread_pct = f"{hundredths // 100}.{hundredths % 100:02d}"
     return {"status": "estimated", "shares": str(total_shares), "gross": _units(gross),
+            "spreadPercentOfAsk": spread_pct,
             "feeEstimate": _units(fees), "unspent": _units(remaining),
             "reason": "Displayed capacity across the retained asks, assuming whole shares and no rebates."}
 
@@ -142,6 +154,7 @@ def market_terms(event):
 def capacity_policy(budget):
     return {"budget": budget, "asset": "pUSD", "delaySeconds": DELAY_SECONDS,
             "maxReceiptMs": MAX_RECEIPT_MS, "maxSignalAgeMs": MAX_SIGNAL_AGE_MS,
+            "bookSourceAfterDelay": True,
             "maxPriceIncrease": _units(PRICE_ALLOWANCE), "maxLevels": MAX_LEVELS, "enabledTakerDelayMs": TAKER_DELAY_MS,
             "feeQuantum": _units(FEE_QUANTUM), "feeRounding": "up per ask level, sub-minimum zero",
             "minimumNotional": None}

@@ -29,6 +29,32 @@ class StudyTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), data)
             self.assertEqual(sample.call_count, 4)
 
+    def test_later_activity_is_paired_without_backfilling_a_decision(self):
+        wallet = "0x" + "aa" * 20
+        trials = [{"status": "waiting", "windowStartSeconds": n, "windowEndSeconds": n + 1}
+                  for n in (100, 110, 120, 130)]
+        reads = [([{"shares": "5"}], {"complete": False}, 201000),
+                 ([], {"complete": True}, 202000), ([], {"complete": False}, 203000), TimeoutError()]
+        with (tempfile.TemporaryDirectory() as tmp,
+              patch("apps.server.study.sample_once", side_effect=[*trials, TimeoutError()]),
+              patch("apps.server.study.time.sleep") as wait,
+              patch("apps.server.study.read_buy_page", side_effect=reads) as read):
+            path = Path(tmp) / "paired.jsonl"
+            summary = record_study(path, wallet, "10", 2, 5, recheck_after=30)
+            wait.assert_called_once_with(30)
+            self.assertEqual([c.args for c in read.call_args_list],
+                             [(wallet, n, n + 1) for n in (100, 110, 120, 130)])
+            self.assertEqual(summary["outcomes"], {"waiting": 4, "unavailable": 1})
+            self.assertEqual(summary["waitingWindowsWithLaterBuy"], 1)
+            self.assertEqual(summary["waitingWindowsCompared"], 2)
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            self.assertEqual(records[0]["recheckAfterSeriesSeconds"], 30)
+            rechecks = records[-6:-1]
+            self.assertEqual([r["type"] for r in rechecks], ["activityRecheck"] * 5)
+            self.assertEqual(rechecks[0]["visibleBuys"], [{"shares": "5"}])
+            self.assertIn("reason", rechecks[-1])
+            self.assertIn("reason", rechecks[-2])
+
     def test_interrupted_series_retains_attempt_and_omits_completion(self):
         with tempfile.TemporaryDirectory() as tmp, patch("apps.server.study.sample_once", side_effect=KeyboardInterrupt):
             path = Path(tmp) / "study.jsonl"

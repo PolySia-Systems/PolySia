@@ -21,6 +21,7 @@ interface Receipt {
     shares?: string
     gross?: string
     feeEstimate?: string
+    spreadPercentOfAsk?: string | null
     unspent?: string
     maxPriceIncrease: string
     maxLevels: number
@@ -29,7 +30,15 @@ interface Receipt {
   activityReceivedMs?: number
   bookRequestedMs?: number
   bookReceivedMs?: number
-  event?: { eventTimeSeconds: number; price: string; shares: string; fillId: null }
+  event?: {
+    eventTimeSeconds: number
+    price: string
+    shares: string
+    fillId: null
+    marketTitle?: string
+    outcomeLabel?: string
+    tokenId?: string
+  }
   book?: {
     sourceTimeMs: number
     askLevelCount: number
@@ -107,7 +116,14 @@ export function PublicObservation({ address }: { address: string }) {
       {receipt && (
         <div className="observation-result" aria-live="polite">
           <h3>{receipt.capacity ? capacityOutcomes[receipt.capacity.status] : outcomes[receipt.status]}</h3>
-          <p>{receipt.reason}</p>
+          {(!receipt.capacity || receipt.status !== 'observed') && <p>{receipt.reason}</p>}
+          {receipt.event && (
+            <div>
+              {receipt.event.marketTitle && <p><b>{receipt.event.marketTitle}</b></p>}
+              <p><b>Wallet BUY</b> · {receipt.event.shares} shares
+                {receipt.event.outcomeLabel && <> on <b>{receipt.event.outcomeLabel}</b></>} at {receipt.event.price} pUSD per share.</p>
+            </div>
+          )}
           {!receipt.capacity && receipt.researchBudget && (
             <p className="workspace-note">Budget for this window · {receipt.researchBudget} pUSD</p>
           )}
@@ -116,7 +132,7 @@ export function PublicObservation({ address }: { address: string }) {
               <h4>Research budget · {receipt.capacity.budget} pUSD</h4>
               {receipt.capacity.status === 'estimated' ? (
                 <>
-                  <strong>{receipt.capacity.shares} whole shares</strong>
+                  <strong>{receipt.capacity.shares} whole shares</strong> of displayed buy capacity
                   <p>{receipt.capacity.gross} pUSD in asks + {receipt.capacity.feeEstimate} pUSD
                     estimated taker fee · {receipt.capacity.unspent} pUSD unspent.</p>
                   <p className="workspace-note">Up to {receipt.capacity.maxLevels} ask levels,
@@ -133,9 +149,10 @@ export function PublicObservation({ address }: { address: string }) {
                 : receipt.participant.reason}
             </p>
           )}
-          {receipt.book?.spreadPerShare != null && receipt.book.bestBid && (
+          {receipt.capacity?.status === 'estimated' && receipt.book?.spreadPerShare != null && receipt.book.bestBid && (
             <p>Bid–ask spread <b>{receipt.book.spreadPerShare} pUSD per share</b> · best
-              bid {receipt.book.bestBid.price} for {receipt.book.bestBid.shares} shares.</p>
+              bid {receipt.book.bestBid.price} for {receipt.book.bestBid.shares} shares.
+              {receipt.capacity.spreadPercentOfAsk != null && ` The spread is ${receipt.capacity.spreadPercentOfAsk}% of the best ask.`}</p>
           )}
           {receipt.book?.bidLevelCount === 0 && <p>No bids were displayed for an exit.</p>}
           <details className="observation-evidence">
@@ -165,10 +182,12 @@ export function PublicObservation({ address }: { address: string }) {
                 <div>
                   <dt>Provider BUY time (UTC)</dt>
                   <dd>
-                    {clock(receipt.event.eventTimeSeconds * 1000)} · {receipt.event.shares} shares at{' '}
-                    {receipt.event.price}
+                    {clock(receipt.event.eventTimeSeconds * 1000)}
                   </dd>
                 </div>
+              )}
+              {receipt.event?.tokenId && (
+                <div><dt>Outcome token</dt><dd>{receipt.event.tokenId}</dd></div>
               )}
               {receipt.activityReceivedMs != null && (
                 <div>

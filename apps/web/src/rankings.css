@@ -76,8 +76,6 @@
 }
 .observation-result {
   margin-top: 1rem;
-}
-.observation-result dd {
   overflow-wrap: anywhere;
 }
 .observation-form {

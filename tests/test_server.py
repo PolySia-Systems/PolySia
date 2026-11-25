@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal
 from pathlib import Path
 from threading import Event, Thread
 
@@ -326,7 +327,10 @@ class WorkspaceHttpTest(unittest.TestCase):
         store.create_run("mira", "20", "5")  # Damage is in an older run.
         destination = self.root / "recovered.db"
         altered_fill = {**old["events"][0], "quantity": 19.9}
+        # Add exactly one dollar to each total; their difference still reconciles.
+        inflated_basis = str(Decimal(old["cost_basis"]) + 1)
         for corrupted in ("{", "{}", json.dumps({**old, "fees": "0.00"}),
+                          json.dumps({**old, "cost_basis": inflated_basis, "realized_pnl": "1.00"}),
                           json.dumps({**old, "remaining_steps": 0}),
                           json.dumps({**old, "marked_value": "NaN"}),
                           json.dumps({**old, "events": [altered_fill]})):
