@@ -3,6 +3,7 @@ import { ArrowRight, ArrowUpRight, RefreshCw, Search } from 'lucide-react'
 import { api, type Account, errorMessage } from './api'
 import { PositionSnapshot } from './Workspace'
 import { PublicObservation } from './PublicObservation'
+import { PublicHistory } from './PublicHistory'
 import './rankings.css'
 
 interface PublicTrader {
@@ -220,6 +221,7 @@ function Profile({ trader, close }: { trader: PublicTrader; close: () => void })
         Reported volume: {summaryNumber.format(Number(trader.volumeShares))} shares · P/L:{' '}
         {summaryNumber.format(Number(trader.pnl))} USDC
       </p>
+      <PublicHistory key={trader.address} address={trader.address} />
       {snapshot && (
         <PositionSnapshot account={snapshot} heading="Open positions">
           <a className="btn primary" href={'#/accounts/' + trader.address}>

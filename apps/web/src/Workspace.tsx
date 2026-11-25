@@ -153,35 +153,41 @@ export function Accounts({
   )
 }
 
-function PositionRows({positions, caption}: {positions: Account['positions']; caption: string}) {
+function PositionRows({
+  positions,
+  caption,
+}: {
+  positions: Account['positions']
+  caption: string
+}) {
   return (
     <div className="positions-table">
-          <table>
-            <caption>{caption}</caption>
-            <thead>
-              <tr>
-                <th>Market</th>
-                <th>Outcome</th>
-                <th>Shares</th>
-                <th>State</th>
-              </tr>
-            </thead>
-            <tbody>
-              {positions.map((position, i) => (
-                <tr key={i}>
-                  <td>{position.market}</td>
-                  <td>{position.outcome}</td>
-                  <td>{position.shares}</td>
-                  <td>
-                    {({ OPEN: 'Open', REDEEMABLE: 'Redeemable' } as Record<string, string>)[
-                      position.status ?? ''
-                    ] ?? 'Unknown'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      <table>
+        <caption>{caption}</caption>
+        <thead>
+          <tr>
+            <th>Market</th>
+            <th>Outcome</th>
+            <th>Shares</th>
+            <th>State</th>
+          </tr>
+        </thead>
+        <tbody>
+          {positions.map((position, i) => (
+            <tr key={i}>
+              <td>{position.market}</td>
+              <td>{position.outcome}</td>
+              <td>{position.shares}</td>
+              <td>
+                {({ OPEN: 'Open', REDEEMABLE: 'Redeemable' } as Record<string, string>)[
+                  position.status ?? ''
+                ] ?? 'Unknown'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }
 
@@ -231,11 +237,24 @@ export function PositionSnapshot({
       {account.status === 'unavailable' && account.lastSuccessful && (
         <details className="more-details" key={account.address}>
           <summary>Last successful snapshot (historical)</summary>
-          <p>Retrieved {timestamp(account.lastSuccessful.observedAt)} from {account.lastSuccessful.source}.</p>
-          <p>{account.lastSuccessful.complete ? 'Complete provider page at retrieval.' : 'First page only at retrieval.'} Current holdings remain unknown.</p>
+          <p>
+            Retrieved {timestamp(account.lastSuccessful.observedAt)} from{' '}
+            {account.lastSuccessful.source}.
+          </p>
+          <p>
+            {account.lastSuccessful.complete
+              ? 'Complete provider page at retrieval.'
+              : 'First page only at retrieval.'}{' '}
+            Current holdings remain unknown.
+          </p>
           {account.lastSuccessful.positions.length ? (
-            <PositionRows positions={account.lastSuccessful.positions} caption="Previously reported positions" />
-          ) : <p>The provider returned no position rows in that snapshot.</p>}
+            <PositionRows
+              positions={account.lastSuccessful.positions}
+              caption="Previously reported positions"
+            />
+          ) : (
+            <p>The provider returned no position rows in that snapshot.</p>
+          )}
         </details>
       )}
       <p className="workspace-note">

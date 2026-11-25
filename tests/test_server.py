@@ -159,6 +159,46 @@ class WorkspaceHttpTest(unittest.TestCase):
         self.assertIsNone(self.request("GET", "/api/v1/workspace")[1]["account"])
         self.assertEqual([ADDRESS.lower()] * 2, calls)
 
+    def test_watch_preserves_only_the_latest_success_for_the_same_wallet(self):
+        path = "/api/v1/account"
+        other = "0x" + "22" * 20
+        latest = {**public_snapshot(ADDRESS.lower()), "complete": False,
+                  "observedAt": "2026-11-03T12:23:45Z", "nextCursor": "more"}
+
+        def update(address, revision):
+            status, record = self.request("POST", path, {"address": address, "revision": revision})
+            self.assertEqual(status, 200)
+            return record
+
+        update(ADDRESS, 0)
+        self.server.inspect_account = lambda address: latest
+        update(ADDRESS, 1)
+
+        def unavailable(address):
+            return {**public_snapshot(address), "status": "unavailable",
+                    "observedAt": None, "positions": [], "complete": False}
+
+        self.server.inspect_account = unavailable
+        failed = update(ADDRESS, 2)
+        retained = {key: latest[key] for key in ("source", "observedAt", "positions", "complete")}
+        self.assertEqual(failed["positions"], [])
+        self.assertEqual(failed["lastSuccessful"], retained)
+        self.shutdown()
+        self.launch()
+        self.assertEqual(self.request("GET", "/api/v1/workspace")[1]["account"], failed)
+        self.server.inspect_account = unavailable
+        self.assertEqual(update(ADDRESS, 3)["lastSuccessful"], retained)
+        # Stateless profile reads and other watches cannot reveal the retained rows.
+        self.assertNotIn("lastSuccessful", self.request("GET", "/api/v1/public/traders/" + ADDRESS)[1])
+        self.assertNotIn("lastSuccessful", update(other, 4))
+        self.assertNotIn("lastSuccessful", update(ADDRESS, 5))
+        self.server.inspect_account = public_snapshot
+        self.assertNotIn("lastSuccessful", update(ADDRESS, 6))
+        self.server.inspect_account = unavailable
+        self.assertIn("lastSuccessful", update(ADDRESS, 7))
+        self.assertEqual(self.request("DELETE", path, {"revision": 8})[0], 200)
+        self.assertNotIn("lastSuccessful", update(ADDRESS, 9))
+
     def test_stale_tab_cannot_replace_or_forget_a_different_account(self):
         path = "/api/v1/account"
         revision = self.request("GET", "/api/v1/workspace")[1]["accountRevision"]

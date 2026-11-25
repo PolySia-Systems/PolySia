@@ -80,10 +80,50 @@
 .observation-result dd {
   overflow-wrap: anywhere;
 }
-.public-compare-tools { display: flex; align-items: center; gap: .75rem; color: var(--muted); }
-.public-list input[type=checkbox] { width: 1.1rem; height: 1.1rem; accent-color: var(--accent); }
-.public-list td:nth-child(3), .public-list th:nth-child(3) { text-align: start; }
-.public-compare-card { min-width: 0; overflow-wrap: anywhere; }
-.public-compare-card code { display: block; margin-block: .3rem .7rem; color: var(--muted); font-size: .82rem; }
-.public-overlap { gap: .5rem; }
-.public-overlap ul { margin: 0; }
+.public-compare-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--muted);
+}
+.public-list input[type='checkbox'] {
+  width: 1.1rem;
+  height: 1.1rem;
+  accent-color: var(--accent);
+}
+.public-list td:nth-child(3),
+.public-list th:nth-child(3) {
+  text-align: start;
+}
+.public-compare-card {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.public-compare-card code {
+  display: block;
+  margin-block: 0.3rem 0.7rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.public-overlap {
+  gap: 0.5rem;
+}
+.public-overlap ul {
+  margin: 0;
+}
+
+.public-pnl-plot {
+  margin: 1rem 0;
+}
+.public-pnl-plot figcaption {
+  font-weight: 600;
+}
+.public-pnl-plot svg {
+  display: block;
+  width: 100%;
+  max-width: 42rem;
+  color: var(--accent);
+}
+.public-pnl-plot small {
+  color: var(--muted);
+}

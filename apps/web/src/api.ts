@@ -11,7 +11,13 @@ export interface Account {
   observedAt: string | null
   checkedAt: string
   message: string
-  positions: { conditionId?: string; market: string; outcome: string; shares: string; status?: 'OPEN' | 'REDEEMABLE' }[]
+  positions: {
+    conditionId?: string
+    market: string
+    outcome: string
+    shares: string
+    status?: 'OPEN' | 'REDEEMABLE'
+  }[]
   complete: boolean
   nextCursor: string | null
   lastSuccessful?: Pick<Account, 'source' | 'observedAt' | 'positions' | 'complete'>

@@ -298,6 +298,19 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
             "positions": rows,
         })
 
+    history_reads = []
+    history_points = [
+        {"time": 1795046400, "value": "100.000000001"},
+        {"time": 1795132800, "value": None},
+        {"time": 1795219200, "value": "140.000000001"},
+    ]
+
+    def history(route: Route):
+        history_reads.append(route.request.url)
+        route.fulfill(json={"status": "available", "checkedAt": stamp, "points": history_points,
+                            "address": wallet, "sourceGrid": "1d", "message": "Polymarket cumulative realized P/L."})
+
+    page.route("**/api/v1/public/traders/*/history", history)
     observation_calls = []
     sample_time = 1_795_600_000
     receipt = {
@@ -382,6 +395,16 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     expect(positions.get_by_role("cell", name="7.125")).to_be_visible()
     expect(page.get_by_role("columnheader", name="Volume (shares)")).to_have_count(0)
     expect(page.get_by_text(re.compile(r"Reported volume.*19,348.35 shares"))).to_be_visible()
+    assert not history_reads
+    page.get_by_role("button", name="Load P/L history").click()
+    expect(page.get_by_role("img", name="Cumulative observations.", exact=False)).to_be_visible()
+    assert len(history_reads) == 1
+    expect(page.locator("figure.public-pnl-plot line")).to_have_count(0)
+    page.get_by_text("View 3 daily-grid samples").click()
+    table = page.get_by_role("table", name="Polymarket realized P/L samples")
+    for value in ("100.000000001", "Unavailable", "140.000000001"):
+        expect(table.get_by_role("cell", name=value, exact=True)).to_be_visible()
+    check_width(page)
     capture(page, output, "public-profile-mobile-fixture")
     page.get_by_role("button", name="Back to rankings", exact=True).click()
     expect(lumen).to_be_focused()
@@ -484,6 +507,16 @@ def public_artifact_smoke(browser: Browser, cwd: Path, output: Path | None):
         profile = reply.value.json()
         assert profile["status"] == "available" and profile["address"] == first["address"], profile["message"]
         expect(page.get_by_role("heading", name="Open positions")).to_be_visible()
+        with page.expect_response("**/api/v1/public/traders/*/history") as history_response:
+            page.get_by_role("button", name="Load P/L history").click()
+        history = history_response.value.json()
+        assert history["status"] == "available" and history["address"] == first["address"], history["message"]
+        if history["points"]:
+            page.get_by_text(f"View {len(history['points'])} daily-grid samples").click()
+            expect(page.get_by_role("table", name="Polymarket realized P/L samples")).to_be_visible()
+        else:
+            expect(page.get_by_text("Polymarket returned no samples for this week.")).to_be_visible()
+        print(f"Public history returned {len(history['points'])} cumulative observations.")
         capture(page, output, "public-profile-provider")
         page.get_by_role("link", name="Watch this address").click()
         expect(page.get_by_label("Public wallet address")).to_have_value(first["address"])
