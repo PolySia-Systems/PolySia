@@ -1,9 +1,9 @@
 POLYSIA MASTER PLAN
 Standalone product, engineering, validation, and operating baseline
 
-Version: 1.9
+Version: 1.10
 Prepared: 25 November 2026
-Revised: 25 November 2026
+Revised: 26 November 2026
 Language: English
 Status: Ready to guide implementation; product delivery is not claimed.
 Format: One portable UTF-8 text file.
@@ -227,6 +227,7 @@ A clean repository, shared commands, initial contracts, current provider capabil
 
 Stage B: Complete shadow journey.
 One account, one leader, real observations, simulated execution, portfolio explanation, and stop/resume behavior.
+Deliver a user-stepped, BUY-only public portfolio first. Keep unobserved intervals, model assumptions, missing marks and open exposure visible. Evidence for executable prices, follower fees and order minimums gates execution-quality claims. Independent portfolio, recovery and usability work can proceed with controlled inputs.
 
 Stage C: Bounded live proof.
 An authorized test account executes a limited real copy through the approved runner, reconciles it, and demonstrates safe interruption and recovery.
@@ -2054,6 +2055,9 @@ Simulate execution using contemporaneous data.
 Display real/simulated distinctions and incomplete results.
 
 Implement pause, stop, and state-safe restart.
+
+Accept incremental workflows when a user can reach them from discovery, complete a decision, inspect durable effects and recover the same state. A bounded series may run while the operator keeps the portfolio open. Save the receipt, source identity and policy for each completed window. Model size and fee assumptions explicitly. Track exits, marks and continuous coverage separately as they become supported.
+
 Exit: the complete shadow journey passes its critical acceptance scenarios.
 
 Milestone 3: Bounded live execution.
@@ -2364,7 +2368,7 @@ Relevant budget/authority references, never secrets.
 
 Base revision and links to the accepted design, interface, naming, and acceptance authorities relevant to the next task.
 
-At this baseline, the next action is Milestone 0. Do not assume any prior milestone is complete.
+Use the current README continuation point and accepted main branch to resume work. Each milestone exit requires evidence for its own claims.
 
 22.2 Task template
 
@@ -2612,4 +2616,4 @@ Cloud access, tools, credentials, and task state must be verified in the selecte
 https://scikit-learn.org/stable/modules/calibration.html
 Supports checking probabilistic estimates against observed outcomes. Methodology reference only; no library adoption or prediction subsystem is required.
 
-END OF BASELINE VERSION 1.9
+END OF BASELINE VERSION 1.10
