@@ -27,6 +27,8 @@ def main(*, artifact_sha256=None):
     study.add_argument("--budget", required=True, metavar="pUSD", help="Unfunded budget for each window")
     study.add_argument("--windows", required=True, type=int, metavar="1..10")
     study.add_argument("--seconds", type=int, default=5, metavar="1..30")
+    study.add_argument("--retry-empty", action="store_true",
+                       help="In a two-second window, read again if the first complete page shows no ordinary BUY")
     study.add_argument("--recheck-after", type=int, default=0, metavar="0..300",
                        help="After the series, wait this many seconds and reread each activity page (0 disables)")
     study.add_argument("--to", required=True, type=Path, metavar="NEW_JSONL")
@@ -40,7 +42,7 @@ def main(*, artifact_sha256=None):
     try:
         if args.command == "study":
             summary = record_study(args.to, args.wallet, args.budget, args.seconds, args.windows,
-                                   recheck_after=args.recheck_after)
+                                   recheck_after=args.recheck_after, retry_empty=args.retry_empty)
             print(json.dumps(summary))
             return
         if args.command in ("backup", "restore"):

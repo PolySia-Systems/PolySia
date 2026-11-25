@@ -36,13 +36,13 @@ class LocalServer(ThreadingHTTPServer):
         self.inspect_account = inspect_account or provider.inspect_account
         super().__init__(("127.0.0.1", port), Handler)
 
-    def sample_buy(self, address, budget=None):
+    def sample_buy(self, address, budget=None, *, retry_empty=False):
         # Run the same CLI as an operator. Its process deadline also bounds slow
         # provider reads that can outlast an individual socket timeout.
         if not self.observation_lock.acquire(blocking=False):
             raise RequestError(409, "One public observation is already in progress. Try again after it finishes.")
         try:
-            return observe.sample_once(address, 2 if budget is not None else 5, budget)
+            return observe.sample_once(address, 2 if budget is not None else 5, budget, retry_empty=retry_empty)
         except TimeoutError as exc:
             raise RequestError(504, str(exc)) from None
         except OSError:
@@ -161,14 +161,23 @@ class Handler(BaseHTTPRequestHandler):
         if observation:
             if self.command != "POST":
                 raise RequestError(405, "Start an observation with an explicit request.")
-            options = self.body((), optional=("budget",))
+            options = self.body((), optional=("budget", "retryEmpty"))
             budget = public_depth.budget_amount(options["budget"]) if "budget" in options else None
+            retry_empty = options.get("retryEmpty", False)
+            if type(retry_empty) is not bool or (retry_empty and budget is None):
+                raise ValueError("Use a boolean for retryEmpty and include a research budget to enable it.")
             self.operation = "public-observation"
-            return self.server.sample_buy(provider.validate_address(observation[1]), budget)
+            return self.server.sample_buy(provider.validate_address(observation[1]), budget, retry_empty=retry_empty)
         history = re.fullmatch(API + r"/public/traders/(0x[0-9a-fA-F]{40})/history", path)
         if history and self.command == "GET":
             self.operation = "public-history"
             return public_history.pnl_history(history[1])
+        valuation = re.fullmatch(API + r"/public/traders/(0x[0-9a-fA-F]{40})/value", path)
+        if valuation and self.command == "GET":
+            if urlsplit(self.path).query:
+                raise ValueError("Holdings value covers the full trading wallet.")
+            self.operation = "public-holdings-value"
+            return provider.holdings_value(valuation[1])
         if path.startswith(API + "/public/traders/") and self.command == "GET":
             address = provider.validate_address(path.removeprefix(API + "/public/traders/"))
             self.operation = "public-trader"

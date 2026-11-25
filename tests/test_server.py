@@ -128,9 +128,15 @@ class WorkspaceHttpTest(unittest.TestCase):
         with patch("apps.server.observe.subprocess.run", return_value=subprocess.CompletedProcess([], 0, b"{}")) as probe:
             for value in ("0", "1000.01", "1e2", "1.001", None, True, 5):
                 self.assertEqual(self.request("POST", endpoint, {"budget": value})[0], 400)
+            for options in ({"retryEmpty": True}, {"budget": "10", "retryEmpty": 1},
+                            {"budget": "10", "retryEmpty": "true"}, {"budget": "10", "retryEmpty": None}):
+                self.assertEqual(self.request("POST", endpoint, options)[0], 400)
             probe.assert_not_called()
             self.assertEqual(self.request("POST", endpoint, {"budget": "12.5"})[0], 200)
             self.assertEqual(probe.call_args.args[0][-4:], ["--seconds", "2", "--budget", "12.50"])
+            self.assertEqual(self.request("POST", endpoint, {"budget": "10", "retryEmpty": True})[0], 200)
+            self.assertIn("--retry-empty", probe.call_args.args[0])
+        self.assertIsNone(self.request("GET", "/api/v1/workspace")[1]["account"])
         self.assertIsNone(self.request("GET", "/api/v1/workspace")[1]["run"])
 
     def test_public_profile_is_stateless_and_rejects_invalid_wallets(self):
@@ -139,6 +145,20 @@ class WorkspaceHttpTest(unittest.TestCase):
         self.assertIsNone(self.request("GET", "/api/v1/workspace")[1]["account"])
         self.assertEqual(self.request("GET", "/api/v1/public/traders/unknown")[0], 400)
         self.assertEqual(self.request("GET", "/api/v1/public/leaders?period=unknown")[0], 400)
+
+    def test_public_holdings_value_preserves_watch_and_covers_whole_wallet(self):
+        saved = self.request("POST", "/api/v1/account", {"address": ADDRESS, "revision": 0})
+        self.assertEqual(saved[0], 200)
+        before = self.request("GET", "/api/v1/workspace")
+        trader = "0x" + "cd" * 20
+        route = f"/api/v1/public/traders/{trader}/value"
+        with patch("apps.server.provider.read_public_json", return_value={"data": {"proxy_wallet": trader, "value": 0}}) as read:
+            self.assertEqual(self.request("GET", route + "?condition=some-market")[0], 400)
+            read.assert_not_called()
+            status, result = self.request("GET", route)
+            self.assertEqual((status, result["address"], result["value"]), (200, trader, "0"))
+            read.assert_called_once()
+        self.assertEqual(self.request("GET", "/api/v1/workspace"), before)
 
     def test_watch_refresh_failure_and_disconnect(self):
         calls = []

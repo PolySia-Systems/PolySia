@@ -90,13 +90,15 @@ def verify():
         launcher = installed["launcher"]
         study_path = cwd / "public-study.jsonl"
         offline = {**env, "https_proxy": "http://127.0.0.1:1", "no_proxy": "127.0.0.1,localhost"}
-        study_command = [launcher, "study", "0x" + "1" * 40, "--budget", "10", "--seconds", "1",
-                         "--windows", "1", "--recheck-after", "1", "--to", str(study_path)]
+        study_command = [launcher, "study", "0x" + "1" * 40, "--budget", "10", "--seconds", "2",
+                         "--windows", "1", "--retry-empty", "--recheck-after", "1", "--to", str(study_path)]
         study = json.loads(subprocess.check_output(study_command, cwd=cwd, env=offline, timeout=35))
         assert study["outcomes"] == {"unavailable": 1}
         rows = [json.loads(line) for line in study_path.read_text().splitlines()]
         assert [r["type"] for r in rows] == ["plan", "attempt", "window", "activityRecheck", "summary"]
-        assert "reason" in rows[3] and study["waitingWindowsCompared"] == 0
+        assert "reason" in rows[3] and study["initiallyEmptyWindowsCompared"] == 0
+        assert rows[0]["schemaVersion"] == 3 and study["retriesAttempted"] == 0
+        assert len(rows[2]["receipt"]["activityReads"]) == 1
         assert rows[2]["receipt"]["researchBudget"] == "10.00"
         backup, restore = cwd / "backup.db", cwd / "restored.db"
         subprocess.run([launcher, "backup", "--to", backup], cwd=cwd, env=env, check=True)

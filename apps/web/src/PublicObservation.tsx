@@ -2,8 +2,21 @@ import { useState, type FormEvent } from 'react'
 import { Download, ScanLine } from 'lucide-react'
 import { api, errorMessage } from './api'
 
+interface ActivityCoverage {
+  rowsReturned: number
+  ordinaryBuyRows: number
+  complete: boolean
+}
+
+interface ActivityRead {
+  requestedMs: number
+  receivedMs?: number
+  activityCoverage?: ActivityCoverage
+  reason?: string
+}
+
 interface Receipt {
-  schemaVersion: 1 | 2
+  schemaVersion: 1 | 2 | 3
   wallet: string
   status: 'waiting' | 'incomplete' | 'unavailable' | 'observed'
   windowStartSeconds: number
@@ -12,7 +25,8 @@ interface Receipt {
   researchBudget?: string
   evidenceCheckedMs?: number
   participant?:
-    | { status: 'matched'; role: 'maker' | 'taker'; logIndex: number; blockNumber: number }
+    | { status: 'matched'; role: 'maker' | 'taker'; logIndex: number; blockNumber: number;
+        grossCollateral?: string; chargedFee?: string; totalCollateral?: string }
     | { status: 'unresolved' | 'unavailable'; reason: string }
   capacity?: {
     status: 'estimated' | 'skipped' | 'incomplete'
@@ -26,7 +40,9 @@ interface Receipt {
     maxPriceIncrease: string
     maxLevels: number
   }
-  activityCoverage?: { rowsReturned: number; ordinaryBuyRows: number; complete: boolean }
+  activityCoverage?: ActivityCoverage
+  activityReads?: ActivityRead[]
+  detectionRead?: 1 | 2
   activityReceivedMs?: number
   bookRequestedMs?: number
   bookReceivedMs?: number
@@ -70,16 +86,23 @@ function clock(ms: number) {
 
 export function PublicObservation({ address }: { address: string }) {
   const [budget, setBudget] = useState('10')
+  const [retryEmpty, setRetryEmpty] = useState(false)
   const [busy, setBusy] = useState(false)
   const [receipt, setReceipt] = useState<Receipt | null>(null)
   const [error, setError] = useState('')
+  const showReason = receipt && (!receipt.capacity || (
+    receipt.status !== 'observed' && receipt.capacity.reason !== receipt.reason
+  )) && !receipt.activityReads?.some(read => read.reason === receipt.reason)
   async function observe(event: FormEvent) {
     event.preventDefault()
     setError('')
     setReceipt(null)
     setBusy(true)
     try {
-      setReceipt(await api<Receipt>('public/traders/' + address + '/observe', 'POST', { budget }))
+      const options = retryEmpty ? { budget, retryEmpty: true } : { budget }
+      const result = await api<Receipt>('public/traders/' + address + '/observe', 'POST', options)
+      if (result.wallet !== address) throw new Error('The observation identified a different wallet.')
+      setReceipt(result)
     } catch (cause) {
       setError(errorMessage(cause))
     } finally {
@@ -94,8 +117,9 @@ export function PublicObservation({ address }: { address: string }) {
         <h2>Public BUY observation</h2>
       </header>
       <p>
-        Sample the next two seconds for this wallet. For a visible BUY, check the Polygon receipt
-        and market fees, then sample the asks after two seconds plus any reported taker delay.
+        Look for BUYs this wallet makes in the next two seconds. If a BUY arrives in time, PolySia
+        checks its Polygon receipt and market fees, then samples the asks after two seconds plus
+        any reported taker delay.
       </p>
       <form className="observation-form" onSubmit={observe}>
         <label className="field">
@@ -103,6 +127,17 @@ export function PublicObservation({ address }: { address: string }) {
           <input type="number" inputMode="decimal" required min="1" max="1000" step=".01"
             value={budget} disabled={busy} onChange={e => setBudget(e.target.value)} />
         </label>
+        <div className="observation-retry">
+          <label>
+            <input type="checkbox" checked={retryEmpty} disabled={busy}
+              onChange={e => setRetryEmpty(e.target.checked)} aria-describedby="retry-window-timing" />
+            Check again if the first read is empty
+          </label>
+          <small id="retry-window-timing" className="muted">
+            If the complete first page has no ordinary BUY, try the same window three seconds
+            after it closes while a timely book check is still possible.
+          </small>
+        </div>
         <button className="btn" disabled={busy}>Observe next BUY</button>
       </form>
       <p className="workspace-note" role="status">
@@ -116,13 +151,45 @@ export function PublicObservation({ address }: { address: string }) {
       {receipt && (
         <div className="observation-result" aria-live="polite">
           <h3>{receipt.capacity ? capacityOutcomes[receipt.capacity.status] : outcomes[receipt.status]}</h3>
-          {(!receipt.capacity || receipt.status !== 'observed') && <p>{receipt.reason}</p>}
+          {showReason && <p>{receipt.reason}</p>}
+          {receipt.activityReads && receipt.activityReads.length > 0 && (
+            <section className="activity-reads" aria-label="Activity reads">
+              <h4>{receipt.detectionRead
+                ? `BUY first visible on the ${receipt.detectionRead === 1 ? 'first' : 'second'} read`
+                : 'Activity reads'}</h4>
+              <ol>
+                {receipt.activityReads.map((read, i) => (
+                  <li key={i}>
+                    <b>{i === 0 ? 'First read' : 'Second read'}</b>
+                    {read.activityCoverage && (
+                      <span>
+                        {read.activityCoverage.ordinaryBuyRows} ordinary BUY{' '}
+                        {read.activityCoverage.ordinaryBuyRows === 1 ? 'row' : 'rows'} among{' '}
+                        {read.activityCoverage.rowsReturned} returned ·{' '}
+                        {read.activityCoverage.complete ? 'Complete page' : 'First page only'}
+                      </span>
+                    )}
+                    {read.reason && <span>{read.reason}</span>}
+                    <small className="read-times muted">
+                      <span>Requested {clock(read.requestedMs)} UTC</span>
+                      {read.receivedMs != null && <span>Received {clock(read.receivedMs)} UTC</span>}
+                    </small>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          )}
           {receipt.event && (
             <div>
               {receipt.event.marketTitle && <p><b>{receipt.event.marketTitle}</b></p>}
               <p><b>Wallet BUY</b> · {receipt.event.shares} shares
                 {receipt.event.outcomeLabel && <> on <b>{receipt.event.outcomeLabel}</b></>} at {receipt.event.price} pUSD per share.</p>
             </div>
+          )}
+          {receipt.participant?.status === 'matched' && receipt.participant.grossCollateral != null &&
+            receipt.participant.chargedFee != null && receipt.participant.totalCollateral != null && (
+            <p><b>Wallet spend</b> · {receipt.participant.grossCollateral} pUSD in shares +{' '}
+              {receipt.participant.chargedFee} pUSD charged fee = {receipt.participant.totalCollateral} pUSD total.</p>
           )}
           {!receipt.capacity && receipt.researchBudget && (
             <p className="workspace-note">Budget for this window · {receipt.researchBudget} pUSD</p>
@@ -166,14 +233,14 @@ export function PublicObservation({ address }: { address: string }) {
                   {clock((receipt.windowEndSeconds + 1) * 1000)}
                 </dd>
               </div>
-              {receipt.activityCoverage && (
+              {!receipt.activityReads && receipt.activityCoverage && (
                 <div>
                   <dt>Public activity coverage</dt>
                   <dd>
                     {receipt.activityCoverage.ordinaryBuyRows} ordinary BUY rows among{' '}
                     {receipt.activityCoverage.rowsReturned} returned ·{' '}
                     {receipt.activityCoverage.complete
-                      ? 'Complete window response'
+                      ? 'Complete page'
                       : 'First page only (more rows exist)'}
                   </dd>
                 </div>
@@ -189,7 +256,7 @@ export function PublicObservation({ address }: { address: string }) {
               {receipt.event?.tokenId && (
                 <div><dt>Outcome token</dt><dd>{receipt.event.tokenId}</dd></div>
               )}
-              {receipt.activityReceivedMs != null && (
+              {!receipt.activityReads && receipt.activityReceivedMs != null && (
                 <div>
                   <dt>Activity received (UTC)</dt>
                   <dd>{clock(receipt.activityReceivedMs)}</dd>

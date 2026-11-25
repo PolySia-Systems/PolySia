@@ -3,11 +3,12 @@
 import json
 import re
 import time
+from decimal import InvalidOperation
 from fractions import Fraction
 from http.client import HTTPException
 from urllib.request import Request
 
-from .provider import read_json_response
+from .provider import decimal_value, read_json_response, units_from_micros
 
 RPC = "https://polygon-bor-rpc.publicnode.com"
 # Polygon CTF Exchange V2 deployments, keyed by address with their negative-risk flag.
@@ -15,6 +16,7 @@ EXCHANGES = {"0xe111180000d2663c0091e4f400237545b87b996b": False,
              "0xe2222d279d744050d28e00520010520000310f59": True}
 ORDER_FILLED = "0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee"
 ORDERS_MATCHED = "0x174b3811690657c217184f89418266767c87e4805d09680c39fc9c031c0cab7c"
+REPORTED_PRICE_SCALE = 10 ** 10
 
 
 def _hex(value, pattern):
@@ -44,6 +46,27 @@ def _receipt(tx):
     if results.keys() != {1, 2} or results[1] != "0x89":
         raise ValueError("Unexpected chain or response ID")
     return results[2]
+
+
+def _amount_match_basis(event, role, paid, shares, fee):
+    if not 0 < paid <= shares or Fraction(decimal_value(event["shares"])) * 1_000_000 != shares:
+        return None
+    reported = event.get("reportedCollateral")
+    if reported is not None and Fraction(decimal_value(reported)) * 1_000_000 != paid + fee:
+        return None
+    price = Fraction(decimal_value(event["price"]))
+    if not 0 < price <= 1:
+        return None
+    chain_price = Fraction(paid, shares)
+    if price == chain_price:
+        return "exact-price-and-shares"
+    if role == "taker" and reported is not None:
+        # Two paired taker settlements report gross plus the charged fee and a
+        # price rounded to ten decimals. Reject ties and off-grid prices.
+        scaled = price * REPORTED_PRICE_SCALE
+        if scaled.denominator == 1 and abs(scaled - chain_price * REPORTED_PRICE_SCALE) * 2 < 1:
+            return "fee-inclusive-collateral-and-rounded-price"
+    return None
 
 
 def _match(receipt, wallet, event):
@@ -86,9 +109,8 @@ def _match(receipt, wallet, event):
     if len(candidates) != 1:
         return {"status": "unresolved", "reason": "The receipt did not isolate one BUY order for this wallet and token."}
     index, exchange, order, taker, data, paid, shares, fee = candidates[0]
-    if (not shares or not paid or taker == owner or Fraction(event["shares"]) * 1_000_000 != shares
-            or Fraction(event["price"]) * shares != paid):
-        return {"status": "unresolved", "reason": "The participant amounts did not match the public BUY exactly."}
+    if taker == owner:
+        return {"status": "unresolved", "reason": "The participant was also recorded as its own counterparty."}
     role = "maker"
     counterparty = "0x" + taker[-40:]
     if counterparty == exchange:
@@ -100,15 +122,20 @@ def _match(receipt, wallet, event):
         role = "taker"
     elif counterparty in EXCHANGES:
         return {"status": "unresolved", "reason": "The counterparty was a different exchange contract."}
+    basis = _amount_match_basis(event, role, paid, shares, fee)
+    if not basis:
+        return {"status": "unresolved", "reason": "The participant amounts did not reconcile with the public BUY."}
+    amounts = ({"grossCollateral": units_from_micros(paid), "chargedFee": units_from_micros(fee),
+                "totalCollateral": units_from_micros(paid + fee)} if role == "taker" else {})
     return {"status": "matched", "chainId": 137, "blockNumber": block, "blockHash": block_hash,
             "transactionHash": tx, "exchange": exchange, "logIndex": index, "orderHash": order,
             "fillId": f"137:{tx}:{index}", "role": role, "sharesBaseUnits": str(shares),
-            "collateralBaseUnits": str(paid), "feeBaseUnits": str(fee)}
+            "collateralBaseUnits": str(paid), "feeBaseUnits": str(fee), "amountMatchBasis": basis, **amounts}
 
 
 def identify_buy(wallet, event):
     try:
         match = _match(_receipt(event["transactionHash"]), wallet, event)
-    except (OSError, HTTPException, KeyError, ValueError, RecursionError):
+    except (OSError, HTTPException, KeyError, ValueError, InvalidOperation, RecursionError):
         match = {"status": "unavailable", "reason": "The Polygon receipt was missing, unreachable or inconsistent."}
     return dict(match, source=RPC, checkedMs=time.time_ns() // 1_000_000)

@@ -177,8 +177,24 @@ def exercise(browser: Browser, origin: str, output: Path | None):
     page.get_by_role("button", name="Watch account", exact=True).click()
     expect(page.get_by_text("Current positions unknown", exact=True)).to_be_visible()
     expect(page.get_by_text("Public read only", exact=True)).to_be_visible()
+    # An old wallet's slow value read must never appear in a replacement watch.
+    delayed_value = []
+    page.route("**/api/v1/public/traders/*/value", lambda route: delayed_value.append(route))
+    holdings = page.get_by_role("region", name="Holdings value")
+    assert not delayed_value
+    with page.expect_request("**/api/v1/public/traders/*/value"):
+        holdings.get_by_role("button", name="Load holdings value").click()
+    wallet.fill("0x" + "2" * 40)
+    page.get_by_role("button", name="Replace watched address").click()
+    expect(holdings.get_by_role("button", name="Load holdings value")).to_be_enabled()
+    delayed_value[0].fulfill(json={"address": "0x" + "1" * 40, "status": "available", "value": "987.1254",
+                                   "unit": "USDC", "source": "Polymarket Data API v2", "message": "Old wallet.",
+                                   "checkedAt": "2026-11-25T12:00:00Z", "observedAt": "2026-11-25T12:00:00Z"})
+    expect(holdings.get_by_text("987.1254 USDC")).to_have_count(0)
+    expect(page.get_by_text("Current positions unknown", exact=True)).to_be_visible()
     page.get_by_role("button", name="Remove watch", exact=True).click()
     expect(page.get_by_role("heading", name="Account scope")).to_be_visible()
+    expect(holdings).to_have_count(0)
 
     page.get_by_role("link", name="Settings", exact=True).click()
     dark = page.get_by_role("button", name="Dark", exact=True)
@@ -341,6 +357,21 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
                             "address": wallet, "sourceGrid": "1d", "message": "Polymarket cumulative realized P/L."})
 
     page.route("**/api/v1/public/traders/*/history", history)
+    value_reads = []
+
+    def read_value(route: Route):
+        address = urlsplit(route.request.url).path.split("/")[-2]
+        assert address == wallet and route.request.method == "GET"
+        value_reads.append(address)
+        first = len(value_reads) == 1
+        route.fulfill(json={"address": wallet, "status": "available" if first else "unavailable",
+                            "value": "1375.0421" if first else None, "unit": "USDC",
+                            "source": "Polymarket Data API v2 · holdings value", "checkedAt": stamp,
+                            "observedAt": stamp if first else None,
+                            "message": "Single-market holdings at marked value and unresolved combos at cost."
+                            if first else "The provider holdings value is unavailable."})
+
+    page.route("**/api/v1/public/traders/*/value", read_value)
     observation_calls = []
     sample_time = 1_795_600_000
     receipt = {
@@ -429,6 +460,19 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     positions = page.get_by_role("table", name="Positions in this snapshot")
     expect(positions.get_by_role("columnheader", name="State")).to_have_count(1)
     expect(positions.get_by_role("cell", name="7.125")).to_be_visible()
+    holdings = page.get_by_role("region", name="Holdings value")
+    assert not value_reads
+    holdings.get_by_role("button", name="Load holdings value").click()
+    expect(holdings.get_by_text("1375.0421 USDC")).to_be_visible()
+    expect(holdings.get_by_text("unresolved combos at cost", exact=False)).to_be_visible()
+    expect(holdings.get_by_text(re.compile("Polymarket Data API v2.*Checked.*UTC"))).to_be_visible()
+    if output:
+        holdings.screenshot(path=output / "holdings-value-mobile.png")
+    holdings.get_by_role("button", name="Refresh holdings value").click()
+    expect(holdings.get_by_text("Value unavailable", exact=True)).to_be_visible()
+    expect(holdings.get_by_text("1375.0421 USDC")).to_have_count(0)
+    expect(positions.get_by_role("cell", name="7.125")).to_be_visible()
+    assert value_reads == [wallet, wallet]
     expect(page.get_by_role("columnheader", name="Volume (shares)")).to_have_count(0)
     expect(page.get_by_text(re.compile(r"Reported volume.*19,348.35 shares"))).to_be_visible()
     assert not history_reads
@@ -448,6 +492,8 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     expect(page.get_by_role("heading", name="Fixture Lumen", exact=True)).to_be_focused()
     assert not observation_calls
     page.get_by_label("Research budget (pUSD)").fill("12.50")
+    retry = page.get_by_role("checkbox", name="Check again if the first read is empty")
+    expect(retry).not_to_be_checked()
     page.get_by_role("button", name="Observe next BUY", exact=True).click()
     expect(page.get_by_role("heading", name="BUY and displayed book observed")).to_be_visible()
     timing = page.get_by_text("Window, timing and ask levels", exact=True)
@@ -519,6 +565,84 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     expect(page.get_by_text("2240 ms after detection", exact=True)).to_be_visible()
     expect(page.get_by_text("0.03 per share", exact=True)).to_be_visible()
     assert not samples
+
+    # The second public read covers the original interval. Export every actual
+    # read even when a follow-up fails or yields an incomplete page.
+    retry.focus()
+    page.keyboard.press("Space")
+    expect(retry).to_be_checked()
+    window = {"schemaVersion": 3, "wallet": wallet, "researchBudget": "12.50",
+              "windowStartSeconds": sample_time, "windowEndSeconds": sample_time + 1,
+              "retryAfterWindowMs": 3000}
+    closed = (sample_time + 2) * 1000
+    no_buys = {"rowsReturned": 0, "ordinaryBuyRows": 0, "complete": True}
+    empty = {"requestedMs": closed, "receivedMs": closed + 400, "activityCoverage": no_buys}
+    second_start = closed + 3000
+    second = {"requestedMs": second_start, "receivedMs": second_start + 500}
+    one_buy = {"rowsReturned": 1, "ordinaryBuyRows": 1, "complete": True}
+    detected = {**window, "status": "incomplete", "reason": "The book timestamp preceded the modeled delay.",
+                "detectionRead": 2, "activityReceivedMs": second["receivedMs"], "activityCoverage": one_buy,
+                "event": {"eventTimeSeconds": sample_time, "shares": "5", "price": "0.002", "fillId": None},
+                "participant": {"status": "matched", "role": "taker", "logIndex": 136, "blockNumber": 97946137,
+                                "grossCollateral": "0.01", "chargedFee": "0.00049", "totalCollateral": "0.01049"},
+                "activityReads": [empty, {**second, "activityCoverage": one_buy}]}
+    failed = {**window, "status": "unavailable", "reason": "Activity request failed.",
+              "activityReads": [empty, {"requestedMs": second_start, "reason": "Activity request failed."}]}
+    capped = {**window, "status": "incomplete", "reason": "More rows exist on the activity endpoint.",
+              "activityReads": [empty, {**second, "activityCoverage": {
+                  "rowsReturned": 20, "ordinaryBuyRows": 0, "complete": False}}]}
+    missed = {**window, "status": "incomplete", "reason": "The second read missed its deadline.",
+              "activityReads": [empty]}
+    retry_receipts = [detected, failed, capped, missed]
+
+    def retry_probe(route: Route):
+        assert route.request.post_data_json == {"budget": "12.50", "retryEmpty": True}
+        route.fulfill(json=retry_receipts.pop(0))
+
+    page.route("**/api/v1/public/traders/*/observe", retry_probe)
+    button.click()
+    reads = page.get_by_role("region", name="Activity reads")
+    expect(reads.get_by_role("heading", name="BUY first visible on the second read")).to_be_visible()
+    expect(reads.get_by_role("listitem").first).to_contain_text("0 ordinary BUY rows among 0 returned · Complete page")
+    expect(reads.get_by_role("listitem").last).to_contain_text("1 ordinary BUY row among 1 returned · Complete page")
+    expect(reads.get_by_text(re.compile(r"^Requested [\d:.]+ UTC$"))).to_have_count(2)
+    expect(reads.get_by_text(re.compile(r"^Received [\d:.]+ UTC$"))).to_have_count(2)
+    expect(page.get_by_text("0.01 pUSD in shares + 0.00049 pUSD charged fee = 0.01049 pUSD total.",
+                            exact=False)).to_be_visible()
+    with page.expect_download() as download:
+        page.get_by_role("link", name="Download observation").click()
+    assert json.loads(download.value.path().read_text()) == detected
+    check_width(page)
+    if output:
+        panel = page.locator("section.panel").filter(has=page.get_by_role("heading", name="Public BUY observation"))
+        panel.screenshot(path=output / "activity-reads-mobile.png")
+        page.set_viewport_size({"width": 1240, "height": 900})
+        panel.screenshot(path=output / "activity-reads-desktop.png")
+        page.set_viewport_size({"width": 390, "height": 844})
+    button.click()
+    expect(reads.get_by_role("listitem").last).to_contain_text("Activity request failed.")
+    expect(page.get_by_text("Activity request failed.", exact=True)).to_have_count(1)
+    expect(reads.get_by_role("listitem").last).not_to_contain_text("Received")
+    with page.expect_download() as download:
+        page.get_by_role("link", name="Download observation").click()
+    assert json.loads(download.value.path().read_text()) == failed
+    button.click()
+    expect(reads.get_by_role("listitem").last).to_contain_text("0 ordinary BUY rows among 20 returned · First page only")
+    button.click()
+    expect(page.get_by_text("The second read missed its deadline.")).to_be_visible()
+    expect(reads.get_by_role("listitem")).to_have_count(1)
+    assert not retry_receipts
+    retry.uncheck()
+
+    def timeout(route: Route):
+        assert route.request.post_data_json == {"budget": "12.50"}
+        route.fulfill(status=504, json={"error": "Observation timed out. Try another window."})
+
+    page.route("**/api/v1/public/traders/*/observe", timeout)
+    button.click()
+    expect(page.get_by_role("alert")).to_have_text("Observation timed out. Try another window.")
+    expect(reads).to_have_count(0)
+    expect(page.get_by_role("link", name="Download observation")).to_have_count(0)
     page.get_by_role("link", name="Watch this address").click()
     expect(page.get_by_label("Public wallet address")).to_have_value(wallet)
     check_width(page)
@@ -615,6 +739,15 @@ def public_artifact_smoke(browser: Browser, cwd: Path, output: Path | None):
         watch = workspace["account"]
         assert watch["status"] == "available" and watch["address"] == first["address"], watch["message"]
         assert workspace["run"] is None
+        holdings = page.get_by_role("region", name="Holdings value")
+        with page.expect_response("**/api/v1/public/traders/" + first["address"] + "/value") as value_response:
+            holdings.get_by_role("button", name="Load holdings value").click()
+        value = value_response.value.json()
+        assert value["status"] == "available" and value["address"] == first["address"], value["message"]
+        assert value["unit"] == "USDC" and isinstance(value["value"], str)
+        expect(holdings.get_by_text(value["value"] + " USDC", exact=True)).to_be_visible()
+        assert page.request.get(origin + "/api/v1/workspace").json() == workspace
+        print(f"Installed holdings value matched the provider read in {value['unit']} and preserved the watch.")
         print(f"Installed {installed['artifactSha256'][:12]}: {len(board['leaders'])} provider-ranked wallets; "
               f"{len(watch['positions'])} position rows, complete={watch['complete']}, retrieved {watch['observedAt']}.")
         # Inspect the public SDK example wallet independently of the saved watch.
@@ -628,10 +761,22 @@ def public_artifact_smoke(browser: Browser, cwd: Path, output: Path | None):
         assert direct["address"] == sample and direct["status"] == "available", direct["message"]
         expect(page.get_by_role("heading", name="Open positions")).to_be_visible()
         page.set_viewport_size({"width": 390, "height": 844})
+        retry = page.get_by_role("checkbox", name="Check again if the first read is empty")
+        expect(retry).not_to_be_checked()
+        retry.check()
         with page.expect_response("**/api/v1/public/traders/" + sample + "/observe", timeout=45000) as reply:
             page.get_by_role("button", name="Observe next BUY").click()
         receipt = reply.value.json()
         assert reply.value.ok and receipt["wallet"] == sample and receipt["researchBudget"] == "10.00"
+        assert receipt["schemaVersion"] == 3 and receipt["retryAfterWindowMs"] == 3000
+        reads = receipt["activityReads"]
+        assert isinstance(reads, list) and len(reads) <= 2
+        for read in reads:
+            assert type(read["requestedMs"]) is int and ("activityCoverage" in read or "reason" in read)
+        if "event" in receipt:
+            assert 1 <= receipt["detectionRead"] <= len(reads)
+        if reads:
+            expect(page.get_by_role("region", name="Activity reads").get_by_role("listitem")).to_have_count(len(reads))
         with page.expect_download() as download:
             page.get_by_role("link", name="Download observation").click()
         assert json.loads(download.value.path().read_text()) == receipt
