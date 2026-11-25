@@ -144,7 +144,7 @@ def observe(address: str, seconds: int, index_wait_seconds: int = 0, *, budget: 
         )
         result["market"] = terms.result()
     result["evidenceCheckedMs"] = time.time_ns() // 1_000_000
-    time.sleep(public_depth.DELAY_SECONDS)
+    time.sleep(public_depth.DELAY_SECONDS + result["market"].get("takerDelayMs", 0) / 1000)
     result = _sample_book(result, event)
     result["capacity"] = public_depth.measure_depth(result, budget)
     return result

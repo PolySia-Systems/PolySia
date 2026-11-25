@@ -86,7 +86,7 @@ export function PublicObservation({ address }: { address: string }) {
       </header>
       <p>
         Sample the next two seconds for this wallet. For a visible BUY, check the Polygon receipt
-        and market fees, then wait two seconds to measure what the displayed asks could cover.
+        and market fees, then sample the asks after two seconds plus any reported taker delay.
       </p>
       <form className="observation-form" onSubmit={observe}>
         <label className="field">

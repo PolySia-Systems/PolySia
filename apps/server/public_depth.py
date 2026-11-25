@@ -11,6 +11,7 @@ from .public_fill import EXCHANGES
 
 MARKETS = "https://clob.polymarket.com/clob-markets/"
 DELAY_SECONDS = 2
+TAKER_DELAY_MS = 250
 MAX_RECEIPT_MS = 5000
 MAX_SIGNAL_AGE_MS = 10_000
 PRICE_ALLOWANCE = 30_000  # 0.03 pUSD per share above the reported BUY
@@ -49,11 +50,12 @@ def _terms(payload, event):
         raise ValueError("Unsupported fee schedule")
     minimum, tick = _micros(payload["mos"]), _micros(payload["mts"])
     if (minimum <= 0 or not 0 < tick <= SCALE or type(payload.get("ao")) is not bool
-            or type(payload.get("nr")) is not bool or type(payload.get("itode", False)) is not bool):
+            or ("nr" in payload and type(payload["nr"]) is not bool)
+            or type(payload.get("itode", False)) is not bool):
         raise ValueError("Unsupported market constraints")
     return {"takerRate": _units(_micros(fee["r"])), "feeExponent": 1, "takerOnly": True,
             "minimumOrderSize": _units(minimum), "priceTick": _units(tick), "acceptingOrders": payload["ao"],
-            "negativeRisk": payload["nr"], "takerDelayEnabled": payload.get("itode", False)}
+            "negativeRisk": payload.get("nr"), "takerDelayMs": TAKER_DELAY_MS if payload.get("itode") else 0}
 
 
 def _level_fee(quantity, price, rate):
@@ -75,7 +77,7 @@ def _estimate(sample, budget, terms):
     if (not book or not event_ms <= detected <= checked
             or not detected <= sample["participant"]["checkedMs"] <= checked
             or not detected <= sample["market"]["checkedMs"] <= checked
-            or not checked + DELAY_SECONDS * 1000 <= sample["bookRequestedMs"] <= sample["bookReceivedMs"]
+            or not checked + DELAY_SECONDS * 1000 + terms["takerDelayMs"] <= sample["bookRequestedMs"] <= sample["bookReceivedMs"]
             or not checked <= book["sourceTimeMs"] <= sample["bookReceivedMs"] <= checked + MAX_RECEIPT_MS):
         return {"status": "incomplete", "reason": "A timely book update after the participant and market checks was unavailable."}
     if sample["bookReceivedMs"] - event_ms > MAX_SIGNAL_AGE_MS:
@@ -83,11 +85,10 @@ def _estimate(sample, budget, terms):
         return {"status": "skipped", "reason": f"The book arrived {age:,} ms after the BUY. The research limit is {MAX_SIGNAL_AGE_MS:,} ms."}
     if not terms["acceptingOrders"]:
         return {"status": "skipped", "reason": "The market reported that it was closed to orders."}
-    if (terms["negativeRisk"] is not book["negativeRisk"]
-            or terms["negativeRisk"] is not EXCHANGES.get(sample["participant"]["exchange"])):
+    exchange_type = EXCHANGES[sample["participant"]["exchange"]]
+    if (book["negativeRisk"] is not exchange_type
+            or (terms["negativeRisk"] is not None and terms["negativeRisk"] is not exchange_type)):
         return {"status": "incomplete", "reason": "The market, book and Polygon exchange did not agree on the instrument."}
-    if terms["takerDelayEnabled"]:
-        return {"status": "incomplete", "reason": "This market applies an additional taker delay outside the sampled policy."}
     if book["bidLevelCount"] is None or (book["spreadPerShare"] is not None and Decimal(book["spreadPerShare"]) <= 0):
         return {"status": "incomplete", "reason": "The opposite side of the book was missing or crossed."}
     if (book["minimumOrderShares"] is None or book["priceTick"] is None
@@ -141,7 +142,7 @@ def market_terms(event):
 def capacity_policy(budget):
     return {"budget": budget, "asset": "pUSD", "delaySeconds": DELAY_SECONDS,
             "maxReceiptMs": MAX_RECEIPT_MS, "maxSignalAgeMs": MAX_SIGNAL_AGE_MS,
-            "maxPriceIncrease": _units(PRICE_ALLOWANCE), "maxLevels": MAX_LEVELS,
+            "maxPriceIncrease": _units(PRICE_ALLOWANCE), "maxLevels": MAX_LEVELS, "enabledTakerDelayMs": TAKER_DELAY_MS,
             "feeQuantum": _units(FEE_QUANTUM), "feeRounding": "up per ask level, sub-minimum zero",
             "minimumNotional": None}
 

@@ -107,7 +107,13 @@ class DepthTests(unittest.TestCase):
             s["book"].update(change)
             self.assertEqual(public_depth.measure_depth(s, "10.00")["status"], "incomplete")
         s = sample()
-        s["market"]["takerDelayEnabled"] = True
+        s["market"]["takerDelayMs"] = 250
+        self.assertEqual(public_depth.measure_depth(s, "10.00")["status"], "incomplete")
+        s["bookRequestedMs"] += 250
+        s["bookReceivedMs"] += 250
+        s["market"]["negativeRisk"] = None
+        self.assertEqual(public_depth.measure_depth(s, "10.00")["status"], "estimated")
+        s["book"]["negativeRisk"] = None
         self.assertEqual(public_depth.measure_depth(s, "10.00")["status"], "incomplete")
 
     def test_multiple_rows_for_one_token_and_transaction_remain_unresolved(self):
@@ -137,7 +143,9 @@ class DepthTests(unittest.TestCase):
                         neg_risk=False, bids=[{"price": "0.49", "size": "5"}])
         def terms(event):
             calls.append("market")
-            return dict(sample()["market"], checkedMs=now[0])
+            reported = dict(TERMS, itode=True)
+            del reported["nr"]  # Observed standard market omits the optional flag.
+            return {"status": "available", "checkedMs": now[0], **public_depth._terms(reported, EVENT)}
         def identify(wallet, event):
             calls.append("identity")
             return {"status": "matched", "checkedMs": now[0], "exchange": EXCHANGE}
@@ -149,6 +157,6 @@ class DepthTests(unittest.TestCase):
               patch.object(observe.public_fill, "identify_buy", side_effect=identify)):
             receipt = observe.observe(WALLET, 1, budget="10")
         self.assertEqual(receipt["capacity"]["status"], "estimated")
-        self.assertEqual(receipt["bookRequestedMs"] - receipt["evidenceCheckedMs"], 2000)
+        self.assertEqual(receipt["bookRequestedMs"] - receipt["evidenceCheckedMs"], 2250)
         self.assertEqual(receipt["schemaVersion"], 2)
         self.assertEqual(receipt["book"]["spreadPerShare"], "0.02")
