@@ -91,10 +91,15 @@ def exercise(browser: Browser, origin: str, output: Path | None):
     page.set_default_timeout(6000)
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
+    reads = []
+    page.on("request", lambda request: reads.append(request.url))
     page.goto(origin)
     search = page.get_by_label("Search leaders")
     expect(search).to_be_visible()
     check_width(page)
+    for title in ("Research public wallets", "Try a shadow replay"):
+        expect(page.get_by_role("link", name=re.compile(title))).to_be_visible()
+    assert not any("/api/v1/public/" in url for url in reads)
     capture(page, output, "discovery-desktop")
     atlas_save = page.get_by_role("button", name="Save Atlas Meridian to shortlist")
     atlas_save.click()
@@ -230,7 +235,31 @@ def assisted_budget_journey(browser: Browser, origin: str, output: Path | None):
     expect(page.get_by_role("button", name="Observe next signal", exact=True)).to_be_visible()
     run = page.request.get(origin + "/api/v1/workspace").json()["run"]
     assert (run["leader_id"], run["capital"], run["order_size"], run["cursor"]) == ("atlas", "500.00", "500.00", 0)
+    history = page.get_by_role("region", name="Run history")
+    old = history.get_by_role("link", name=re.compile("Review Atlas Meridian run"))
+    expect(history.get_by_text("Unavailable", exact=True)).to_be_visible()
+    old_href = old.get_attribute("href")
+    tab_to(page, old)
+    page.keyboard.press("Enter")
+    expect(page.get_by_role("heading", name="Saved replay")).to_be_visible()
+    page.reload()
+    expect(page.get_by_text("BUY · skipped", exact=True)).to_be_visible()
+    expect(page.get_by_role("button", name="Observe next signal")).to_have_count(0)
+    expect(page.get_by_role("button", name="Stop run")).to_have_count(0)
+    previous = page.request.get(origin + "/api/v1/runs/" + old_href.split("/")[-1]).json()
+    assert previous["id"] != run["id"] and previous["status"] == "stopped"
+    assert previous["marked_net_result"] is None
+    expect(page.get_by_text(previous["quantity"] + " shares", exact=True)).to_be_visible()
+    with page.expect_download() as event:
+        page.get_by_role("link", name="Export run evidence").click()
+    assert json.loads(event.value.path().read_text()) == previous
+    check_width(page)
+    capture(page, output, "saved-replay-mobile")
+    page.get_by_role("link", name="Back to shadow runs").click()
+    expect(page.get_by_role("button", name="Observe next signal")).to_be_enabled()
+    assert page.request.get(origin + "/api/v1/workspace").json()["run"] == run
     page.close()
+    print("Passed saved replay review across reload, export, and return to a distinct active run.")
     print("Passed budget comparison, missing depth, no-match, and exact policy handoff to replay.")
 
 
@@ -240,6 +269,7 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     page.set_default_timeout(6000)
     wallet = "0x" + "36" * 20
     other = "0x" + "42" * 20
+    unranked = "0x" + "ab" * 20
     stamp = "2026-11-25T12:00:00Z"
     pending = []
     delayed_period = None
@@ -276,7 +306,7 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
 
     def profile(route: Route):
         address = urlsplit(route.request.url).path.rsplit("/", 1)[1]
-        assert route.request.method == "GET" and address in (wallet, other)
+        assert route.request.method == "GET" and address in (wallet, other, unranked)
         profile_reads.append(address)
         position = {"market": "Fixture opening day?", "conditionId": market_id, "outcome": "Yes", "shares": "7.125", "status": "OPEN"}
         rows = [position]
@@ -332,7 +362,12 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     workspace = origin + "/api/v1/workspace"
     initial = page.request.get(workspace).json()
     page.goto(origin + "/#/discover")
-    page.get_by_role("link", name="Public rankings", exact=True).click()
+    page.set_viewport_size({"width": 390, "height": 844})
+    card = page.get_by_role("link", name=re.compile("Research public wallets"))
+    tab_to(page, card)
+    page.keyboard.press("Enter")
+    expect(page.get_by_role("heading", name="Public rankings", exact=True)).to_be_visible()
+    page.set_viewport_size({"width": 1240, "height": 900})
     lumen = page.get_by_role("button", name="Inspect Fixture Lumen")
     stone = page.get_by_role("button", name="Inspect Fixture Stone")
     expect(lumen).to_be_visible()
@@ -421,6 +456,7 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     samples = [
         {"status": "waiting", "reason": "No ordinary BUY visible. Indexing may lag."},
         {"status": "incomplete", "reason": "Book timestamp falls outside the interval from detection to receipt.",
+         "activityCoverage": {"rowsReturned": 20, "ordinaryBuyRows": 14, "complete": False},
          "event": {"eventTimeSeconds": 1795608002, "shares": "14", "price": "0.52", "fillId": None}},
         {"status": "unavailable", "reason": "Public endpoint unreachable or denied."},
         {"status": "observed", "reason": "Displayed depth only.",
@@ -440,6 +476,7 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     expect(page.get_by_role("heading", name="No BUY observed in this window")).to_be_visible()
     button.click()
     expect(page.get_by_role("heading", name="Partial evidence")).to_be_visible()
+    expect(page.get_by_text(re.compile("14 ordinary BUY rows among 20 returned"))).to_be_visible()
     expect(page.get_by_text("Individual fill identity", exact=False)).to_be_visible()
     with page.expect_download() as download:
         page.get_by_role("link", name="Download observation").click()
@@ -477,6 +514,30 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
     expect(lumen).to_have_count(0)
     expect(page.get_by_text("Fixture rankings unavailable", exact=False)).to_be_visible()
+    # A direct lookup reads one wallet, even when the board is unavailable.
+    # Typing alone must not transmit the pasted address or replace a saved watch.
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.request.post(origin + "/api/v1/account", data={"address": wallet, "revision": initial["accountRevision"]})
+    watched = page.request.get(workspace).json()
+    assert watched["account"]["address"] == wallet
+    reads_before = list(profile_reads)
+    search.fill("0x1234")
+    expect(page.get_by_role("button", name="Inspect wallet", exact=True)).to_have_count(0)
+    search.fill("  0x" + "AB" * 20 + "  ")
+    expect(page.get_by_role("button", name="Inspect wallet", exact=True)).to_be_enabled()
+    assert profile_reads == reads_before
+    search.press("Enter")
+    expect(page.get_by_role("heading", name="Public wallet", exact=True)).to_be_focused()
+    expect(page.get_by_role("heading", name="Open positions")).to_be_visible()
+    expect(page.get_by_text("Provider rank", exact=False)).to_have_count(0)
+    assert profile_reads == [*reads_before, unranked]
+    assert page.request.get(workspace).json() == watched
+    check_width(page)
+    capture(page, output, "direct-wallet-mobile")
+    page.get_by_role("button", name="Back to rankings").click()
+    expect(search).to_be_focused()
+    page.request.delete(origin + "/api/v1/account", data={"revision": watched["accountRevision"]})
+    search.fill("")
     delayed_period = None
     fixture_state = "empty"
     period.select_option(alternate)
@@ -484,7 +545,7 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     expect(lumen).to_have_count(0)
     assert alternate in requested_periods and default_period in requested_periods
     page.close()
-    print("Passed public ranking filters, stale and unavailable results, profile inspection and wallet prefill using fixture reads.")
+    print("Passed ranking filters, stale and unavailable results, direct wallet inspection, watch preservation and wallet prefill.")
 
 
 def public_artifact_smoke(browser: Browser, cwd: Path, output: Path | None):
@@ -528,6 +589,19 @@ def public_artifact_smoke(browser: Browser, cwd: Path, output: Path | None):
         assert workspace["run"] is None
         print(f"Installed {installed['artifactSha256'][:12]}: {len(board['leaders'])} provider-ranked wallets; "
               f"{len(watch['positions'])} position rows, complete={watch['complete']}, retrieved {watch['observedAt']}.")
+        # Inspect the public SDK example wallet independently of the saved watch.
+        sample = "0x7c3db723f1d4d8cb9c550095203b686cb11e5c6b"
+        page.goto(origin + "/#/rankings")
+        lookup = page.get_by_role("searchbox", name="Search public traders")
+        lookup.fill(sample)
+        with page.expect_response("**/api/v1/public/traders/" + sample) as reply:
+            lookup.press("Enter")
+        direct = reply.value.json()
+        assert direct["address"] == sample and direct["status"] == "available", direct["message"]
+        expect(page.get_by_role("heading", name="Open positions")).to_be_visible()
+        assert page.request.get(origin + "/api/v1/workspace").json() == workspace
+        print(f"Direct wallet lookup returned {len(direct['positions'])} rows and preserved the original watch.")
+        page.get_by_role("link", name="Accounts", exact=True).click()
         page.get_by_role("button", name="Remove watch").click()
         expect(page.get_by_role("heading", name="Account scope")).to_be_visible()
         page.close()

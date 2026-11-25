@@ -93,9 +93,13 @@ def observe(address: str, seconds: int, index_wait_seconds: int = 0) -> dict:
         })
         result["activityReceivedMs"] = time.time_ns() // 1_000_000
         rows, cursor = unpack_page(payload, LIMIT)
-        if cursor is not None:
-            return dict(result, status="incomplete", reason="Window exceeds the single-page budget.")
         buys = [event for row in rows if (event := _buy(row, address, start, end)) is not None]
+        # Page completeness and evidence for one visible BUY answer different
+        # questions. Stay within the two-request budget even on high-activity wallets.
+        result["activityCoverage"] = {"rowsReturned": len(rows), "complete": cursor is None,
+                                      "ordinaryBuyRows": len(buys)}
+        if not buys and cursor is not None:
+            return dict(result, status="incomplete", reason="No ordinary BUY on the first page; later rows were not read.")
         if not buys:
             return dict(result, status="waiting", reason="No ordinary BUY visible in this response. Indexing may lag.")
         event = min(buys, key=lambda e: e["eventTimeSeconds"])
@@ -120,6 +124,8 @@ def observe(address: str, seconds: int, index_wait_seconds: int = 0) -> dict:
             return dict(result, reason="Book timestamp falls outside the interval from detection to receipt. Post-detection depth is unverified.")
         if not book["bestAsks"]:
             return dict(result, reason="The returned book has no displayed asks.")
+        if cursor is not None:
+            return dict(result, reason="A BUY on the first page had a matching displayed book. The full activity window was not read.")
         return dict(result, status="observed", reason="Displayed depth only. Fill identity, executable price and fees remain unverified.")
     except (OSError, HTTPException):
         return dict(result, reason="Public endpoint unreachable or denied.")

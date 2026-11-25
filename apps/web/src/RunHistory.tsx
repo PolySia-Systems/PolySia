@@ -12,7 +12,7 @@ type Summary = Pick<
   | 'order_size'
   | 'cash'
   | 'quantity'
-  | 'realized_pnl'
+  | 'marked_net_result'
   | 'fees'
 > & { createdAt: string }
 type Page = { runs: Summary[]; nextCursor: string | null }
@@ -66,18 +66,24 @@ export default function RunHistory({ refreshKey }: { refreshKey: string }) {
         {rows && rows.length > 0 && (
           <>
             <p className="muted history-note">
-              Compare simulated runs on the same tape. Realized P/L includes fees on closed shares.
-              Open shares retain exposure.
+              Estimated net P/L includes fees and the value of open shares at the final step’s
+              midpoint. Open shares without a midpoint leave the estimate unavailable.
             </p>
             <div className="history-rows">
               {rows.map((run) => (
                 <article className="history-row" key={run.id}>
                   <div className="history-identity">
-                    <strong>{run.leader_name}</strong>
+                    <a
+                      href={'#/runs/' + run.id}
+                      aria-label={'Review ' + run.leader_name + ' run ' + run.id.slice(0, 8)}
+                    >
+                      <strong>{run.leader_name}</strong>
+                    </a>
                     <span className="muted">
                       {run.status === 'stopped' ? 'Stopped' : 'Completed'} ·{' '}
                       <time dateTime={run.createdAt}>
                         {new Date(run.createdAt).toLocaleString(undefined, {
+                          year: 'numeric',
                           month: 'short',
                           day: 'numeric',
                           hour: '2-digit',
@@ -100,8 +106,12 @@ export default function RunHistory({ refreshKey }: { refreshKey: string }) {
                       </dd>
                     </div>
                     <div>
-                      <dt>Realized P/L</dt>
-                      <dd>{signed(run.realized_pnl, 2)}</dd>
+                      <dt>Estimated net P/L</dt>
+                      <dd>
+                        {run.marked_net_result === null
+                          ? 'Unavailable'
+                          : signed(run.marked_net_result, 2)}
+                      </dd>
                     </div>
                     <div>
                       <dt>Fees</dt>

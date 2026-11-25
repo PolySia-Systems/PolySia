@@ -181,11 +181,21 @@ function PublicComparison({
   )
 }
 
-function Profile({ trader, close }: { trader: PublicTrader; close: () => void }) {
+function Profile({
+  address,
+  trader,
+  period,
+  close,
+}: {
+  address: string
+  trader?: PublicTrader
+  period: Period
+  close: () => void
+}) {
   const heading = useRef<HTMLHeadingElement>(null)
   useEffect(() => {
     heading.current?.focus()
-  }, [trader.address])
+  }, [address])
   const [snapshot, setSnapshot] = useState<Account | null>(null)
   const [error, setError] = useState('')
   const [revision, setRevision] = useState(0)
@@ -193,8 +203,10 @@ function Profile({ trader, close }: { trader: PublicTrader; close: () => void })
     let current = true
     setSnapshot(null)
     setError('')
-    api<Account>('public/traders/' + trader.address)
+    api<Account>('public/traders/' + address)
       .then((data) => {
+        if (data.address !== address)
+          throw new Error('The position response identified a different wallet.')
         if (current) setSnapshot(data)
       })
       .catch((e) => {
@@ -203,7 +215,7 @@ function Profile({ trader, close }: { trader: PublicTrader; close: () => void })
     return () => {
       current = false
     }
-  }, [trader.address, revision])
+  }, [address, revision])
   return (
     <div className="stack profile-snapshot">
       <div>
@@ -213,18 +225,26 @@ function Profile({ trader, close }: { trader: PublicTrader; close: () => void })
       </div>
       <div className="profile-label">
         <h2 ref={heading} tabIndex={-1}>
-          {trader.name}
+          {trader?.name ?? 'Public wallet'}
         </h2>
-        <span className="badge">Provider rank {trader.rank}</span>
+        {trader ? (
+          <span className="badge">
+            Provider rank {trader.rank} · {periods[period]}
+          </span>
+        ) : (
+          <code>{address}</code>
+        )}
       </div>
-      <p className="muted">
-        Reported volume: {summaryNumber.format(Number(trader.volumeShares))} shares · P/L:{' '}
-        {summaryNumber.format(Number(trader.pnl))} USDC
-      </p>
-      <PublicHistory key={trader.address} address={trader.address} />
+      {trader && (
+        <p className="muted">
+          Reported volume: {summaryNumber.format(Number(trader.volumeShares))} shares · P/L:{' '}
+          {summaryNumber.format(Number(trader.pnl))} USDC
+        </p>
+      )}
+      <PublicHistory address={address} />
       {snapshot && (
         <PositionSnapshot account={snapshot} heading="Open positions">
-          <a className="btn primary" href={'#/accounts/' + trader.address}>
+          <a className="btn primary" href={'#/accounts/' + address}>
             Watch this address <ArrowRight size={15} />
           </a>
         </PositionSnapshot>
@@ -242,7 +262,7 @@ function Profile({ trader, close }: { trader: PublicTrader; close: () => void })
           </button>
         </div>
       )}
-      <PublicObservation address={trader.address} />
+      <PublicObservation address={address} />
     </div>
   )
 }
@@ -253,6 +273,8 @@ export function PublicRankings() {
   const [selected, select] = useState<string | null>(null)
   const [picks, setPicks] = useState<string[]>([])
   const [comparing, setComparing] = useState(false)
+  const profileTrigger = useRef<HTMLElement | null>(null)
+  const searchInput = useRef<HTMLInputElement>(null)
   const compareButton = useRef<HTMLButtonElement>(null)
   const [board, setBoard] = useState<Leaderboard | null>(null)
   const [error, setError] = useState('')
@@ -279,7 +301,13 @@ export function PublicRankings() {
   const matching = (board?.leaders ?? []).filter((trader) =>
     (trader.name + ' ' + trader.address).toLowerCase().includes(query.trim().toLowerCase()),
   )
-  const trader = matching.find((item) => item.address === selected)
+  const pastedAddress = /^0x[0-9a-f]{40}$/i.test(query.trim()) ? query.trim().toLowerCase() : null
+  const trader = board?.leaders.find((item) => item.address === selected)
+  function openProfile(address: string, trigger: HTMLElement | null) {
+    setComparing(false)
+    profileTrigger.current = trigger
+    select(address)
+  }
   const chosen = (board?.leaders ?? []).filter((row) => picks.includes(row.address))
   return (
     <div className="stack">
@@ -295,17 +323,32 @@ export function PublicRankings() {
             : 'Change in marked equity net of external flows'}
           . Includes combo activity. Follower costs and returns are unknown.
         </p>
-        <div className="directory-tools">
+        <form
+          className="directory-tools"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (pastedAddress) openProfile(pastedAddress, searchInput.current)
+          }}
+        >
           <label className="search">
             <Search size={16} aria-hidden="true" />
             <input
+              ref={searchInput}
               aria-label="Search public traders"
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => {
+                select(null)
+                setQuery(e.target.value)
+              }}
               type="search"
-              placeholder="Search name or wallet…"
+              placeholder="Search name or paste wallet…"
             />
           </label>
+          {pastedAddress && (
+            <button className="btn primary" type="submit">
+              Inspect wallet
+            </button>
+          )}
           <label className="select-field">
             <select
               aria-label="Ranking period"
@@ -324,6 +367,7 @@ export function PublicRankings() {
           </label>
           <button
             className="btn"
+            type="button"
             onClick={() => {
               setBoard(null)
               refresh((v) => v + 1)
@@ -332,7 +376,7 @@ export function PublicRankings() {
             <RefreshCw size={14} />
             Refresh rankings
           </button>
-        </div>
+        </form>
         {!board && !error && (
           <p role="status" className="muted">
             Reading Polymarket rankings…
@@ -403,12 +447,11 @@ export function PublicRankings() {
                         <td>
                           <button
                             className="trader-button"
-                            id={'public-trader-' + row.address}
                             aria-label={'Inspect ' + row.name}
                             aria-expanded={selected === row.address}
-                            onClick={() => {
-                              setComparing(false)
-                              select((old) => (old === row.address ? null : row.address))
+                            onClick={(event) => {
+                              if (selected === row.address) select(null)
+                              else openProfile(row.address, event.currentTarget)
                             }}
                           >
                             <strong>
@@ -430,9 +473,11 @@ export function PublicRankings() {
               </div>
             ) : (
               <p className="notice">
-                {board.leaders.length
-                  ? 'No matching traders on this page.'
-                  : 'Polymarket returned an empty page.'}
+                {pastedAddress
+                  ? 'This address is outside the rankings shown.'
+                  : board.leaders.length
+                    ? 'No matching traders on this page. Paste a full wallet address to inspect its positions.'
+                    : 'Polymarket returned an empty page.'}
               </p>
             )}
             <p className="workspace-note muted">
@@ -453,13 +498,15 @@ export function PublicRankings() {
           }}
         />
       )}
-      {trader && (
+      {selected && (
         <Profile
-          key={trader.address}
+          key={selected}
+          address={selected}
+          period={period}
           trader={trader}
           close={() => {
             select(null)
-            document.getElementById('public-trader-' + trader.address)?.focus()
+            profileTrigger.current?.focus()
           }}
         />
       )}

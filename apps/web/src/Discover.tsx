@@ -2,12 +2,12 @@ import { useMemo, useState } from 'react'
 import {
   ArrowDownWideNarrow,
   ArrowRight,
-  ArrowUpRight,
   Bookmark,
   Check,
   ChevronDown,
   ChevronRight,
   Compass,
+  FlaskConical,
   Layers3,
   Search,
   Sparkles,
@@ -44,24 +44,18 @@ function ShortlistButton({ leader, saved, toggle }: { leader: Leader } & Picks) 
     </button>
   )
 }
-export function LeaderSpotlight({ leader, detail = false }: { leader: Leader; detail?: boolean }) {
+function LeaderSpotlight({ leader }: { leader: Leader }) {
   return (
     <section className="spotlight" aria-label="Example leader history">
       <div className="spot-copy">
         <div className="spot-label">
           <Sparkles size={14} />
-          {detail ? 'Performance history' : 'Example profile'}
+          Performance history
         </div>
-        {!detail && <h2>{leader.name}</h2>}
         <span className="spot-profit">{signed(leader.pnl)}</span>
         <span className="spot-definition">
           Leader P/L <span>·</span> Fictional 30-day history
         </span>
-        {!detail && (
-          <a href={'#/leader/' + leader.id} className="spot-link">
-            View profile <ArrowUpRight size={15} />
-          </a>
-        )}
       </div>
       <div className="spot-graph">
         <div className="chart-key">
@@ -95,10 +89,32 @@ export function Discover({ leaders, saved, toggle, visible, limits }: DiscoveryP
         .toLowerCase()
         .includes(query.trim().toLowerCase()),
   )
-  const spotlight = leaders.find((leader) => leader.id === 'atlas') || leaders[0]
+  const example = leaders.find((leader) => leader.id === 'atlas') || leaders[0]
   return (
     <div hidden={!visible} className="discover stack">
-      {spotlight && <LeaderSpotlight leader={spotlight} />}
+      <section aria-label="Discovery workflows" className="discovery-choices">
+        <a className="discovery-choice public-choice" href="#/rankings">
+          <TrendingUp size={23} aria-hidden="true" />
+          <h2>Research public wallets</h2>
+          <p>Read Polymarket rankings, compare open markets and inspect a trader’s history.</p>
+          <span>
+            Explore public rankings <ArrowRight size={16} />
+          </span>
+        </a>
+        {example && (
+          <a className="discovery-choice panel" href={'#/preview/' + example.id}>
+            <FlaskConical size={23} aria-hidden="true" />
+            <h2>Try a shadow replay</h2>
+            <p>
+              Follow a fictional leader with simulated cash. See what fills, what gets skipped and
+              what you still hold.
+            </p>
+            <span>
+              Preview {example.name} replay <ArrowRight size={16} />
+            </span>
+          </a>
+        )}
+      </section>
       <BudgetFinder limits={limits} />
       <section className="directory panel">
         <div className="directory-head">
@@ -106,11 +122,11 @@ export function Discover({ leaders, saved, toggle, visible, limits }: DiscoveryP
             <div className="section-glyph">
               <UsersRound size={18} />
             </div>
-            <h2>Leader directory</h2>
+            <h2>Scenario leader directory</h2>
           </div>
           <span className="period">
             <span className="dot" />
-            30-day sample
+            Fictional · 30 days
           </span>
         </div>
         <div className="tabs-row">
@@ -289,7 +305,7 @@ export function LeaderDetail({ leader, saved, toggle }: { leader: Leader } & Pic
           </a>
         </div>
       </section>
-      <LeaderSpotlight leader={leader} detail />
+      <LeaderSpotlight leader={leader} />
       <div className="stat-grid">
         <div className="stat">
           <span>Matched volume</span>

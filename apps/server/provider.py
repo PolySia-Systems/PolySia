@@ -9,11 +9,13 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from . import VERSION
+
 
 POSITIONS_ENDPOINT = "https://data-api.polymarket.com/v2/positions"
 SOURCE = "Polymarket Data API v2 · open positions"
 PAGE_SIZE = 20
-USER_AGENT = "PolySia/0.1.0 (+https://github.com/PolySia-Systems/PolySia)"
+USER_AGENT = f"PolySia/{VERSION} (+https://github.com/PolySia-Systems/PolySia)"
 MAX_BODY_BYTES = 256 * 1024
 
 

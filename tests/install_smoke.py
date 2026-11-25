@@ -1,5 +1,6 @@
-"""Exercise the distributable twice from outside its source checkout."""
+"""Exercise the offline distributable, with an optional upgrade from a saved prior artifact."""
 
+import argparse
 import json
 import os
 import select
@@ -49,8 +50,8 @@ def app(launcher, cwd, database=None, offline=False):
             server.wait(timeout=10)
 
 
-def request(url, path, payload=None):
-    req = Request(url + path, method="GET" if payload is None else "PUT")
+def request(url, path, payload=None, method=None):
+    req = Request(url + path, method=method or ("GET" if payload is None else "PUT"))
     if payload is not None:
         req.add_header("Content-Type", "application/json")
         req.data = json.dumps(payload).encode()
@@ -67,7 +68,7 @@ def verify():
         command = [sys.executable, str(bundle), "--prefix", str(prefix), "--json"]
         installed = json.loads(subprocess.check_output(command, cwd=cwd))
         with app(installed["launcher"], cwd, offline=True) as url:
-            assert json.loads(request(url, "/api/v1/health"))
+            assert json.loads(request(url, "/api/v1/health"))["artifactSha256"] == installed["artifactSha256"]
             assets = Assets()
             assets.feed(request(url, "/").decode())
             assert assets.scripts, "Installed index has no entry module"
@@ -109,5 +110,56 @@ def verify():
               "Reinstall, restart and restoring a backup preserved the preference and its revision.")
 
 
+def verify_upgrade(previous):
+    with tempfile.TemporaryDirectory(prefix="polysia-upgrade-") as temp:
+        cwd = Path(temp)
+        prefix = cwd / "installed workspace"
+
+        def install(bundle):
+            output = subprocess.check_output(
+                [sys.executable, str(bundle), "--prefix", str(prefix), "--json"], cwd=cwd
+            )
+            return json.loads(output)
+
+        original = install(previous.resolve())
+        with app(original["launcher"], cwd, offline=True) as url:
+            prior_version = json.loads(request(url, "/api/v1/health"))["version"]
+            request(url, "/api/v1/settings", {"version": 1, "revision": 0, "theme": "dark"})
+            run = json.loads(request(url, "/api/v1/runs",
+                                     {"leaderId": "atlas", "allocation": "100", "orderSize": "10"}, "POST"))
+            route = "/api/v1/runs/" + run["id"]
+            fill = json.loads(request(url, route + "/step", {"revision": run["revision"]}, "POST"))
+            request(url, route + "/pause", {"revision": fill["revision"]}, "POST")
+            saved = json.loads(request(url, "/api/v1/workspace"))
+            assert saved["run"]["status"] == "paused" and int(saved["run"]["quantity"]) > 0
+
+        upgraded = install(ROOT / "dist/polysia.pyz")
+        assert original["artifactSha256"] != upgraded["artifactSha256"]
+        launcher = upgraded["launcher"]
+        with app(launcher, cwd, offline=True) as url:
+            health = json.loads(request(url, "/api/v1/health"))
+            assert health["artifactSha256"] == upgraded["artifactSha256"]
+            assert json.loads(request(url, "/api/v1/workspace")) == saved
+            stopped = json.loads(request(url, route + "/stop", {"revision": saved["run"]["revision"]}, "POST"))
+            assert stopped["revision"] == saved["run"]["revision"] + 1
+            assert stopped["quantity"] == saved["run"]["quantity"] and stopped["events"] == saved["run"]["events"]
+            end_state = json.loads(request(url, "/api/v1/workspace"))
+        backup, recovered = cwd / "backup.db", cwd / "restored.db"
+        env = {k: v for k, v in os.environ.items() if k not in ("POLYSIA_DB", "PYTHONPATH")}
+        subprocess.run([launcher, "backup", "--to", backup], cwd=cwd, env=env, check=True)
+        subprocess.run([launcher, "restore", "--from", backup, "--to", recovered], cwd=cwd, env=env, check=True)
+        with app(launcher, cwd, recovered, offline=True) as url:
+            assert json.loads(request(url, "/api/v1/workspace")) == end_state
+        print(f"Upgrade {prior_version} to {health['version']} preserved a paused position, "
+              "settings and revisions. Stop and restore retained the recorded fills.")
+
+
 if __name__ == "__main__":
-    verify()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--upgrade-from", type=Path, metavar="PREVIOUS.pyz",
+                        help="Exercise an upgrade from this prior offline bundle.")
+    previous = parser.parse_args().upgrade_from
+    if previous is None:
+        verify()
+    else:
+        verify_upgrade(previous)

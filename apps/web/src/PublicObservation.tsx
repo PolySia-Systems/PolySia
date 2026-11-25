@@ -9,6 +9,7 @@ interface Receipt {
   windowStartSeconds: number
   windowEndSeconds: number
   reason: string
+  activityCoverage?: { rowsReturned: number; ordinaryBuyRows: number; complete: boolean }
   activityReceivedMs?: number
   bookRequestedMs?: number
   bookReceivedMs?: number
@@ -82,6 +83,18 @@ export function PublicObservation({ address }: { address: string }) {
                 {clock((receipt.windowEndSeconds + 1) * 1000)}
               </dd>
             </div>
+            {receipt.activityCoverage && (
+              <div>
+                <dt>Public activity coverage</dt>
+                <dd>
+                  {receipt.activityCoverage.ordinaryBuyRows} ordinary BUY rows among{' '}
+                  {receipt.activityCoverage.rowsReturned} returned ·{' '}
+                  {receipt.activityCoverage.complete
+                    ? 'Complete window response'
+                    : 'First page only (more rows exist)'}
+                </dd>
+              </div>
+            )}
             {receipt.event && (
               <div>
                 <dt>Provider BUY time (UTC)</dt>

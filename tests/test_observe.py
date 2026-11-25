@@ -78,13 +78,25 @@ class ObservationTests(unittest.TestCase):
             (page([activity(proxy_wallet="0x" + "bb"*20)]), "unavailable"),
             (page([activity(side="SELL")]), "unavailable"),
             (page([activity(is_combo=True)]), "waiting"), (page([]), "waiting"),
-            (page([activity()], "more"), "incomplete"), (TimeoutError(), "unavailable"),
+            (page([activity(is_combo=True)], "more"), "incomplete"), (TimeoutError(), "unavailable"),
         ]:
             with self.subTest(status=status, response=response):
                 result, calls = self.probe(response)
                 self.assertEqual(result["status"], status)
                 self.assertEqual(len(calls), 1)
                 self.assertNotIn("book", result)
+
+    def test_capped_page_keeps_pairable_evidence_without_claiming_complete_coverage(self):
+        rows = [activity()] * observe.LIMIT
+        result, reads = self.probe(page(rows, "more"), book())
+        self.assertEqual(len(reads), 2)
+        self.assertEqual(reads[1].args, (observe.BOOK, {"token_id": "734"}))
+        self.assertEqual(result["activityCoverage"], {
+            "rowsReturned": 20, "ordinaryBuyRows": 20, "complete": False,
+        })
+        self.assertEqual(result["status"], "incomplete")
+        self.assertIn("book", result)
+        self.assertIsNone(result["event"]["fillId"])
 
     def test_book_failure_preserves_observation_without_executable_result(self):
         for response in [book(asset_id="735"), book(market="0x" + "ab"*32),

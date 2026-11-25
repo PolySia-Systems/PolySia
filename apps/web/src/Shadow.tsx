@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import {
   Activity,
   ArrowRight,
@@ -160,11 +160,51 @@ export function Preview({
     </div>
   )
 }
-export function Shadow({ run, refresh }: Props) {
+export function SavedReplay({ id }: { id: string }) {
+  const [run, setRun] = useState<Run | null>(null)
+  const [error, setError] = useState('')
+  const [attempt, setAttempt] = useState(0)
+  useEffect(() => {
+    let current = true
+    setError('')
+    api<Run>('runs/' + encodeURIComponent(id)).then(
+      (result) => {
+        if (current) setRun(result)
+      },
+      (cause) => {
+        if (current) setError(errorMessage(cause))
+      },
+    )
+    return () => {
+      current = false
+    }
+  }, [id, attempt])
+  return (
+    <div className="stack">
+      <a className="text-link" href="#/runs">
+        Back to shadow runs
+      </a>
+      {run ? (
+        <Shadow run={run} />
+      ) : error ? (
+        <div className="panel panel-body" role="alert">
+          <p>{error}</p>
+          <button className="btn" onClick={() => setAttempt((n) => n + 1)}>
+            Retry
+          </button>
+        </div>
+      ) : (
+        <p role="status">Loading saved replay…</p>
+      )}
+    </div>
+  )
+}
+
+export function Shadow({ run, refresh }: { run: Run | null; refresh?: () => Promise<void> }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   async function act(action: string) {
-    if (!run || busy) return
+    if (!run || !refresh || busy) return
     setBusy(true)
     setError('')
     try {
@@ -266,12 +306,14 @@ export function Shadow({ run, refresh }: Props) {
             </details>
             <div className="notice">
               {run.status === 'paused'
-                ? 'New entries paused. Eligible sales can still reduce exposure when you advance.'
+                ? 'New entries paused. Eligible sales can still reduce exposure when the scenario advances.'
                 : active
-                  ? 'Waiting for the next scenario signal. Advance the scenario to evaluate it.'
+                  ? refresh
+                    ? 'Waiting for the next scenario signal. Advance the scenario to evaluate it.'
+                    : 'Saved state. Open Shadow runs to manage the current replay.'
                   : 'The run has ended. Remaining shares stay open in this simulation.'}
             </div>
-            {active && (
+            {active && refresh && (
               <>
                 <div className="actions">
                   <button disabled={busy} className="btn primary" onClick={() => act('step')}>
@@ -296,7 +338,7 @@ export function Shadow({ run, refresh }: Props) {
                 </small>
               </>
             )}
-            {!active && (
+            {!active && refresh && (
               <a href="#/discover" className="btn primary">
                 Choose another leader <ArrowRight size={16} />
               </a>
@@ -359,7 +401,7 @@ export function Shadow({ run, refresh }: Props) {
           </section>
         </>
       )}
-      <RunHistory refreshKey={run ? run.id + '-' + run.revision : ''} />
+      {refresh && <RunHistory refreshKey={run ? run.id + '-' + run.revision : ''} />}
     </div>
   )
 }

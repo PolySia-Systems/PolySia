@@ -15,12 +15,11 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 from uuid import uuid4
 
-from . import provider, public_history, public_leaders, shadow
+from . import VERSION, provider, public_history, public_leaders, shadow
 from .store import Conflict, Workspace
 
 API = "/api/v1"
 STATIC = Path(__file__).resolve().parents[1] / "web" / "dist"
-VERSION = "0.1.0"
 log = logging.getLogger(__name__)
 
 
@@ -31,7 +30,8 @@ class RequestError(Exception):
 
 
 class LocalServer(ThreadingHTTPServer):
-    def __init__(self, port, store: Workspace, static_dir=STATIC, inspect_account=None):
+    def __init__(self, port, store: Workspace, static_dir=STATIC, inspect_account=None, *, artifact_sha256=None):
+        self.artifact_sha256 = artifact_sha256
         self.observation_lock = Lock()
         self.store = store
         self.static_dir = Path(static_dir).resolve()
@@ -152,7 +152,8 @@ class Handler(BaseHTTPRequestHandler):
         self.operation = resource if resource in ("health", "workspace", "leaders", "settings", "account", "runs") else "unknown"
         if path == API + "/health" and method == "GET":
             store.account_revision()  # Confirm an initialized database is actually readable.
-            return {"status": "ok", "mode": "local", "liveExecution": False, "version": VERSION}
+            return {"status": "ok", "mode": "local", "liveExecution": False, "version": VERSION,
+                    "artifactSha256": self.server.artifact_sha256}
         if path == API + "/workspace" and method == "GET":
             return store.read()
         if path == API + "/public/leaders" and self.command == "GET":

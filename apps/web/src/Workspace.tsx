@@ -15,7 +15,13 @@ import { api, type Account, type Workspace } from './api'
 import './workspace.css'
 
 type Props = { workspace: Workspace; refresh: () => Promise<void> }
-type Health = { status: string; mode: string; version: string; liveExecution: boolean }
+type Health = {
+  status: string
+  mode: string
+  version: string
+  liveExecution: boolean
+  artifactSha256: string | null
+}
 
 function timestamp(value: string | null) {
   if (!value) return 'Unknown'
@@ -113,12 +119,14 @@ export function Accounts({
                 ? 'Updating…'
                 : account?.address === address.trim().toLowerCase()
                   ? 'Refresh positions'
-                  : 'Watch account'}
+                  : account
+                    ? 'Replace watched address'
+                    : 'Watch account'}
             </button>
           </div>
           <p className="workspace-note">
-            Checking sends this address to the Polymarket Data API. Only one address is watched at a
-            time.
+            Watching or refreshing sends this address to the Polymarket Data API. A new watch
+            replaces the previous address.
           </p>
         </form>
         {error && (
@@ -384,6 +392,20 @@ export function Status({ workspace }: Props) {
                   : 'Checking…'}
             </dd>
           </div>
+          {health && (
+            <div>
+              <dt>Installed artifact</dt>
+              <dd>
+                {health.artifactSha256 ? (
+                  <code className="artifact-digest" aria-label="Installer SHA-256">
+                    {health.artifactSha256}
+                  </code>
+                ) : (
+                  'Source checkout'
+                )}
+              </dd>
+            </div>
+          )}
           <div>
             <dt>Last public account check</dt>
             <dd>

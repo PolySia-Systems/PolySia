@@ -1,6 +1,7 @@
 import http.client
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -10,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event, Thread
 
+from apps.server.archive import copy_workspace
 from apps.server.http import LocalServer
 from apps.server.store import Workspace
 
@@ -255,6 +257,10 @@ class WorkspaceHttpTest(unittest.TestCase):
         status, second = self.request("POST", "/api/v1/runs", creation)
         self.assertEqual((200, "0", "100.00"), (status, second["quantity"], second["cash"]))
         self.assertEqual(stopped, self.request("GET", route)[1])
+        _, history = self.request("GET", "/api/v1/runs")
+        archived = history["runs"][1]
+        self.assertEqual((stopped["id"], "-0.265", "0.00"),
+                         (archived["id"], archived["marked_net_result"], archived["realized_pnl"]))
 
     def test_foreign_origins_unsupported_fields_and_authority_rejected(self):
         data = {"version": 1, "revision": 0, "theme": "dark"}
@@ -285,6 +291,54 @@ class WorkspaceHttpTest(unittest.TestCase):
         self.assertEqual([ids[0]], [r["id"] for r in second["runs"]])
         self.assertIsNone(second["nextCursor"])
         self.assertEqual(400, self.request("GET", "/api/v1/runs?before=missing")[0])
+
+    def test_restore_refuses_unreadable_history_and_disagreeing_balances(self):
+        store = self.server.store
+        old = store.create_run("atlas", "100", "10")
+        store.change_run(old["id"], "step", old["revision"])
+        old = store.change_run(old["id"], "stop", old["revision"] + 1)
+        store.create_run("mira", "20", "5")  # Damage is in an older run.
+        destination = self.root / "recovered.db"
+        altered_fill = {**old["events"][0], "quantity": 19.9}
+        for corrupted in ("{", "{}", json.dumps({**old, "fees": "0.00"}),
+                          json.dumps({**old, "remaining_steps": 0}),
+                          json.dumps({**old, "marked_value": "NaN"}),
+                          json.dumps({**old, "events": [altered_fill]})):
+            with self.subTest(corrupted=corrupted), sqlite3.connect(store.path) as db:
+                db.execute("UPDATE runs SET record = ? WHERE id = ?", (corrupted, old["id"]))
+                db.commit()
+                self.assertEqual(db.execute("PRAGMA quick_check").fetchone(), ("ok",))
+                with self.assertRaisesRegex(ValueError, "Saved replay .* failed its integrity check"):
+                    copy_workspace(store.path, destination)
+                self.assertFalse(destination.exists())
+
+    def test_restore_checks_retained_position_pages_and_accepts_older_rows(self):
+        store = self.server.store
+        account = public_snapshot(ADDRESS.lower())
+        historical = {key: account[key] for key in ("source", "positions", "observedAt", "complete")}
+        failed = {**account, "status": "unavailable", "positions": [], "observedAt": None,
+                  "complete": False, "lastSuccessful": historical}
+        store.save_account(account, 0)
+        store.save_account(failed, 1)
+        destination = self.root / "legacy-positions.db"
+        copy_workspace(store.path, destination)
+        self.assertEqual(Workspace(destination).read()["account"], failed)
+        historical["positions"] = [None]
+        with sqlite3.connect(store.path) as db:
+            db.execute("UPDATE workspace SET account = ? WHERE id = 1", (json.dumps(failed),))
+        with self.assertRaisesRegex(ValueError, "saved account watch"):
+            copy_workspace(store.path, self.root / "bad.db")
+        self.assertFalse((self.root / "bad.db").exists())
+
+    def test_completed_replay_with_sales_round_trips_through_backup(self):
+        store = self.server.store
+        run = store.create_run("atlas", "100", "10")
+        while run["remaining_steps"]:
+            run = store.change_run(run["id"], "step", run["revision"])
+        self.assertTrue(any(e["side"] == "SELL" and e["status"] != "skipped" for e in run["events"]))
+        destination = self.root / "completed.db"
+        copy_workspace(store.path, destination)
+        self.assertEqual(Workspace(destination).get_run(run["id"]), run)
 
     def test_online_backup_and_restore_to_new_database_preserve_workspace(self):
         env = {**os.environ, "POLYSIA_DB": str(self.root / "workspace.db")}

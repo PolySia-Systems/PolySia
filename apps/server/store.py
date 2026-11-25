@@ -136,10 +136,10 @@ class Workspace:
                 f"SELECT record FROM runs {condition} ORDER BY rowid DESC LIMIT 21", params,
             ).fetchall()
             fields = ("id", "leader_name", "capital", "order_size", "status", "createdAt",
-                      "updatedAt", "quantity", "cash", "realized_pnl", "fees", "scenario", "mode")
+                      "updatedAt", "quantity", "cash", "marked_net_result", "realized_pnl", "fees", "scenario", "mode")
             summaries = []
             for row in rows[:20]:
-                record = json.loads(row["record"])
+                record = shadow.run_report(json.loads(row["record"]))
                 summaries.append({key: record[key] for key in fields})
             return {"runs": summaries, "nextCursor": summaries[-1]["id"] if len(rows) > 20 else None}
 

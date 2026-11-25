@@ -11,7 +11,7 @@ from .http import LocalServer
 from .store import Workspace
 
 
-def main():
+def main(*, artifact_sha256=None):
     parser = argparse.ArgumentParser(description="Start the PolySia local workspace")
     parser.add_argument("--port", type=int, default=8765)
     commands = parser.add_subparsers(dest="command")
@@ -33,7 +33,7 @@ def main():
             copy_workspace(source, args.to)
             print(f"Verified workspace copy saved to {args.to}.")
             return
-        with LocalServer(args.port, Workspace(path)) as server:
+        with LocalServer(args.port, Workspace(path), artifact_sha256=artifact_sha256) as server:
             print(f"PolySia is running at http://127.0.0.1:{server.server_port}", flush=True)
             server.serve_forever()
     except KeyboardInterrupt:

@@ -17,7 +17,7 @@ import {
 } from 'lucide-react'
 import { api, errorMessage, type Directory, type Workspace } from './api'
 import { Compare, Discover, LeaderDetail } from './Discover'
-import { Preview, Shadow } from './Shadow'
+import { Preview, SavedReplay, Shadow } from './Shadow'
 import { Accounts, Settings, Status } from './Workspace'
 import { PublicRankings } from './PublicRankings'
 import './style.css'
@@ -134,7 +134,7 @@ function App() {
       {
         discover: 'Leader discovery',
         rankings: 'Public rankings',
-        runs: 'Shadow runs',
+        runs: id ? 'Saved replay' : 'Shadow runs',
         accounts: 'Accounts',
         settings: 'Settings',
         status: 'System status',
@@ -147,7 +147,7 @@ function App() {
     (
       {
         rankings: 'Inspect the traders and positions reported by Polymarket.',
-        discover: 'Explore fictional trading profiles and test a leader with simulated capital.',
+        discover: 'Explore public trading data or practice a copy with a simulated wallet.',
         runs: 'See how simulated decisions change your cash and open positions.',
         accounts: 'Inspect public wallet positions and read-only connection status.',
         settings: 'Set your preferences for this workspace.',
@@ -178,7 +178,7 @@ function App() {
     } else window.scrollTo(0, 0)
     if (page === 'discover') document.addEventListener('click', saveScroll, true)
     return () => document.removeEventListener('click', saveScroll, true)
-  }, [page, loading])
+  }, [page, id, loading])
   function toggle(id: string) {
     const next = saved.includes(id) ? saved.filter((i) => i !== id) : [...saved, id]
     setSaved(next)
@@ -292,7 +292,11 @@ function App() {
           </div>
           <span className="mode-indicator">
             <span className="dot" />
-            {['rankings', 'accounts'].includes(page) ? 'Read-only data' : 'Shadow workspace'}
+            {['rankings', 'accounts'].includes(page)
+              ? 'Read-only data'
+              : ['discover', 'settings', 'status'].includes(page)
+                ? 'Local workspace'
+                : 'Shadow workspace'}
           </span>
         </header>
         <main id="main" tabIndex={-1}>
@@ -307,12 +311,6 @@ function App() {
               <h1>{title}</h1>
               <p>{subtitle}</p>
             </div>
-            {page === 'discover' && (
-              <div className="sample-tag">
-                <FlaskConical size={14} />
-                Scenario data
-              </div>
-            )}
           </div>
           {storageNotice && (
             <p role="status" className="notice">
@@ -354,7 +352,12 @@ function App() {
                 />
               )}
               {page === 'compare' && <Compare leaders={leaders} saved={saved} toggle={toggle} />}
-              {page === 'runs' && <Shadow run={workspace.run} refresh={refresh} />}
+              {page === 'runs' &&
+                (id ? (
+                  <SavedReplay key={id} id={id} />
+                ) : (
+                  <Shadow run={workspace.run} refresh={refresh} />
+                ))}
               {page === 'rankings' && <PublicRankings />}
               {page === 'accounts' && (
                 <Accounts
