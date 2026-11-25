@@ -1,0 +1,182 @@
+"""Durable state for one local operator. All state transitions commit atomically."""
+
+import json
+import sqlite3
+from contextlib import closing, contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
+from uuid import uuid4
+
+from . import shadow
+
+
+class Conflict(ValueError):
+    """The client must load the latest state before it can retry."""
+
+
+def timestamp():
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def create_schema_v1(db):
+    """Create the version-1 catalog used by installations and archive verification."""
+    # SQLite retains whitespace inside CREATE TABLE. Preserve the released DDL.
+    db.execute("""
+                    CREATE TABLE workspace (
+                        id INTEGER PRIMARY KEY CHECK (id = 1),
+                        theme TEXT NOT NULL CHECK (theme IN ('light', 'dark')),
+                        settings_revision INTEGER NOT NULL,
+                        account TEXT,
+                        account_revision INTEGER NOT NULL
+                    )
+    """)
+    db.execute("INSERT INTO workspace VALUES (1, 'light', 0, NULL, 0)")
+    db.execute("CREATE TABLE runs (id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+    db.execute("PRAGMA user_version = 1")
+
+
+class Workspace:
+    def __init__(self, path: Path):
+        self.path = path
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with self.connection() as db:
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+            if version not in (0, 1):
+                raise ValueError(f"Unsupported workspace database version {version}")
+            if version == 0:
+                create_schema_v1(db)
+
+    @contextmanager
+    def connection(self, write=True):
+        with closing(sqlite3.connect(self.path, timeout=5)) as db:
+            db.row_factory = sqlite3.Row
+            with db:
+                db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+                yield db
+
+    @staticmethod
+    def settings(row):
+        return {"version": 1, "revision": row["settings_revision"], "theme": row["theme"]}
+
+    def read(self):
+        with self.connection(write=False) as db:
+            row = db.execute("SELECT * FROM workspace WHERE id = 1").fetchone()
+            run = self.latest_run(db)
+            return {
+                "settings": self.settings(row),
+                "accountRevision": row["account_revision"],
+                "account": json.loads(row["account"]) if row["account"] is not None else None,
+                "run": shadow.run_report(run) if run else None,
+            }
+
+    def set_theme(self, version, revision, theme):
+        if type(version) is not int or version != 1 or type(revision) is not int or not 0 <= revision < 2**63:
+            raise ValueError("Provide settings version 1 and its integer revision.")
+        if theme not in ("light", "dark"):
+            raise ValueError("Choose the light or dark theme.")
+        with self.connection() as db:
+            result = db.execute(
+                """UPDATE workspace SET theme = ?, settings_revision = settings_revision + 1
+                   WHERE id = 1 AND settings_revision = ?""",
+                (theme, revision),
+            )
+            if not result.rowcount:
+                raise Conflict("Settings changed. Reload before saving.")
+            return self.settings(db.execute("SELECT * FROM workspace WHERE id = 1").fetchone())
+
+    def account_revision(self):
+        with self.connection(write=False) as db:
+            return db.execute("SELECT account_revision FROM workspace WHERE id = 1").fetchone()[0]
+
+    def check_account_revision(self, revision):
+        if type(revision) is not int or not 0 <= revision < 2**63:
+            raise ValueError("Provide the integer revision of the displayed account watch.")
+        if revision != self.account_revision():
+            raise Conflict("The watched account changed. Review the current watch and try again.")
+
+    def save_account(self, account, revision):
+        # Provider I/O runs outside the transaction. A slow refresh must never
+        # reconnect a watch that was disconnected or switched while it was away.
+        with self.connection() as db:
+            if account and account["status"] == "unavailable":
+                row = db.execute(
+                    "SELECT account FROM workspace WHERE id = 1 AND account_revision = ?", (revision,)
+                ).fetchone()
+                previous = json.loads(row["account"]) if row and row["account"] else None
+                if previous and previous["address"] == account["address"]:
+                    if previous["status"] == "available":
+                        retained = {key: previous[key] for key in ("source", "observedAt", "positions", "complete")}
+                    else:
+                        retained = previous.get("lastSuccessful")
+                    if retained is not None:
+                        account = {**account, "lastSuccessful": retained}
+            result = db.execute(
+                """UPDATE workspace SET account = ?, account_revision = account_revision + 1
+                   WHERE id = 1 AND account_revision = ?""",
+                (json.dumps(account) if account is not None else None, revision),
+            )
+            if not result.rowcount:
+                raise Conflict("The watched account changed. Review the current watch and try again.")
+        return account
+
+    @staticmethod
+    def latest_run(db):
+        row = db.execute("SELECT record FROM runs ORDER BY rowid DESC LIMIT 1").fetchone()
+        return json.loads(row["record"]) if row else None
+
+    def get_run(self, run_id):
+        with self.connection(write=False) as db:
+            return shadow.run_report(self.find_run(db, run_id))
+
+    def run_history(self, before):
+        with self.connection(write=False) as db:
+            params = ()
+            condition = ""
+            if before is not None:
+                cursor = db.execute("SELECT rowid FROM runs WHERE id = ?", (before,)).fetchone()
+                if not cursor:
+                    raise ValueError("Unknown replay history cursor.")
+                condition = "WHERE rowid < ?"
+                params = (cursor[0],)
+            rows = db.execute(
+                f"SELECT record FROM runs {condition} ORDER BY rowid DESC LIMIT 21", params,
+            ).fetchall()
+            fields = ("id", "leader_name", "capital", "order_size", "status", "createdAt",
+                      "updatedAt", "quantity", "cash", "marked_net_result", "realized_pnl", "fees", "scenario", "mode")
+            summaries = []
+            for row in rows[:20]:
+                record = shadow.run_report(json.loads(row["record"]))
+                summaries.append({key: record[key] for key in fields})
+            return {"runs": summaries, "nextCursor": summaries[-1]["id"] if len(rows) > 20 else None}
+
+    @staticmethod
+    def find_run(db, run_id):
+        row = db.execute("SELECT record FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise KeyError("Replay not found.")
+        return json.loads(row["record"])
+
+    def create_run(self, leader_id, allocation, order_size):
+        if not all(isinstance(x, str) for x in (leader_id, allocation, order_size)):
+            raise ValueError("Provide a leader ID and decimal strings for both dollar amounts.")
+        with self.connection() as db:
+            previous = self.latest_run(db)
+            if previous and previous["status"] not in ("stopped", "completed"):
+                raise Conflict("Finish or stop the current replay before starting another.")
+            run = shadow.create_run(leader_id, allocation, order_size)
+            now = timestamp()
+            run.update(id=uuid4().hex, revision=1, createdAt=now, updatedAt=now)
+            db.execute("INSERT INTO runs (id, record) VALUES (?, ?)", (run["id"], json.dumps(run)))
+            return shadow.run_report(run)
+
+    def change_run(self, run_id, action, revision):
+        if type(revision) is not int:
+            raise ValueError("Provide the integer revision of the displayed replay.")
+        with self.connection() as db:
+            current = self.find_run(db, run_id)
+            if revision != current["revision"]:
+                raise Conflict("The replay changed. Reload before applying another action.")
+            run = shadow.apply_action(current, action)
+            run.update(id=run_id, revision=revision + 1, createdAt=current["createdAt"], updatedAt=timestamp())
+            db.execute("UPDATE runs SET record = ? WHERE id = ?", (json.dumps(run), run_id))
+            return shadow.run_report(run)

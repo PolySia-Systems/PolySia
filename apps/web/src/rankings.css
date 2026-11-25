@@ -1,0 +1,129 @@
+.public-board {
+  display: grid;
+  gap: 1rem;
+}
+.public-board .directory-tools {
+  padding: 0;
+}
+.public-list {
+  max-height: 29rem;
+  overflow: auto;
+}
+.public-list table {
+  width: 100%;
+  border-spacing: 0;
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+}
+.public-list th {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.public-list td,
+.public-list th {
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--line);
+}
+.public-list td:first-child {
+  width: 3.5rem;
+  color: var(--muted);
+}
+.public-list td:nth-child(n + 3),
+.public-list th:nth-child(n + 3) {
+  text-align: right;
+}
+.public-list th small {
+  font-weight: 400;
+}
+.public-list .inspected {
+  background: var(--accent-bg);
+}
+.trader-button {
+  text-align: start;
+  color: var(--accent);
+  padding: 0.25rem 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.trader-button strong {
+  display: block;
+}
+.trader-button small {
+  color: var(--muted);
+}
+.profile-label {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .public-list .volume {
+    display: none;
+  }
+  .public-list td,
+  .public-list th {
+    padding: 0.4rem 0.25rem;
+  }
+  .public-list td:first-child {
+    width: 2.1rem;
+  }
+}
+.observation-result {
+  margin-top: 1rem;
+}
+.observation-result dd {
+  overflow-wrap: anywhere;
+}
+.public-compare-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--muted);
+}
+.public-list input[type='checkbox'] {
+  width: 1.1rem;
+  height: 1.1rem;
+  accent-color: var(--accent);
+}
+.public-list td:nth-child(3),
+.public-list th:nth-child(3) {
+  text-align: start;
+}
+.public-compare-card {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.public-compare-card code {
+  display: block;
+  margin-block: 0.3rem 0.7rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.public-overlap {
+  gap: 0.5rem;
+}
+.public-overlap ul {
+  margin: 0;
+}
+
+.public-pnl-plot {
+  margin: 1rem 0;
+}
+.public-pnl-plot figcaption {
+  font-weight: 600;
+}
+.public-pnl-plot svg {
+  display: block;
+  width: 100%;
+  max-width: 42rem;
+  color: var(--accent);
+}
+.public-pnl-plot small {
+  color: var(--muted);
+}
