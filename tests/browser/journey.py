@@ -469,7 +469,7 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
          "event": {"eventTimeSeconds": 1795608002, "shares": "14", "price": "0.52", "fillId": None},
          "participant": {"status": "matched", "role": "maker", "blockNumber": 123, "logIndex": 7},
          "capacity": {"status": "estimated", "budget": "12.50", "shares": "21", "gross": "11.55",
-                      "feeEstimate": "0.259875", "unspent": "0.690125", "maxPriceIncrease": "0.03", "maxLevels": 3},
+                      "feeEstimate": "0.25988", "unspent": "0.69012", "maxPriceIncrease": "0.03", "maxLevels": 3},
          "activityReceivedMs": 1795608005010, "bookReceivedMs": 1795608005060,
          "book": {"sourceTimeMs": 1795608005050, "sourceAgeAtDetectionMs": -40, "bestAskMinusLeaderPrice": "0.03", "askLevelCount": 1,
                   "spreadPerShare": "0.02", "bestBid": {"price": "0.53", "shares": "12"},

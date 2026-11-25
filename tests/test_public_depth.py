@@ -31,13 +31,26 @@ class DepthTests(unittest.TestCase):
         self.assertEqual(quote["feeEstimate"], "0.23744")
         self.assertEqual(sum(Decimal(quote[k]) for k in ("gross", "feeEstimate", "unspent")), 10)
 
-    def test_ceiling_fee_and_exact_one_micro_budget_boundary(self):
+    def test_fee_quantum_and_subminimum_boundary(self):
         s = sample()
-        s["market"].update(minimumShares="1", priceTick="0.000001", takerRate="0.000001")
+        s["market"].update(minimumOrderSize="1", priceTick="0.000001", takerRate="0.000045")
         s["book"].update(minimumOrderShares="1", priceTick="0.000001",
                          bestAsks=[{"price": "0.5", "shares": "5"}])
         quote = public_depth.measure_depth(s, "1.00")
-        self.assertEqual((quote["shares"], quote["feeEstimate"], quote["unspent"]), ("1", "0.000001", "0.499999"))
+        self.assertEqual((quote["shares"], quote["feeEstimate"], quote["unspent"]), ("1", "0.00002", "0.49998"))
+        s["market"]["takerRate"] = "0.000001"
+        quote = public_depth.measure_depth(s, "1.00")
+        self.assertEqual((quote["shares"], quote["feeEstimate"], quote["unspent"]), ("2", "0", "0"))
+
+    def test_observed_five_share_buy_and_ten_pusd_capacity_use_different_amounts(self):
+        s = sample()
+        s["event"] = dict(EVENT, price="0.002", shares="5.0")
+        s["market"]["priceTick"] = "0.001"
+        s["book"].update(priceTick="0.001", spreadPerShare="0.001",
+                         bestAsks=[{"price": "0.002", "shares": "106339.21"}])
+        q = public_depth.measure_depth(s, "10.00")
+        self.assertEqual((q["shares"], q["gross"], q["feeEstimate"], q["unspent"]),
+                         ("4762", "9.524", "0.47525", "0.00075"))
 
     def test_no_estimate_with_missing_or_late_evidence(self):
         for case, status in (("unmatched", "incomplete"), ("partial", "incomplete"), ("pre-check", "incomplete"),
@@ -64,7 +77,7 @@ class DepthTests(unittest.TestCase):
                 elif case == "closed":
                     s["market"]["acceptingOrders"] = False
                 elif case == "minimum":
-                    s["book"]["minimumOrderShares"] = s["market"]["minimumShares"] = "20"
+                    s["book"]["minimumOrderShares"] = s["market"]["minimumOrderSize"] = "20"
                 elif case == "price-cap":
                     s["event"] = dict(EVENT, price="0.46")
                 elif case == "empty":

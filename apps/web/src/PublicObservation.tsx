@@ -121,7 +121,7 @@ export function PublicObservation({ address }: { address: string }) {
                     estimated taker fee · {receipt.capacity.unspent} pUSD unspent.</p>
                   <p className="workspace-note">Up to {receipt.capacity.maxLevels} ask levels,
                     up to {receipt.capacity.maxPriceIncrease} pUSD per share above the BUY.
-                    Assumes no rebates. No fill was simulated.</p>
+                    Assumes no rebates. Venue minimum notional and actual fees remain unverified.</p>
                 </>
               ) : <p>{receipt.capacity.reason}</p>}
             </section>

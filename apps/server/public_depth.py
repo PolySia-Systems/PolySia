@@ -16,6 +16,7 @@ MAX_SIGNAL_AGE_MS = 10_000
 PRICE_ALLOWANCE = 30_000  # 0.03 pUSD per share above the reported BUY
 SCALE = 1_000_000
 MAX_LEVELS = 3
+FEE_QUANTUM = 10  # published five-decimal precision, expressed in micro-pUSD
 
 
 def budget_amount(value):
@@ -51,8 +52,17 @@ def _terms(payload, event):
             or type(payload.get("nr")) is not bool or type(payload.get("itode", False)) is not bool):
         raise ValueError("Unsupported market constraints")
     return {"takerRate": _units(_micros(fee["r"])), "feeExponent": 1, "takerOnly": True,
-            "minimumShares": _units(minimum), "priceTick": _units(tick), "acceptingOrders": payload["ao"],
+            "minimumOrderSize": _units(minimum), "priceTick": _units(tick), "acceptingOrders": payload["ao"],
             "negativeRisk": payload["nr"], "takerDelayEnabled": payload.get("itode", False)}
+
+
+def _level_fee(quantity, price, rate):
+    # Fee in micro-pUSD for C shares is C * rate * price * (1 - price).
+    numerator = quantity * rate * price * (SCALE - price)
+    denominator = SCALE * SCALE * FEE_QUANTUM
+    if numerator < denominator:
+        return 0
+    return ((numerator + denominator - 1) // denominator) * FEE_QUANTUM
 
 
 def _estimate(sample, budget, terms):
@@ -81,7 +91,7 @@ def _estimate(sample, budget, terms):
     if book["bidLevelCount"] is None or (book["spreadPerShare"] is not None and Decimal(book["spreadPerShare"]) <= 0):
         return {"status": "incomplete", "reason": "The opposite side of the book was missing or crossed."}
     if (book["minimumOrderShares"] is None or book["priceTick"] is None
-            or _micros(book["minimumOrderShares"]) != _micros(terms["minimumShares"])
+            or _micros(book["minimumOrderShares"]) != _micros(terms["minimumOrderSize"])
             or _micros(book["priceTick"]) != _micros(terms["priceTick"])):
         return {"status": "incomplete", "reason": "Book and market size or tick constraints were missing or differed."}
 
@@ -97,18 +107,22 @@ def _estimate(sample, budget, terms):
         previous = price
         if price > cap:
             break
-        # Fee per whole share in micro-pUSD is rate * price * (1-price).
-        # Reserve the fee rounded up to one micro-pUSD separately at each level.
-        denominator = SCALE * SCALE
-        fee_numerator = rate * price * (SCALE - price)
-        affordable = remaining * denominator // (price * denominator + fee_numerator)
-        quantity = min(affordable, _micros(level["shares"]) // SCALE)
-        fee = (quantity * fee_numerator + denominator - 1) // denominator
+        # Gross cost plus the stepped fee is monotone in whole shares. Find
+        # the largest displayed quantity whose rounded total fits the budget.
+        quantity = 0
+        upper = min(remaining // price, _micros(level["shares"]) // SCALE)
+        while quantity < upper:
+            trial = (quantity + upper + 1) // 2
+            if trial * price + _level_fee(trial, price, rate) <= remaining:
+                quantity = trial
+            else:
+                upper = trial - 1
+        fee = _level_fee(quantity, price, rate)
         gross += quantity * price
         fees += fee
         remaining -= quantity * price + fee
         total_shares += quantity
-    if total_shares == 0 or total_shares * SCALE < _micros(terms["minimumShares"]):
+    if total_shares * SCALE < _micros(book["minimumOrderShares"]):
         return {"status": "skipped", "reason": "The displayed asks within the price and budget limits could not cover the minimum size."}
     return {"status": "estimated", "shares": str(total_shares), "gross": _units(gross),
             "feeEstimate": _units(fees), "unspent": _units(remaining),
@@ -127,7 +141,9 @@ def market_terms(event):
 def capacity_policy(budget):
     return {"budget": budget, "asset": "pUSD", "delaySeconds": DELAY_SECONDS,
             "maxReceiptMs": MAX_RECEIPT_MS, "maxSignalAgeMs": MAX_SIGNAL_AGE_MS,
-            "maxPriceIncrease": _units(PRICE_ALLOWANCE), "maxLevels": MAX_LEVELS}
+            "maxPriceIncrease": _units(PRICE_ALLOWANCE), "maxLevels": MAX_LEVELS,
+            "feeQuantum": _units(FEE_QUANTUM), "feeRounding": "up per ask level, sub-minimum zero",
+            "minimumNotional": None}
 
 
 def measure_depth(sample, budget):
