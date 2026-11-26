@@ -45,3 +45,20 @@
 .paper-holding { border-bottom: 1px solid var(--line); padding-bottom: 12px; }
 .paper-holding .paper-position { border-bottom: 0; padding-bottom: 6px; }
 .paper-mark p { margin: 6px 0; }
+
+.paper-sale, .paper-legacy { margin-top: 12px; padding: 12px 14px; background: var(--soft); border-radius: 8px; }
+.paper-sale summary { font-weight: 600; cursor: pointer; color: var(--accent); }
+.paper-sale p, .paper-legacy p { margin: 8px 0; }
+.paper-sale form { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+.paper-sale input { display: block; max-width: 12em; width: 100%; margin-top: 4px; padding: 8px 10px; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.paper-valuation { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.paper-valuation p { margin: 6px 0; }
+.paper-valuation .paper-metrics { border: 0; padding: 0; margin: 12px 0; }
+.paper-valuation .paper-evidence > div { margin: 10px 0; }
+
+.paper-workbench { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 18px; align-items: start; }
+.paper-sale-result { padding: 8px 12px; border-left: 3px solid var(--accent); background: var(--accent-bg); }
+.paper-closed { padding: 12px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.paper-closed p { margin: 4px 0; }
+.paper-closed small { color: var(--muted); }
+@media (max-width: 1080px) { .paper-workbench { grid-template-columns: minmax(0, 1fr); } }
