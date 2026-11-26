@@ -1,4 +1,4 @@
-"""Corroborate one ordinary Data API BUY against its owner's Polygon exchange log."""
+"""Corroborate one ordinary Data API trade against its owner's Polygon exchange log."""
 
 import json
 import re
@@ -51,8 +51,12 @@ def _receipt(tx):
 def _amount_match_basis(event, role, paid, shares, fee):
     if not 0 < paid <= shares or Fraction(decimal_value(event["shares"])) * 1_000_000 != shares:
         return None
+    selling = event.get("side", "BUY") == "SELL"
+    if selling and fee > paid:
+        return None
+    settlement = paid - fee if selling else paid + fee
     reported = event.get("reportedCollateral")
-    if reported is not None and Fraction(decimal_value(reported)) * 1_000_000 != paid + fee:
+    if reported is not None and Fraction(decimal_value(reported)) * 1_000_000 != settlement:
         return None
     price = Fraction(decimal_value(event["price"]))
     if not 0 < price <= 1:
@@ -60,7 +64,7 @@ def _amount_match_basis(event, role, paid, shares, fee):
     chain_price = Fraction(paid, shares)
     if price == chain_price:
         return "exact-price-and-shares"
-    if role == "taker" and reported is not None:
+    if not selling and role == "taker" and reported is not None:
         # Two paired taker settlements report gross plus the charged fee and a
         # price rounded to ten decimals. Reject ties and off-grid prices.
         scaled = price * REPORTED_PRICE_SCALE
@@ -70,6 +74,10 @@ def _amount_match_basis(event, role, paid, shares, fee):
 
 
 def _match(receipt, wallet, event):
+    side_name = event.get("side", "BUY")
+    if side_name not in ("BUY", "SELL"):
+        raise ValueError("Unsupported trade side")
+    selling = side_name == "SELL"
     tx = event["transactionHash"]
     if (not isinstance(receipt, dict) or receipt.get("status") != "0x1"
             or receipt.get("transactionHash") != tx or wallet in EXCHANGES):
@@ -102,12 +110,13 @@ def _match(receipt, wallet, event):
         order = _hex(topics[1], r"0x[0-9a-fA-F]{64}")
         maker, taker = (_hex(topic, r"0x0{24}[0-9a-fA-F]{40}") for topic in topics[2:])
         data = _hex(log["data"], r"0x[0-9a-fA-F]{448}")[2:]
-        side, token, paid, shares, fee = (int(data[i:i+64], 16) for i in range(0, 320, 64))
-        if maker == owner and side == 0 and str(token) == event["tokenId"]:
+        side, token, making, taking, fee = (int(data[i:i+64], 16) for i in range(0, 320, 64))
+        if maker == owner and side == int(selling) and str(token) == event["tokenId"]:
+            paid, shares = (taking, making) if selling else (making, taking)
             candidates.append((index, exchange, order, taker, data, paid, shares, fee))
 
     if len(candidates) != 1:
-        return {"status": "unresolved", "reason": "The receipt did not isolate one BUY order for this wallet and token."}
+        return {"status": "unresolved", "reason": f"The receipt did not isolate one {side_name} order for this wallet and token."}
     index, exchange, order, taker, data, paid, shares, fee = candidates[0]
     if taker == owner:
         return {"status": "unresolved", "reason": "The participant was also recorded as its own counterparty."}
@@ -124,18 +133,24 @@ def _match(receipt, wallet, event):
         return {"status": "unresolved", "reason": "The counterparty was a different exchange contract."}
     basis = _amount_match_basis(event, role, paid, shares, fee)
     if not basis:
-        return {"status": "unresolved", "reason": "The participant amounts did not reconcile with the public BUY."}
+        return {"status": "unresolved", "reason": f"The participant amounts did not reconcile with the public {side_name}."}
     amounts = ({"grossCollateral": units_from_micros(paid), "chargedFee": units_from_micros(fee),
-                "totalCollateral": units_from_micros(paid + fee)} if role == "taker" else {})
+                ("netProceeds" if selling else "totalCollateral"): units_from_micros(paid - fee if selling else paid + fee)} if role == "taker" else {})
     return {"status": "matched", "chainId": 137, "blockNumber": block, "blockHash": block_hash,
             "transactionHash": tx, "exchange": exchange, "logIndex": index, "orderHash": order,
             "fillId": f"137:{tx}:{index}", "role": role, "sharesBaseUnits": str(shares),
             "collateralBaseUnits": str(paid), "feeBaseUnits": str(fee), "amountMatchBasis": basis, **amounts}
 
 
-def identify_buy(wallet, event):
+def identify_trade(wallet, event):
     try:
         match = _match(_receipt(event["transactionHash"]), wallet, event)
     except (OSError, HTTPException, KeyError, ValueError, InvalidOperation, RecursionError):
         match = {"status": "unavailable", "reason": "The Polygon receipt was missing, unreachable or inconsistent."}
     return dict(match, source=RPC, checkedMs=time.time_ns() // 1_000_000)
+
+
+def identify_buy(wallet, event):
+    if event.get("side", "BUY") != "BUY":
+        raise ValueError("Expected a BUY")
+    return identify_trade(wallet, event)

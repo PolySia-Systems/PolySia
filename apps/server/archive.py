@@ -11,7 +11,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from .provider import decimal_value, validate_address
-from .store import add_public_runs, create_schema_v1
+from .store import add_public_exits, add_public_runs, create_schema_v1
 from .public_shadow import verify_archive
 
 
@@ -130,8 +130,10 @@ def _verify_schema(db, version):
     catalog = "SELECT type, name, tbl_name, sql FROM main.sqlite_schema ORDER BY type, name"
     with closing(sqlite3.connect(":memory:")) as reference:
         create_schema_v1(reference)
-        if version == 2:
+        if version >= 2:
             add_public_runs(reference)
+        if version >= 3:
+            add_public_exits(reference)
         expected = reference.execute(catalog).fetchall()
     if db.execute(catalog).fetchmany(len(expected) + 1) != expected:
         raise ValueError("The database schema differs from the supported PolySia workspace schema.")
@@ -153,7 +155,7 @@ def copy_workspace(source: Path, destination: Path):
                 reader.backup(writer, pages=256)
                 writer.execute("PRAGMA trusted_schema = OFF")
                 version = writer.execute("PRAGMA user_version").fetchone()[0]
-                if version not in (1, 2):
+                if version not in (1, 2, 3):
                     raise ValueError("This file is not a supported PolySia workspace.")
                 _verify_schema(writer, version)
                 if writer.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
@@ -166,10 +168,10 @@ def copy_workspace(source: Path, destination: Path):
                 if any(type(revision) is not int or revision < 0 for revision in row[1:3]):
                     raise ValueError("The workspace revisions are invalid.")
                 _verify_records(writer, row[3])
-                if version == 2:
+                if version >= 2:
                     writer.row_factory = sqlite3.Row
                     try:
-                        verify_archive(writer)
+                        verify_archive(writer, version=version)
                     except (AttributeError, ArithmeticError, IndexError, KeyError, TypeError, ValueError, RecursionError) as exc:
                         raise ValueError(f"Public shadow archive failed its integrity check: {exc}") from exc
         os.fsync(staging.fileno())
