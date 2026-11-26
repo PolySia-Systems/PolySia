@@ -493,7 +493,7 @@ export function Status({ workspace }: Props) {
           <h2>Project status</h2>
         </header>
         <p>
-          Public rankings and account watches read Polymarket. Public shadow runs use public BUY
+          Public rankings and account watches read Polymarket. Public shadow runs use public BUY and SELL
           observations and simulated funds. Scenario replays use fictional leaders, prices and funds.
         </p>
         <p>

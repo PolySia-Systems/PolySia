@@ -1,6 +1,7 @@
-"""One explicit midpoint check for an existing simulated position."""
+"""On-demand public midpoint estimates for simulated holdings and portfolio equity."""
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, localcontext
 from http.client import HTTPException
@@ -9,6 +10,7 @@ from .observe import BOOK, normalize_book
 from .provider import read_public_json
 
 MAX_BOOK_AGE_MS = 60_000
+MAX_PORTFOLIO_BOOKS = 12
 
 
 def read_mark(basis):
@@ -25,8 +27,8 @@ def read_mark(basis):
                       ask=asks[0]["price"] if asks else None)
         if not 0 <= received - book["sourceTimeMs"] <= MAX_BOOK_AGE_MS:
             reason = "The book timestamp fell outside the one-minute freshness window."
-        elif book["sourceTimeMs"] < round(datetime.fromisoformat(basis["lastEntryAt"]).timestamp() * 1000):
-            reason = "The book was last updated before this position’s most recent purchase."
+        elif book["sourceTimeMs"] < round(datetime.fromisoformat(basis.get("lastChangeAt", basis["lastEntryAt"])).timestamp() * 1000):
+            reason = "The book was last updated before the latest change to this position."
         elif not bid or not asks or Decimal(book["spreadPerShare"]) <= 0:
             reason = "A midpoint needs a bid below the ask on the same book."
         else:
@@ -41,3 +43,31 @@ def read_mark(basis):
         received = time.time_ns() // 1_000_000
         reason = "A matching public order book could not be read."
     return dict(result, checkedMs=received, reason=reason)
+
+
+def portfolio_value(basis):
+    positions = basis["positions"]
+    with ThreadPoolExecutor(max_workers=3) as readers:
+        marks = list(readers.map(read_mark, positions[:MAX_PORTFOLIO_BOOKS]))
+    checked = time.time_ns() // 1_000_000
+    for mark in marks:
+        if mark["value"] is not None and not 0 <= checked - mark["bookTimeMs"] <= MAX_BOOK_AGE_MS:
+            mark.update(value=None, changeFromCost=None, midpoint=None,
+                        reason="The quote fell outside the freshness window before the portfolio check finished.")
+    priced = [Decimal(mark["value"]) for mark in marks if mark["value"] is not None]
+    complete = len(priced) == len(positions)
+    # Midpoints may have fractional micro-pUSD. Cash and cost remain integer-backed.
+    with localcontext() as arithmetic:
+        arithmetic.prec = 110
+        marked = sum(priced, Decimal(0))
+        equity = Decimal(basis["cash"]) + marked
+        return {"runId": basis["id"], "revision": basis["revision"], "wallet": basis["wallet"],
+                "mode": basis["mode"], "asset": "pUSD", "source": BOOK, "checkedMs": checked,
+                "capital": basis["capital"], "cash": basis["cash"], "realized": basis["realized"],
+                "openCost": basis["openCost"], "complete": complete, "total": len(positions),
+                "priced": len(priced), "checked": len(marks), "maxBooks": MAX_PORTFOLIO_BOOKS, "marks": marks,
+                "uncheckedPositions": positions[MAX_PORTFOLIO_BOOKS:],
+                "pricedValue": format(marked.normalize(), "f") if priced or not positions else None,
+                "equity": format(equity.normalize(), "f") if complete else None,
+                "unrealized": format((marked - Decimal(basis["openCost"])).normalize(), "f") if complete else None,
+                "netResult": format((equity - Decimal(basis["capital"])).normalize(), "f") if complete else None}

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tempfile
 import time
@@ -5,9 +6,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from apps.server import public_depth, public_marks, public_shadow as paper
+from apps.server import public_depth, public_fill, public_marks, public_shadow as paper
 from apps.server.archive import copy_workspace
-from apps.server.store import Conflict, Workspace, create_schema_v1
+from apps.server.store import Conflict, Workspace, add_public_runs, create_schema_v1
 from test_public_depth import MS, sample
 from test_observe import book
 
@@ -31,10 +32,26 @@ def observed_buy(wallet, budget, *, order="07", start=None):
     tx = "0x" + "de" * 32
     data["event"] = dict(data["event"], side="BUY", eventTimeSeconds=start, transactionHash=tx,
                          marketTitle="Fixture opening day?", outcomeLabel="Yes")
-    data["participant"].update(chainId=137, transactionHash=tx, orderHash="0x" + order * 32)
+    data["event"]["shares"] = "25"
+    data["participant"].update(chainId=137, transactionHash=tx, orderHash="0x" + order * 32,
+                               role="maker", sharesBaseUnits="25000000", collateralBaseUnits="12500000",
+                               feeBaseUnits="0", amountMatchBasis="exact-price-and-shares")
     data.update(schemaVersion=2, windowStartSeconds=start, windowEndSeconds=start + 1,
                 status="observed", reason="Controlled public BUY.", wallet=wallet, asset="pUSD", researchBudget=budget)
     data["capacity"] = public_depth.measure_depth(data, budget)
+    return data
+
+
+def observed_sell(wallet, scope, *, start=None, order="08", depth="8", leader_shares="25"):
+    data = observed_buy(wallet, "10.00", order=order, start=start)
+    del data["researchBudget"]
+    data.update(schemaVersion=4, exitScope=scope)
+    data["event"].update(side="SELL", shares=leader_shares)
+    data["participant"]["sharesBaseUnits"] = str(public_depth._micros(leader_shares))
+    data["participant"]["collateralBaseUnits"] = str(public_depth._micros(leader_shares) // 2)
+    bid = {"price": "0.48", "shares": depth}
+    data["book"].update(bestBids=[bid], bestBid=bid)
+    data["capacity"] = public_depth.measure_sale(data)
     return data
 
 
@@ -122,6 +139,36 @@ class PublicPortfolioTests(unittest.TestCase):
         with migrated.connection() as db:
             self.assertEqual(paper.listing(db), {"runs": [], "nextCursor": None})
 
+    def test_restore_schema_two_purchase_then_enable_exits(self):
+        old = self.root / "wallet-v2.db"
+        receipt = observed_buy(WALLET, "10.00", start=1577836810)
+        recorded = "2020-01-01T00:00:20.000Z"
+        with sqlite3.connect(old) as db:
+            create_schema_v1(db)
+            add_public_runs(db)
+            db.execute("INSERT INTO public_runs VALUES(?,?,?,?,?,?,?,?,?,?)", (
+                ID, WALLET, "Legacy position", 25_000_000, 10_000_000,
+                json.dumps(paper._policy("10.00")), STARTED, recorded, "running", 2))
+            db.execute("INSERT INTO public_decisions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+                ID, 2, recorded, "entry", "Modeled a BUY against the delayed displayed asks.",
+                receipt["participant"]["exchange"] + "/" + receipt["participant"]["orderHash"],
+                receipt["event"]["conditionId"], "734", "Fixture opening day?", "Yes",
+                19, 9_620_000, 237_440, json.dumps(receipt)))
+        target = self.root / "wallet-restored.db"
+        copy_workspace(old, target)
+        with Workspace(target).connection() as db:
+            before = paper.report(db, ID, export=True)
+            self.assertEqual((before["exitsEnabled"], before["cash"], before["openCost"]), (False, "15.14256", "9.85744"))
+            self.assertEqual(before["decisions"][0]["receipt"], receipt)
+            self.assertEqual(before["positions"][0]["shares"], "19")
+            with self.assertRaises(Conflict):
+                paper.sale_terms(db, ID, 2, "734", "5")
+            paper.control(db, ID, 2, "enable-exits")
+            _, scope, _ = paper.sale_terms(db, ID, 3, "734", "5")
+            sold = paper.record_sale(db, ID, 3, "734", "5", observed_sell(WALLET, scope))
+            self.assertEqual(sold["positions"][0]["shares"], "14")
+            paper.verify_archive(db)
+
     def test_position_mark_is_revision_scoped_with_fresh_two_sided_identity(self):
         self.create()
         with self.store.connection() as db:
@@ -146,3 +193,122 @@ class PublicPortfolioTests(unittest.TestCase):
                 else:
                     self.assertEqual((result["midpoint"], result["value"], result["changeFromCost"]),
                                      ("0.495", "9.405", "-0.45244"))
+
+
+    def test_partial_duplicate_and_full_sale_reconcile_after_restart(self):
+        from datetime import UTC, datetime
+        self.create()
+        start = int(time.time()) - 40
+        bought = datetime.fromtimestamp(start + 6, UTC).isoformat()
+        with self.store.connection() as db:
+            with patch.object(paper, "timestamp", return_value=bought):
+                paper.record(db, ID, 1, observed_buy(WALLET, "10.00", start=start))
+            paper.control(db, ID, 2, "pause")
+            wallet, scope, _ = paper.sale_terms(db, ID, 3, "734", "11")
+            receipt = observed_sell(wallet, scope, start=start + 10)
+            with patch.object(paper, "timestamp", return_value=datetime.fromtimestamp(start + 16, UTC).isoformat()):
+                first = paper.record_sale(db, ID, 3, "734", "11", receipt)
+            self.assertEqual((first["cash"], first["openCost"], first["realized"]), ("18.88272", "5.706939", "-0.410341"))
+            self.assertEqual(first["positions"][0]["shares"], "11")
+            self.assertEqual(first["positions"][0]["realized"], first["realized"])
+            self.assertEqual(first["decisions"][0]["releasedCost"], "4.150501")
+            duplicate = paper.record_sale(db, ID, 4, "734", "11", receipt)
+            self.assertEqual((duplicate["decisions"][0]["kind"], duplicate["cash"]), ("duplicate", first["cash"]))
+            with self.assertRaises(ValueError):
+                paper.sale_terms(db, ID, 5, "734", "12")
+            earlier = paper.record_sale(db, ID, 5, "734", "11", observed_sell(wallet, scope, order="0a", start=start + 10))
+            self.assertEqual((earlier["decisions"][0]["kind"], earlier["cash"]), ("incomplete", first["cash"]))
+            filled = paper.record_sale(db, ID, 6, "734", "11", observed_sell(wallet, scope, order="09", depth="25", start=start + 20))
+            self.assertEqual((filled["openCost"], filled["positions"], filled["exits"]), ("0", [], 2))
+            closed, = filled["closedPositions"]
+            self.assertEqual((closed["soldShares"], closed["releasedCost"], closed["saleProceeds"], closed["realized"]),
+                             ("19", "9.85744", "8.88288", "-0.97456"))
+            with self.assertRaises(ValueError):
+                paper.position_basis(db, ID, "734", 7)
+            final = paper.report(db, ID, export=True)
+        copy_workspace(self.store.path, self.root / "copy.db")
+        with Workspace(self.root / "copy.db").connection() as db:
+            self.assertEqual(final, paper.report(db, ID, export=True))
+            paper.control(db, ID, 7, "resume")
+            later = int(time.time()) + 1
+            with patch.object(paper, "timestamp", return_value=datetime.fromtimestamp(later + 6, UTC).isoformat()):
+                reopened = paper.record(db, ID, 8, observed_buy(WALLET, "10.00", start=later, order="10"))
+            self.assertEqual((reopened["closedPositions"], reopened["positions"][0]["realized"]), ([], closed["realized"]))
+            paper.verify_archive(db)
+        with self.store.connection() as db:
+            db.execute("UPDATE public_decisions SET released_cost=released_cost+1 WHERE kind='exit' AND revision=4")
+        with self.assertRaisesRegex(ValueError, "cost basis"):
+            copy_workspace(self.store.path, self.root / "invalid.db")
+
+    def test_restore_reconciles_historical_sell_settlement(self):
+        from datetime import UTC, datetime
+        historical = json.loads((Path(__file__).parent / "fixtures/polygon-sell.json").read_text())
+        event, wallet = historical["event"], historical["wallet"]
+        start = event["eventTimeSeconds"]
+        with self.store.connection() as db:
+            with patch.object(paper, "timestamp", return_value=STARTED):
+                paper.create(db, ID, wallet, "Settlement test", "25", "10")
+            entry = observed_buy(wallet, "10.00", start=start - 20)
+            entry["event"].update(conditionId=event["conditionId"], tokenId=event["tokenId"])
+            with patch.object(paper, "timestamp", return_value=datetime.fromtimestamp(start - 10, UTC).isoformat()):
+                paper.record(db, ID, 1, entry)
+            token = event["tokenId"]
+            _, scope, _ = paper.sale_terms(db, ID, 2, token, "5")
+            sale = observed_sell(wallet, scope, start=start)
+            sale["event"] = event
+            sale["participant"].update(public_fill._match(historical["receipt"], wallet, event))
+            bid = {"price": "0.99", "shares": "10"}
+            sale["book"].update(bestBid=bid, bestBids=[bid], bestAsks=[], spreadPerShare=None)
+            sale["capacity"] = public_depth.measure_sale(sale)
+            self.assertEqual(paper.record_sale(db, ID, 2, token, "5", sale)["exits"], 1)
+            saved = paper.report(db, ID, export=True)
+        copy_workspace(self.store.path, self.root / "good.db")
+        with Workspace(self.root / "good.db").connection(write=False) as db:
+            self.assertEqual(paper.report(db, ID, export=True), saved)
+        for field, key, wrong in (("event", "reportedCollateral", "2914.3827"),
+                                  ("participant", "netProceeds", "2914.3827"),
+                                  ("participant", "feeBaseUnits", "0")):
+            with self.subTest(key=key), self.store.connection() as db:
+                changed = sale | {field: sale[field] | {key: wrong}}
+                db.execute("UPDATE public_decisions SET receipt=? WHERE kind='exit'", (json.dumps(changed),))
+            with self.assertRaisesRegex(ValueError, "participant|Participant"):
+                copy_workspace(self.store.path, self.root / "bad.db")
+            self.assertFalse((self.root / "bad.db").exists())
+
+    def test_sale_depth_caps_leader_floor_price_fee_and_missing_evidence(self):
+        scope = public_depth.sell_scope("0x" + "12" * 32, "734", "15")
+        receipt = observed_sell(WALLET, scope, leader_shares="7.9", depth="5")
+        receipt["book"]["bestBids"] += [{"price": "0.47", "shares": "1.9"}, {"price": "0.46", "shares": "50"}]
+        quote = public_depth.measure_sale(receipt)
+        self.assertEqual((quote["targetShares"], quote["shares"], quote["gross"]), ("7", "6", "2.87"))
+        for changes in ({"activityCoverage": {"complete": False}}, {"participant": {"status": "unresolved"}},
+                        {"bookReceivedMs": receipt["bookReceivedMs"] + 10000}):
+            self.assertNotEqual(public_depth.measure_sale(receipt | changes)["status"], "estimated")
+        self.assertEqual(observed_sell(WALLET, scope, depth="4.99")["capacity"]["status"], "skipped")
+
+    def test_whole_portfolio_valuation_requires_fresh_prices_for_every_position(self):
+        self.create()
+        with self.store.connection() as db:
+            empty = paper.valuation_basis(db, ID, 1)
+            with patch.object(public_marks, "read_public_json") as network:
+                self.assertEqual(public_marks.portfolio_value(empty)["equity"], "25")
+                network.assert_not_called()
+            paper.record(db, ID, 1, observed_buy(WALLET, "10.00"))
+            basis = paper.valuation_basis(db, ID, 2)
+        now = time.time_ns() // 1_000_000
+        fixture = book(timestamp=str(now), bids=[{"price": "0.48", "size": "1"}], asks=[{"price": "0.5", "size": "1"}])
+        with patch.object(public_marks, "read_public_json", return_value=fixture):
+            complete = public_marks.portfolio_value(basis)
+            self.assertEqual((complete["equity"], complete["realized"], complete["netResult"]), ("24.45256", "0", "-0.54744"))
+            additional = basis["positions"][0] | {"tokenId": "735"}
+            mixed = basis | {"positions": [*basis["positions"], additional]}
+            partial = public_marks.portfolio_value(mixed)
+            self.assertEqual((partial["priced"], partial["checked"], partial["pricedValue"]), (1, 2, "9.31"))
+            self.assertIsNone(partial["equity"])
+            with patch.object(public_marks, "MAX_PORTFOLIO_BOOKS", 1):
+                bounded = public_marks.portfolio_value(mixed)
+                self.assertEqual((bounded["checked"], bounded["total"], bounded["netResult"]), (1, 2, None))
+                self.assertEqual(bounded["uncheckedPositions"], [additional])
+            with patch.object(public_marks.time, "time_ns", side_effect=[now * 1_000_000, (now + 61_000) * 1_000_000]):
+                expired = public_marks.portfolio_value(basis)
+                self.assertEqual((expired["priced"], expired["unrealized"]), (0, None))

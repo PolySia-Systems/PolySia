@@ -1,4 +1,4 @@
-"""Measure one prospective public BUY observation and its subsequent displayed book."""
+"""Observe one public wallet trade window and its subsequent displayed book."""
 
 import argparse
 import json
@@ -33,10 +33,10 @@ def _quantity(value, *, price=False):
     return format(number, "f")
 
 
-def _buy(row, address, start, end):
+def _trade(row, address, start, end, side):
     if not isinstance(row, dict) or validate_address(row.get("proxy_wallet")) != address:
         raise ValueError("Wallet mismatch")
-    if row.get("type") != "TRADE" or row.get("side") != "BUY":
+    if row.get("type") != "TRADE" or row.get("side") != side:
         raise ValueError("Unexpected activity")
     timestamp = row.get("timestamp")
     if type(timestamp) is not int or not start <= timestamp <= end:
@@ -55,7 +55,7 @@ def _buy(row, address, start, end):
         "eventTimeSeconds": timestamp, "conditionId": row["condition_id"].lower(),
         "tokenId": token, "transactionHash": row["transaction_hash"].lower(),
         "price": _quantity(row["price"], price=True), "shares": _quantity(row["size"]),
-        "fillId": None, "side": "BUY",
+        "fillId": None, "side": side,
     }
     if "usdc_size" in row:
         amount = row["usdc_size"]
@@ -83,34 +83,45 @@ def normalize_book(payload, event):
         raise ValueError("Missing millisecond book timestamp")
     levels = sorted(_levels(payload["asks"]), key=lambda level: Decimal(level["price"]))
     bids = _levels(payload["bids"]) if "bids" in payload else None
-    best_bid = max(bids or [], key=lambda level: Decimal(level["price"]), default=None)
+    ranked_bids = sorted(bids or [], key=lambda level: Decimal(level["price"]), reverse=True)
+    best_bid = ranked_bids[0] if ranked_bids else None
     with localcontext() as arithmetic:
         arithmetic.prec = 81
         spread = format(Decimal(levels[0]["price"]) - Decimal(best_bid["price"]), "f") if levels and best_bid else None
     return {
         "sourceTimeMs": int(timestamp), "askLevelCount": len(levels), "bestAsks": levels[:public_depth.MAX_LEVELS],
-        "bestBid": best_bid, "bidLevelCount": len(bids) if bids is not None else None,
+        "bestBid": best_bid, "bestBids": ranked_bids[:public_depth.MAX_LEVELS], "bidLevelCount": len(bids) if bids is not None else None,
         "spreadPerShare": spread, "negativeRisk": payload.get("neg_risk") if type(payload.get("neg_risk")) is bool else None,
         "minimumOrderShares": _quantity(payload["min_order_size"]) if "min_order_size" in payload else None,
         "priceTick": _quantity(payload["tick_size"], price=True) if "tick_size" in payload else None,
     }
 
 
-def read_buy_page(address, start, end):
+def read_trade_page(address, start, end, side, scope=None):
     payload = read_public_json(ACTIVITY, {
-        "user": address, "type": "TRADE", "side": "BUY", "sort_direction": "ASC",
+        "user": address, "type": "TRADE", "side": side, "sort_direction": "ASC",
         "start": start, "end": end, "exclude_deposits_withdrawals": "false", "limit": LIMIT,
     })
     received = time.time_ns() // 1_000_000
     rows, cursor = unpack_page(payload, LIMIT)
-    buys = [event for row in rows if (event := _buy(row, address, start, end)) is not None]
-    return buys, {"rowsReturned": len(rows), "complete": cursor is None, "ordinaryBuyRows": len(buys)}, received
+    trades = [event for row in rows if (event := _trade(row, address, start, end, side)) is not None]
+    if scope is not None:
+        trades = [event for event in trades if all(event[k] == scope[k] for k in ("conditionId", "tokenId"))]
+    count_key = "matchingSellRows" if scope else "ordinaryBuyRows"
+    return trades, {"rowsReturned": len(rows), "complete": cursor is None, count_key: len(trades)}, received
 
 
-def _validate_retry(retry_empty, seconds, budget, index_wait=0):
+def read_buy_page(address, start, end):
+    return read_trade_page(address, start, end, "BUY")
+
+
+def _validate_retry(retry_empty, seconds, budget, index_wait=0, exit_scope=None):
+    if exit_scope is not None and (seconds != 2 or index_wait != 0 or budget is not None
+                                   or public_depth.sell_scope(exit_scope["conditionId"], exit_scope["tokenId"], exit_scope["maxShares"]) != exit_scope):
+        raise ValueError("A SELL window requires one position, a share limit and two seconds.")
     if type(retry_empty) is not bool:
         raise ValueError("The second activity read must be enabled with true or false.")
-    if retry_empty and (seconds != 2 or budget is None or index_wait != 0):
+    if retry_empty and (seconds != 2 or (budget is None and exit_scope is None) or index_wait != 0):
         raise ValueError("The second activity read requires a two-second window, a budget and no indexing wait.")
 
 
@@ -118,7 +129,9 @@ def _can_still_sample(event_second, now_ms):
     return now_ms + public_depth.DELAY_SECONDS * 1000 <= event_second * 1000 + public_depth.MAX_SIGNAL_AGE_MS
 
 
-def _detect_buys(result, retry_empty):
+def _detect_trades(result, retry_empty):
+    scope = result.get("exitScope")
+    side = "SELL for this outcome" if scope else "BUY"
     start, end = result["windowStartSeconds"], result["windowEndSeconds"]
     close_ms = (end + 1) * 1000
     last_read = 2 if retry_empty else 1
@@ -138,14 +151,15 @@ def _detect_buys(result, retry_empty):
             result.update(status="incomplete", reason="Local clock moved before the activity read was due.")
             return []
         if number == 2 and not _can_still_sample(end, requested):
-            result.update(status="incomplete", reason="The second read was skipped. Even the latest BUY in the window "
+            result.update(status="incomplete", reason=f"The second read was skipped. Even the latest {side} in the window "
                           "could no longer meet the age limit after the modeled delay.")
             return []
         attempt = {"requestedMs": requested}
         if retry_empty:
             result["activityReads"].append(attempt)
         try:
-            buys, coverage, received = read_buy_page(result["wallet"], start, end)
+            trades, coverage, received = (read_trade_page(result["wallet"], start, end, "SELL", scope) if scope
+                                          else read_buy_page(result["wallet"], start, end))
         except (OSError, HTTPException):
             attempt["reason"] = "Public endpoint unreachable or denied."
         except (KeyError, ValueError, InvalidOperation, RecursionError):
@@ -162,28 +176,28 @@ def _detect_buys(result, retry_empty):
             attempt["reason"] = "Local activity receipt time preceded its request."
             result.update(status="incomplete", reason=attempt["reason"])
             return []
-        if buys:
+        if trades:
             if retry_empty:
                 result["detectionRead"] = number
-            return buys
+            return trades
         if not coverage["complete"]:
-            result.update(status="incomplete", reason="No ordinary BUY on the first page; later rows were not read.")
+            result.update(status="incomplete", reason=f"No ordinary {side} on the first page; later rows were not read.")
             return []
-    reason = ("Neither activity read showed an ordinary BUY. Indexing may lag." if retry_empty else
-              "No ordinary BUY visible in this response. Indexing may lag.")
+    reason = (f"Neither activity read showed an ordinary {side}. Indexing may lag." if retry_empty else
+              f"No ordinary {side} visible in this response. Indexing may lag.")
     result.update(status="waiting", reason=reason)
     return []
 
 
 def observe(address: str, seconds: int, index_wait_seconds: int = 0, *, budget: str | None = None,
-            retry_empty: bool = False) -> dict:
+            retry_empty: bool = False, exit_scope=None) -> dict:
     """Sample one new window. A research budget enables a delayed book and corroborating reads."""
     address = validate_address(address)
     if type(seconds) is not int or not 1 <= seconds <= 30:
         raise ValueError("Choose an observation window between 1 and 30 seconds.")
     if type(index_wait_seconds) is not int or not 0 <= index_wait_seconds <= 300:
         raise ValueError("Choose an indexing wait between 0 and 300 seconds.")
-    _validate_retry(retry_empty, seconds, budget, index_wait_seconds)
+    _validate_retry(retry_empty, seconds, budget, index_wait_seconds, exit_scope)
     if budget is not None:
         budget = public_depth.budget_amount(budget)
     start = math.floor(time.time()) + 1
@@ -198,37 +212,39 @@ def observe(address: str, seconds: int, index_wait_seconds: int = 0, *, budget: 
                       delaySeconds=public_depth.DELAY_SECONDS)
     if retry_empty:
         result.update(schemaVersion=3, retryAfterWindowMs=RETRY_AFTER_WINDOW_MS, activityReads=[])
+    if exit_scope is not None:
+        result.update(schemaVersion=4, exitScope=exit_scope, asset="pUSD", delaySeconds=public_depth.DELAY_SECONDS)
     time.sleep(max(0, end + 1 + index_wait_seconds - time.time()))
-    buys = _detect_buys(result, retry_empty)
-    if not buys:
+    trades = _detect_trades(result, retry_empty)
+    if not trades:
         return result
-    event = min(buys, key=lambda e: e["eventTimeSeconds"])
+    event = min(trades, key=lambda e: e["eventTimeSeconds"])
     result.update(event=event, status="incomplete",
                   identityLimit="Public TRADE rows expose a transaction hash without a per-fill identity.")
     if retry_empty and not _can_still_sample(event["eventTimeSeconds"], result["activityReceivedMs"]):
-        reason = "The BUY was detected too late to sample its book within the age limit after the modeled delay."
-        result.update(reason=reason, capacity=dict(public_depth.capacity_policy(budget), status="skipped", reason=reason))
+        reason = f"The {event['side']} was detected too late to sample its book within the age limit after the modeled delay."
+        result.update(reason=reason, capacity=dict(public_depth.capacity_policy(budget) if budget else {}, status="skipped", reason=reason))
         return result
     result["bookSource"] = BOOK
 
-    if budget is None:
+    if budget is None and exit_scope is None:
         return _sample_book(result, event)
 
     # Read independent prerequisites concurrently, then start the follower clock.
-    # Still sample depth on an unresolved BUY so failed windows retain evidence.
+    # Retain the book evidence even when the source trade cannot be corroborated.
     with ThreadPoolExecutor(max_workers=1) as worker:
         terms = worker.submit(public_depth.market_terms, event)
         same_order_scope = sum(b["transactionHash"] == event["transactionHash"] and b["tokenId"] == event["tokenId"]
-                               for b in buys)
+                               for b in trades)
         result["participant"] = (
-            {"status": "unresolved", "reason": "Several public BUY rows shared the transaction and outcome."}
-            if same_order_scope > 1 else public_fill.identify_buy(address, event)
+            {"status": "unresolved", "reason": f"Several public {event['side']} rows shared the transaction and outcome."}
+            if same_order_scope > 1 else (public_fill.identify_trade if exit_scope else public_fill.identify_buy)(address, event)
         )
         result["market"] = terms.result()
     result["evidenceCheckedMs"] = time.time_ns() // 1_000_000
     time.sleep(public_depth.DELAY_SECONDS + result["market"].get("takerDelayMs", 0) / 1000)
     result = _sample_book(result, event)
-    result["capacity"] = public_depth.measure_depth(result, budget)
+    result["capacity"] = public_depth.measure_sale(result) if exit_scope else public_depth.measure_depth(result, budget)
     return result
 
 
@@ -240,39 +256,42 @@ def _sample_book(result, event):
         book = normalize_book(payload, event)
         book["sourceAgeAtDetectionMs"] = result["activityReceivedMs"] - book["sourceTimeMs"]
         # Both validated probabilities are in (0, 1] with at most 80 decimal places.
+        selling = event["side"] == "SELL"
+        levels = book["bestBids"] if selling else book["bestAsks"]
         with localcontext() as arithmetic:
             arithmetic.prec = 81
-            book["bestAskMinusLeaderPrice"] = (
-                format(Decimal(book["bestAsks"][0]["price"]) - Decimal(event["price"]), "f")
-                if book["bestAsks"] else None
+            book["bestBidMinusLeaderPrice" if selling else "bestAskMinusLeaderPrice"] = (
+                format(Decimal(levels[0]["price"]) - Decimal(event["price"]), "f") if levels else None
             )
         result["book"] = book
         if not event["eventTimeSeconds"] * 1000 <= result["activityReceivedMs"] <= result["bookRequestedMs"] <= result["bookReceivedMs"]:
             return dict(result, reason="Local sampling times are inconsistent. Check clock synchronization.")
         if not result["activityReceivedMs"] <= book["sourceTimeMs"] <= result["bookReceivedMs"]:
             return dict(result, reason="Book timestamp falls outside the interval from detection to receipt. Post-detection depth is unverified.")
-        if not book["bestAsks"]:
-            return dict(result, reason="The returned book has no displayed asks.")
+        if not levels:
+            return dict(result, reason="The returned book has no displayed bids." if selling else "The returned book has no displayed asks.")
         if book["spreadPerShare"] is not None and Decimal(book["spreadPerShare"]) <= 0:
             return dict(result, reason="The displayed bids and asks overlapped. The quote is inconsistent.")
         if not result["activityCoverage"]["complete"]:
-            return dict(result, reason="A BUY on the first page had a matching displayed book. The full activity window was not read.")
-        return dict(result, status="observed", reason="A matching book update arrived after detection. Displayed asks can change before execution.")
+            return dict(result, reason=f"A {event['side']} on the first page had a matching displayed book. The full activity window was not read.")
+        return dict(result, status="observed", reason="A matching book update arrived after detection. Displayed depth can change before execution.")
     except (OSError, HTTPException):
         return dict(result, reason="Public endpoint unreachable or denied.")
     except (KeyError, ValueError, InvalidOperation, RecursionError):
         return dict(result, reason="Response shape, identity or time failed validation.")
 
 
-def sample_once(address, seconds, budget=None, *, retry_empty=False):
+def sample_once(address, seconds, budget=None, *, retry_empty=False, exit_scope=None):
     """Run one bounded observation in a disposable process from source or the installed release."""
     command = [sys.executable, "-B", "-m", "apps.server.observe", address, "--seconds", str(seconds)]
-    _validate_retry(retry_empty, seconds, budget)
+    _validate_retry(retry_empty, seconds, budget, exit_scope=exit_scope)
+    if exit_scope:
+        command.extend(["--sell", exit_scope["conditionId"], exit_scope["tokenId"], exit_scope["maxShares"]])
     if budget is not None:
         command.extend(["--budget", budget])
     if retry_empty:
         command.append("--retry-empty")
-    timeout = seconds + (30 if budget else 15) + (RETRY_TIMEOUT_SECONDS if retry_empty else 0)
+    timeout = seconds + (30 if budget or exit_scope else 15) + (RETRY_TIMEOUT_SECONDS if retry_empty else 0)
     try:
         child = subprocess.run(command, cwd=Path(__file__).resolve().parents[2],
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -296,20 +315,23 @@ def main():
                         help="Measure displayed capacity for this unfunded research budget at a two-second delay.")
     parser.add_argument("--retry-empty", action="store_true",
                         help="Reread an initially empty two-second budgeted window three seconds after it closes.")
+    parser.add_argument("--sell", nargs=3, metavar=("CONDITION", "TOKEN", "MAX_SHARES"),
+                        help="Observe a bounded sale for this outcome.")
     args = parser.parse_args()
     try:
-        _validate_retry(args.retry_empty, args.seconds, args.budget, args.index_wait)
+        scope = public_depth.sell_scope(*args.sell) if args.sell else None
+        _validate_retry(args.retry_empty, args.seconds, args.budget, args.index_wait, scope)
     except ValueError as error:
         parser.error(str(error))
 
     # Socket timeouts alone cannot bound a slow stream. The CLI is a disposable
     # child of the HTTP server and owns no persistent state.
-    timeout = args.seconds + args.index_wait + (25 if args.budget else 12)
+    timeout = args.seconds + args.index_wait + (25 if args.budget or scope else 12)
     deadline = Timer(timeout + (RETRY_TIMEOUT_SECONDS if args.retry_empty else 0), os._exit, args=(124,))
     deadline.daemon = True
     deadline.start()
     try:
-        result = observe(args.wallet, args.seconds, args.index_wait, budget=args.budget, retry_empty=args.retry_empty)
+        result = observe(args.wallet, args.seconds, args.index_wait, budget=args.budget, retry_empty=args.retry_empty, exit_scope=scope)
         print(json.dumps(result, indent=2))
         complete = result["status"] in ("observed", "waiting") and result.get("capacity", {}).get("status") != "incomplete"
         return 0 if complete else 2

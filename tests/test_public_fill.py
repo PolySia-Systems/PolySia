@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from apps.server import public_fill
+from apps.server import observe
 
 # Public Polygon receipt from the fourth observation in docs/provider.md.
 RECEIPT = json.loads((Path(__file__).parent / "fixtures/polygon-buy-receipt.json").read_text())
@@ -33,6 +34,45 @@ class ParticipantTests(unittest.TestCase):
         self.assertEqual(self.identify(RECEIPT, event=dict(EVENT, reportedCollateral="0.01"))["status"], "unresolved")
         seller = RECEIPT["logs"][2]["topics"][2][-40:]
         self.assertEqual(self.identify(RECEIPT, "0x" + seller)["status"], "unresolved")
+
+    def test_real_seller_receipt_net_proceeds_and_direction(self):
+        fixture = json.loads((Path(__file__).parent / "fixtures/polygon-sell.json").read_text())
+        receipt, event, wallet = fixture["receipt"], fixture["event"], fixture["wallet"]
+        match = public_fill._match(receipt, wallet, event)
+        self.assertEqual((match["status"], match["role"], match["logIndex"]), ("matched", "taker", 191))
+        self.assertEqual((match["grossCollateral"], match["chargedFee"], match["netProceeds"]),
+                         ("2914.3827", "0.14571", event["reportedCollateral"]))
+        self.assertNotIn("totalCollateral", match)
+        for changes in ({"reportedCollateral": "2914.3827"}, {"side": "BUY"}, {"shares": "2917.2"}):
+            self.assertEqual(public_fill._match(receipt, wallet, event | changes)["status"], "unresolved")
+
+    def test_sell_window_filters_outcomes_and_prices_the_owned_sale(self):
+        fixture = json.loads((Path(__file__).parent / "fixtures/polygon-sell.json").read_text())
+        event, wallet = fixture["event"], fixture["wallet"]
+        start = event["eventTimeSeconds"]
+        ms = start * 1000
+        scope = {"conditionId": event["conditionId"], "tokenId": event["tokenId"], "maxShares": "8"}
+        row = {"proxy_wallet": wallet, "type": "TRADE", "side": "SELL", "timestamp": start,
+               "condition_id": event["conditionId"], "token_id": event["tokenId"], "transaction_hash": event["transactionHash"],
+               "size": event["shares"], "price": event["price"], "usdc_size": event["reportedCollateral"]}
+        activity = {"data": [row | {"token_id": "123"}, row], "pagination": {"has_more": False, "next_cursor": None}}
+        book = {"asset_id": event["tokenId"], "market": event["conditionId"], "timestamp": str(ms + 4600),
+                "min_order_size": "5", "tick_size": "0.001", "neg_risk": False,
+                "asks": [{"price": "0.999", "size": "50"}], "bids": [{"price": "0.997", "size": "30"}]}
+        terms = {"status": "available", "checkedMs": ms + 2300, "minimumOrderSize": "5", "priceTick": "0.001",
+                 "acceptingOrders": True, "negativeRisk": False, "takerDelayMs": 0, "takerRate": "0.05"}
+        times = [(ms + n) * 1_000_000 for n in (2000, 2100, 2300, 2400, 4500, 4700)]
+        with (patch.object(observe.time, "time", return_value=start - 1), patch.object(observe.time, "sleep"),
+              patch.object(observe.time, "time_ns", side_effect=times),
+              patch.object(public_fill, "_receipt", return_value=fixture["receipt"]),
+              patch.object(observe.public_depth, "market_terms", return_value=terms),
+              patch.object(observe, "read_public_json", side_effect=[activity, book]) as fetch):
+            result = observe.observe(wallet, 2, exit_scope=scope)
+        self.assertEqual(fetch.call_args_list[0].args[1]["side"], "SELL")
+        self.assertEqual(result["activityCoverage"]["matchingSellRows"], 1)
+        self.assertEqual(result["participant"]["logIndex"], 191)
+        self.assertEqual((result["status"], result["capacity"]["shares"], result["capacity"]["gross"]),
+                         ("observed", "8", "7.976"))
 
     def test_owner_side_survives_complementary_order_matching(self):
         receipt = copy.deepcopy(RECEIPT)

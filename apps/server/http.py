@@ -31,18 +31,26 @@ class LocalServer(ThreadingHTTPServer):
     def __init__(self, port, store: Workspace, static_dir=STATIC, inspect_account=None, *, artifact_sha256=None):
         self.artifact_sha256 = artifact_sha256
         self.observation_lock = Lock()
+        self.valuation_lock = Lock()
         self.store = store
         self.static_dir = Path(static_dir).resolve()
         self.inspect_account = inspect_account or provider.inspect_account
         super().__init__(("127.0.0.1", port), Handler)
 
     def sample_buy(self, address, budget=None, *, retry_empty=False):
+        return self._sample(address, budget, retry_empty=retry_empty)
+
+    def sample_sell(self, address, scope):
+        return self._sample(address, None, retry_empty=True, exit_scope=scope)
+
+    def _sample(self, address, budget, **options):
         # Run the same CLI as an operator. Its process deadline also bounds slow
         # provider reads that can outlast an individual socket timeout.
         if not self.observation_lock.acquire(blocking=False):
             raise RequestError(409, "One public observation is already in progress. Try again after it finishes.")
         try:
-            return observe.sample_once(address, 2 if budget is not None else 5, budget, retry_empty=retry_empty)
+            seconds = 2 if budget is not None or "exit_scope" in options else 5
+            return observe.sample_once(address, seconds, budget, **options)
         except TimeoutError as exc:
             raise RequestError(504, str(exc)) from None
         except OSError:
@@ -230,36 +238,75 @@ class Handler(BaseHTTPRequestHandler):
 
     def public_runs_api(self, path, method):
         store = self.server.store
-        mark = re.fullmatch(API + r"/public-runs/([0-9a-f]{32})/positions/([0-9]{1,78})/mark", path)
-        if mark:
+        position = re.fullmatch(API + r"/public-runs/([0-9a-f]{32})/positions/([0-9]{1,78})/(mark|observe-sell)", path)
+        if position:
             if method != "POST" or urlsplit(self.path).query:
-                raise RequestError(405, "Request a position mark with its displayed run revision.")
-            revision = self.body(("revision",))["revision"]
+                raise RequestError(405, "Use the position action with the displayed run revision.")
+            run_id, token, action = position.groups()
+            if action == "mark":
+                revision = self.body(("revision",))["revision"]
+                with store.connection(write=False) as db:
+                    basis = public_shadow.position_basis(db, run_id, token, revision)
+                mark = public_marks.read_mark(basis)
+                with store.connection(write=False) as db:
+                    public_shadow.require_revision(db, run_id, revision)
+                return mark
+            body = self.body(("revision", "maxShares"))
+            revision, limit = body["revision"], body["maxShares"]
             with store.connection(write=False) as db:
-                basis = public_shadow.position_basis(db, mark[1], mark[2], revision)
-            return public_marks.read_mark(basis)
-        match = re.fullmatch(API + r"/public-runs(?:/([0-9a-f]{32})(?:/(sample|pause|resume|stop|export))?)?", path)
+                wallet, scope, _ = public_shadow.sale_terms(db, run_id, revision, token, limit)
+            try:
+                receipt = self.server.sample_sell(wallet, scope)
+            except RequestError as exc:
+                if exc.status not in (503, 504):
+                    raise
+                receipt = {"status": "unavailable", "reason": str(exc), "wallet": wallet, "exitScope": scope}
+            with store.connection() as db:
+                return public_shadow.record_sale(db, run_id, revision, token, limit, receipt)
+        match = re.fullmatch(API + r"/public-runs(?:/([0-9a-f]{32})(?:/(sample|pause|resume|stop|enable-exits|valuation|export))?)?", path)
         if not match:
             raise RequestError(404, "Unknown public shadow run.")
         run_id, action = match.groups()
         query = urlsplit(self.path).query
         before = None
+        trades = False
         if query:
-            pattern = r"before=([1-9][0-9]{0,17})" if run_id else r"before=([0-9a-f]{32})"
-            cursor = re.fullmatch(pattern, query)
-            if method != "GET" or action or not cursor:
+            values = parse_qs(query, keep_blank_values=True, strict_parsing=True, max_num_fields=2)
+            if (method != "GET" or action or set(values) - {"before", "view"}
+                    or any(len(v) != 1 for v in values.values())):
                 raise ValueError("Unsupported public run query.")
-            before = int(cursor[1]) if run_id else cursor[1]
+            if "view" in values:
+                if not run_id or values["view"] != ["trades"]:
+                    raise ValueError("Unknown decision history view.")
+                trades = True
+            if "before" in values:
+                raw = values["before"][0]
+                if not re.fullmatch(r"[1-9][0-9]{0,17}" if run_id else r"[0-9a-f]{32}", raw):
+                    raise ValueError("Invalid public run cursor.")
+                before = int(raw) if run_id else raw
         if method == "GET" and action in (None, "export"):
             with store.connection(write=False) as db:
                 if run_id is None:
                     return public_shadow.listing(db, before)
-                return public_shadow.report(db, run_id, export=action == "export", before=before)
+                return public_shadow.report(db, run_id, export=action == "export", before=before, trades=trades)
         if method == "PUT" and run_id and not action:
             config = self.body(("wallet", "name", "capital", "cap"))
             with store.connection() as db:
                 return public_shadow.create(db, run_id, **config)
-        if method == "POST" and action in ("sample", *public_shadow.CONTROLS):
+        if method == "POST" and action == "valuation":
+            revision = self.body(("revision",))["revision"]
+            with store.connection(write=False) as db:
+                basis = public_shadow.valuation_basis(db, run_id, revision)
+            if not self.server.valuation_lock.acquire(blocking=False):
+                raise RequestError(409, "A portfolio valuation is in progress. Try again when it finishes.")
+            try:
+                result = public_marks.portfolio_value(basis)
+            finally:
+                self.server.valuation_lock.release()
+            with store.connection(write=False) as db:
+                public_shadow.require_revision(db, run_id, revision)
+            return result
+        if method == "POST" and action in ("sample", "enable-exits", *public_shadow.CONTROLS):
             revision = self.body(("revision",))["revision"]
             if action != "sample":
                 with store.connection() as db:

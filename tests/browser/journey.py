@@ -717,7 +717,7 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
     from apps.server import public_marks, public_shadow
     from apps.server.http import LocalServer
     from apps.server.store import Workspace
-    from test_public_shadow import observed_buy, WALLET
+    from test_public_shadow import observed_buy, observed_sell, WALLET
     from test_observe import book
 
     server = LocalServer(0, Workspace(cwd / "shadow.sqlite3"))
@@ -743,7 +743,7 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
         # Advance a controlled clock past the delayed book. Every browser action
         # passes through the real HTTP service, SQLite transactions and UI.
         future = datetime.fromtimestamp(start + 6, UTC)
-        times = ((future + timedelta(seconds=i)).isoformat(timespec="milliseconds") for i in range(10))
+        times = ((future + timedelta(seconds=i * 10)).isoformat(timespec="milliseconds") for i in range(14))
         quiet = dict(wallet=WALLET, researchBudget="10.00", status="waiting", reason="No ordinary BUY visible.")
         with patch.object(server, "sample_buy", side_effect=[unavailable, receipt, receipt, quiet, quiet, quiet, quiet]), patch.object(public_shadow, "timestamp", side_effect=times):
             sample = page.get_by_role("button", name="Sample next window")
@@ -755,7 +755,7 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
             expect(page.locator("dd").filter(has_text="15.14256")).to_be_visible()
             page.get_by_text("Observation details", exact=True).first.click()
             expect(page.get_by_text("Polygon exchange and source order", exact=True)).to_be_visible()
-            mark_ms = int((future + timedelta(seconds=2)).timestamp() * 1000)
+            mark_ms = int((future + timedelta(seconds=12)).timestamp() * 1000)
             current_book = book(timestamp=str(mark_ms), bids=[{"price": "0.49", "size": "5"}],
                                 asks=[{"price": "0.51", "size": "2"}])
             with (patch.object(public_marks, "read_public_json", side_effect=[current_book, TimeoutError()]),
@@ -774,19 +774,53 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
             page.get_by_role("button", name="Pause entries").click()
             page.reload()
             expect(page.get_by_role("button", name="Resume entries")).to_be_visible()
+            page.get_by_label("Decision history filter").select_option("trades")
+            expect(page.get_by_text("Already modeled", exact=True)).to_have_count(0)
+            expect(page.get_by_text("Modeled BUY", exact=True)).to_be_visible()
+            sale_start = int(future.timestamp()) + 72
+            def sell(wallet, scope):
+                return observed_sell(wallet, scope, start=sale_start)
+            page.get_by_text("Follow a leader SELL", exact=True).click()
+            page.get_by_label("Maximum shares to sell").fill("11")
+            with patch.object(server, "sample_sell", side_effect=sell):
+                page.get_by_role("button", name="Observe leader SELL").click()
+                expect(page.get_by_role("region", name="Open simulated positions").get_by_text("11 shares", exact=True)).to_be_visible()
+                expect(page.get_by_text("Modeled SELL", exact=True)).to_be_visible()
+                expect(page.get_by_text("Sold 8 simulated shares", exact=False)).to_be_visible()
+            assert page.locator("dd").filter(has_text="18.88272").count() == 1
+            quote_ms = (sale_start + 10) * 1000
+            with (patch.object(public_marks, "read_public_json", side_effect=[current_book | {"timestamp": str(quote_ms)}, TimeoutError()]),
+                  patch.object(public_marks.time, "time_ns", return_value=quote_ms * 1_000_000)):
+                page.get_by_role("button", name="Check portfolio value").click()
+                expect(page.get_by_text("24.38272", exact=False)).to_be_visible()
+                expect(page.get_by_text("-0.61728", exact=False)).to_be_visible()
+                page.get_by_text("Valuation evidence", exact=True).click()
+                with page.expect_download() as valuation_file:
+                    page.get_by_role("link", name="Download valuation").click()
+                value = json.loads(valuation_file.value.path().read_text())
+                assert (value["equity"], value["unrealized"], value["netResult"]) == ("24.38272", "-0.206939", "-0.61728")
+                capture(page, output, "public-sale-valuation-desktop")
+                if output:
+                    page.locator(".paper-workbench").screenshot(path=output / "public-sale-controls.png")
+                page.get_by_role("button", name="Refresh portfolio value").click()
+                expect(page.get_by_text("0 of 1 open position priced", exact=False)).to_be_visible()
+                expect(page.get_by_text("24.38272", exact=False)).to_have_count(0)
+                page.set_viewport_size({"width": 390, "height": 844})
+                check_width(page)
+                capture(page, output, "public-sale-unknown-mobile")
             page.get_by_role("button", name="Resume entries").click()
             page.set_viewport_size({"width": 390, "height": 844})
             page.get_by_role("button", name="Stop run").click()
             page.get_by_role("button", name="Confirm stop").click()
-            expect(page.get_by_role("heading", name="Run closed to new entries")).to_be_visible()
-            expect(page.get_by_text("19 shares", exact=True)).to_be_visible()
+            expect(page.get_by_role("heading", name="Run closed to observations")).to_be_visible()
+            expect(page.get_by_role("region", name="Open simulated positions").get_by_text("11 shares", exact=True)).to_be_visible()
             check_width(page)
             capture(page, output, "public-run-mobile")
         with page.expect_download() as download:
             page.get_by_role("link", name="Export run").click()
         exported = json.loads(download.value.path().read_text())
-        assert [d["kind"] for d in exported["decisions"]] == ["unavailable", "entry", "duplicate", *(["waiting"] * 4), "pause", "resume", "stop"]
-        assert exported["cash"] == "15.14256" and exported["decisions"][1]["receipt"] == receipt
+        assert [d["kind"] for d in exported["decisions"]] == ["unavailable", "entry", "duplicate", *(["waiting"] * 4), "pause", "exit", "resume", "stop"]
+        assert exported["cash"] == "18.88272" and exported["decisions"][1]["receipt"] == receipt
         page.get_by_role("link", name="All public runs").click()
         page.get_by_role("link", name=re.compile("Weekend research")).click()
         expect(page).to_have_url(route)
@@ -815,8 +849,44 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
                     release.set()
             assert page.request.get(origin + "/api/v1/public-runs/" + second).json()["revision"] == 2
             provider.assert_called_once()
+        page.get_by_role("link", name=re.compile(r"^Public wallet")).click()
+        expect(page.get_by_role("heading", name="Public wallet", exact=True)).to_be_visible()
+        now = int(time.time()) + 1
+        clocks = [datetime.fromtimestamp(now + seconds, UTC).isoformat(timespec="milliseconds") for seconds in (6, 16)]
+        sale_started, finish_sale = Event(), Event()
+        def delayed_sale(wallet, scope):
+            sale_started.set()
+            assert finish_sale.wait(10)
+            return observed_sell(wallet, scope, start=now + 10, depth="25")
+
+        with (patch.object(public_shadow, "timestamp", side_effect=clocks),
+              patch.object(server, "sample_buy", return_value=observed_buy(WALLET, "10.00", start=now)),
+              patch.object(server, "sample_sell", side_effect=delayed_sale)):
+            page.get_by_role("button", name="Sample next window").click()
+            page.get_by_text("Follow a leader SELL", exact=True).click()
+            expect(page.get_by_text("0.03 pUSD per share below the leader", exact=False)).to_be_visible()
+            expect(page.get_by_text("pooled cost, floor to micro-pUSD", exact=False)).to_be_visible()
+            page.get_by_label("Maximum shares to sell").fill("19")
+            page.get_by_role("button", name="Observe leader SELL").click()
+            try:
+                assert sale_started.wait(3)
+                expect(page.get_by_role("button", name="Pause entries")).to_be_disabled()
+                expect(page.get_by_role("button", name="Stop run", exact=True)).to_be_enabled()
+            finally:
+                finish_sale.set()
+            closed = page.get_by_role("region", name="Closed simulated positions")
+            expect(closed.get_by_text("-0.97456 pUSD realized", exact=True)).to_be_visible()
+            expect(closed.get_by_text("8.88288 pUSD received after sale fees", exact=False)).to_be_visible()
+        page.reload()
+        expect(page.get_by_text("All simulated positions are closed.", exact=True)).to_be_visible()
+        with patch.object(public_marks.time, "time_ns", return_value=(now + 17) * 1_000_000_000):
+            page.get_by_role("button", name="Check portfolio value").click()
+            expect(page.get_by_text("All value is held in simulated cash.", exact=False)).to_be_visible()
+        assert page.locator("dd").filter(has_text="99.02544").count() == 2
+        check_width(page)
+        capture(page, output, "public-closed-portfolio")
         assert not errors, errors
-        print("Passed public portfolio setup, unavailable window, modeled BUY, duplicate, persistent controls and export.")
+        print("Passed public portfolio setup, BUY, partial and full SELL, closed positions, filtered history, valuation, missing prices, stop and export.")
     finally:
         page.close()
         server.shutdown()
@@ -832,6 +902,17 @@ def public_artifact_smoke(browser: Browser, cwd: Path, output: Path | None):
 
     installer = [sys.executable, str(ROOT / "dist/polysia.pyz"), "--prefix", str(cwd / "app"), "--json"]
     installed = json.loads(subprocess.check_output(installer, cwd=cwd))
+    sell = json.loads((ROOT / "tests/fixtures/polygon-sell.json").read_text())
+    event = sell["event"]
+    scope = {"conditionId": event["conditionId"], "tokenId": event["tokenId"], "maxShares": "5"}
+    result = subprocess.run([sys.executable, "-B", "-m", "apps.server.observe", sell["wallet"],
+                             "--seconds", "2", "--retry-empty", "--sell", scope["conditionId"], scope["tokenId"], "5"],
+                            cwd=Path(installed["launcher"]).resolve().parent, capture_output=True, timeout=45)
+    assert result.returncode in (0, 2), result.returncode
+    window = json.loads(result.stdout)
+    assert window["schemaVersion"] == 4 and window["wallet"] == sell["wallet"] and window["exitScope"] == scope
+    assert window["activityReads"] and window["windowEndSeconds"] == window["windowStartSeconds"] + 1
+    print(f"Installed SELL observer recorded {window['status']} across {len(window['activityReads'])} activity read(s).")
     with app(installed["launcher"], cwd) as origin:
         page = browser.new_page(viewport={"width": 1440, "height": 900})
         with page.expect_response("**/api/v1/public/leaders*") as reply:

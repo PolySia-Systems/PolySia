@@ -142,6 +142,11 @@ def verify_upgrade(previous):
             route = "/api/v1/runs/" + run["id"]
             fill = json.loads(request(url, route + "/step", {"revision": run["revision"]}, "POST"))
             request(url, route + "/pause", {"revision": fill["revision"]}, "POST")
+            legacy = None
+            legacy_path = "/api/v1/public-runs/" + "30" * 16
+            if prior_version == "0.3.0":
+                request(url, legacy_path, {"name": "Legacy rules", "wallet": "0x" + "bc" * 20, "capital": "15", "cap": "5"})
+                legacy = json.loads(request(url, legacy_path + "/pause", {"revision": 1}, "POST"))
             saved = json.loads(request(url, "/api/v1/workspace"))
             assert saved["run"]["status"] == "paused" and int(saved["run"]["quantity"]) > 0
 
@@ -156,6 +161,12 @@ def verify_upgrade(previous):
             assert stopped["revision"] == saved["run"]["revision"] + 1
             assert stopped["quantity"] == saved["run"]["quantity"] and stopped["events"] == saved["run"]["events"]
             end_state = json.loads(request(url, "/api/v1/workspace"))
+            if legacy:
+                prior = json.loads(request(url, legacy_path))
+                assert prior["policy"] == legacy["policy"] and prior["decisions"] == legacy["decisions"]
+                assert prior["cash"] == legacy["cash"] and not prior["exitsEnabled"]
+                changed = json.loads(request(url, legacy_path + "/enable-exits", {"revision": prior["revision"]}, "POST"))
+                assert changed["exitsEnabled"] and changed["status"] == "paused"
             public_route = "/api/v1/public-runs/" + "a1" * 16
             public_run = json.loads(request(url, public_route, {"wallet": "0x" + "ab" * 20,
                              "name": "Upgrade trial", "capital": "30", "cap": "10"}))
@@ -168,6 +179,8 @@ def verify_upgrade(previous):
         with app(launcher, cwd, recovered, offline=True) as url:
             assert json.loads(request(url, "/api/v1/workspace")) == end_state
             assert json.loads(request(url, public_route)) == public_end
+            if legacy:
+                assert json.loads(request(url, legacy_path)) == changed
         print(f"Upgrade {prior_version} to {health['version']} preserved a paused position, "
               "settings and revisions. Restore retained recorded fills and the new public shadow run.")
 

@@ -12,10 +12,11 @@ from decimal import Decimal
 from pathlib import Path
 from threading import Event, Thread
 
+from apps.server import public_shadow
 from apps.server.archive import copy_workspace
 from apps.server.http import LocalServer
 from apps.server.store import Workspace
-from test_public_shadow import ID, WALLET, observed_buy
+from test_public_shadow import ID, STARTED, WALLET, observed_buy, observed_sell
 
 ADDRESS = "0x" + "AB" * 20
 
@@ -175,6 +176,72 @@ class WorkspaceHttpTest(unittest.TestCase):
             self.assertEqual((status, failed["revision"], failed["cash"], failed["decisions"][0]["kind"]),
                              (200, 4, "25", "unavailable"))
         self.assertIsNone(self.request("GET", "/api/v1/workspace")[1]["account"])
+
+    def test_closed_position_supersedes_inflight_mark(self):
+        route = "/api/v1/public-runs/" + ID + "/positions/734"
+        with self.server.store.connection() as db, patch.object(public_shadow, "timestamp", return_value=STARTED):
+            public_shadow.create(db, ID, WALLET, "Paper", "25", "10")
+        with self.server.store.connection() as db, patch.object(public_shadow, "timestamp", return_value="2020-01-02T00:00:00Z"):
+            public_shadow.record(db, ID, 1, observed_buy(WALLET, "10.00", start=1577836810))
+        entered, release = Event(), Event()
+        def price(basis):
+            entered.set()
+            self.assertTrue(release.wait(4))
+            return {"value": "9.5", "shares": basis["shares"]}
+
+        with (patch("apps.server.http.public_marks.read_mark", side_effect=price),
+              patch.object(self.server, "sample_sell", side_effect=lambda w, s: observed_sell(w, s, depth="19")),
+              ThreadPoolExecutor(max_workers=1) as pool):
+            release.set()
+            self.assertEqual(self.request("POST", route + "/mark", {"revision": 2}), (200, {"value": "9.5", "shares": "19"}))
+            entered.clear()
+            release.clear()
+            pending = pool.submit(self.request, "POST", route + "/mark", {"revision": 2})
+            try:
+                self.assertTrue(entered.wait(3))
+                status, closed = self.request("POST", route + "/observe-sell", {"revision": 2, "maxShares": "19"})
+                self.assertEqual((status, closed["revision"], closed["positions"]), (200, 3, []))
+            finally:
+                release.set()
+            self.assertEqual(pending.result()[0], 409)
+
+    def test_stop_supersedes_inflight_sell_and_valuation(self):
+        route = "/api/v1/public-runs/" + ID
+        with self.server.store.connection() as db, patch.object(public_shadow, "timestamp", return_value="2020-01-01T00:00:00Z"):
+            public_shadow.create(db, ID, WALLET, "Paper", "25", "10")
+        with self.server.store.connection() as db:
+            public_shadow.record(db, ID, 1, observed_buy(WALLET, "10.00"))
+        sell = route + "/positions/734/observe-sell"
+        for limit in ("0", "20", "1.2", 1):
+            self.assertEqual(400, self.request("POST", sell, {"revision": 2, "maxShares": limit})[0])
+        self.assertEqual(409, self.request("POST", sell, {"revision": 1, "maxShares": "5"})[0])
+        selling, pricing, release = Event(), Event(), Event()
+
+        def sample(wallet, scope):
+            selling.set()
+            self.assertTrue(release.wait(4))
+            return {"wallet": wallet, "exitScope": scope, "status": "waiting", "reason": "Quiet window."}
+
+        def price(basis):
+            pricing.set()
+            self.assertTrue(release.wait(4))
+            return {"revision": basis["revision"]}
+
+        with (patch.object(self.server, "sample_sell", side_effect=sample),
+              patch("apps.server.http.public_marks.portfolio_value", side_effect=price),
+              ThreadPoolExecutor(max_workers=2) as workers):
+            sale = workers.submit(self.request, "POST", sell, {"revision": 2, "maxShares": "5"})
+            value = workers.submit(self.request, "POST", route + "/valuation", {"revision": 2})
+            try:
+                self.assertTrue(selling.wait(3) and pricing.wait(3))
+                self.assertEqual(409, self.request("POST", route + "/valuation", {"revision": 2})[0])
+                status, stopped = self.request("POST", route + "/stop", {"revision": 2})
+                self.assertEqual((200, "stopped", "19"), (status, stopped["status"], stopped["positions"][0]["shares"]))
+            finally:
+                release.set()
+            self.assertEqual((409, 409), (sale.result()[0], value.result()[0]))
+        self.assertEqual(self.request("GET", route)[1], stopped)
+        self.assertEqual([d["kind"] for d in self.request("GET", route + "?view=trades")[1]["decisions"]], ["entry"])
 
     def test_public_profile_is_stateless_and_rejects_invalid_wallets(self):
         status, inspected = self.request("GET", "/api/v1/public/traders/" + ADDRESS)

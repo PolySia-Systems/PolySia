@@ -50,18 +50,25 @@ def add_public_runs(db):
     db.execute("PRAGMA user_version = 2")
 
 
+def add_public_exits(db):
+    db.execute("ALTER TABLE public_decisions ADD COLUMN released_cost INTEGER NOT NULL DEFAULT 0")
+    db.execute("PRAGMA user_version = 3")
+
+
 class Workspace:
     def __init__(self, path: Path):
         self.path = path
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with self.connection() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2):
+            if version not in (0, 1, 2, 3):
                 raise ValueError(f"Unsupported workspace database version {version}")
             if version == 0:
                 create_schema_v1(db)
             if version < 2:
                 add_public_runs(db)
+            if version < 3:
+                add_public_exits(db)
 
     @contextmanager
     def connection(self, write=True):

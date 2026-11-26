@@ -1,4 +1,4 @@
-"""Measure displayed BUY capacity for one predeclared, unfunded research budget."""
+"""Measure delayed book depth and fees for share-limited sales and budgeted entries."""
 
 import re
 import time
@@ -14,7 +14,7 @@ DELAY_SECONDS = 2
 TAKER_DELAY_MS = 250
 MAX_RECEIPT_MS = 5000
 MAX_SIGNAL_AGE_MS = 10_000
-PRICE_ALLOWANCE = 30_000  # 0.03 pUSD per share above the reported BUY
+PRICE_ALLOWANCE = 30_000  # micro-pUSD per share from the leader's reported price
 SCALE = 1_000_000
 MAX_LEVELS = 3
 FEE_QUANTUM = 10  # published five-decimal precision, expressed in micro-pUSD
@@ -62,14 +62,14 @@ def _level_fee(quantity, price, rate):
     return ((numerator + denominator - 1) // denominator) * FEE_QUANTUM
 
 
-def _estimate(sample, budget, terms):
+def _book_issue(sample, terms, side):
     book = sample.get("book")
     detected = sample["activityReceivedMs"]
     checked = sample["evidenceCheckedMs"]
     eligible_ms = checked + DELAY_SECONDS * 1000 + terms["takerDelayMs"]
     event_ms = sample["event"]["eventTimeSeconds"] * 1000
     if sample["participant"]["status"] != "matched" or not sample["activityCoverage"]["complete"]:
-        return {"status": "incomplete", "reason": "The window needs complete activity coverage and one matched participant BUY."}
+        return {"status": "incomplete", "reason": f"The window needs complete activity coverage and one matched participant {side}."}
     if (not book or not event_ms <= detected <= checked
             or not detected <= sample["participant"]["checkedMs"] <= checked
             or not detected <= sample["market"]["checkedMs"] <= checked
@@ -78,7 +78,7 @@ def _estimate(sample, budget, terms):
         return {"status": "incomplete", "reason": "A timely book update at or after the modeled delay was unavailable."}
     if sample["bookReceivedMs"] - event_ms > MAX_SIGNAL_AGE_MS:
         age = sample["bookReceivedMs"] - event_ms
-        return {"status": "skipped", "reason": f"The book arrived {age:,} ms after the BUY. The research limit is {MAX_SIGNAL_AGE_MS:,} ms."}
+        return {"status": "skipped", "reason": f"The book arrived {age:,} ms after the {side}. The research limit is {MAX_SIGNAL_AGE_MS:,} ms."}
     if not terms["acceptingOrders"]:
         return {"status": "skipped", "reason": "The market reported that it was closed to orders."}
     exchange_type = EXCHANGES[sample["participant"]["exchange"]]
@@ -92,12 +92,22 @@ def _estimate(sample, budget, terms):
             or _micros(book["priceTick"]) != _micros(terms["priceTick"])):
         return {"status": "incomplete", "reason": "Book and market size or tick constraints were missing or differed."}
 
-    rate, tick = _micros(terms["takerRate"]), _micros(terms["priceTick"])
+    tick = _micros(terms["priceTick"])
     bid = book["bestBid"]
     if bid is not None:
         bid_price = _micros(bid["price"])
         if not 0 < bid_price < SCALE or bid_price % tick:
             return {"status": "incomplete", "reason": "The displayed best bid was outside the valid price range or off tick."}
+    return None
+
+
+def _estimate(sample, budget, terms):
+    issue = _book_issue(sample, terms, "BUY")
+    if issue:
+        return issue
+    book = sample["book"]
+    bid = book["bestBid"]
+    rate, tick = _micros(terms["takerRate"]), _micros(terms["priceTick"])
     cap = Fraction(sample["event"]["price"]) * SCALE + PRICE_ALLOWANCE
     remaining = _micros(budget)
     total_shares = gross = fees = 0
@@ -129,7 +139,7 @@ def _estimate(sample, budget, terms):
     spread_pct = None
     if bid is not None:
         ask_price = _micros(book["bestAsks"][0]["price"])
-        hundredths = ((ask_price - bid_price) * 10_000 + ask_price // 2) // ask_price
+        hundredths = ((ask_price - _micros(bid["price"])) * 10_000 + ask_price // 2) // ask_price
         spread_pct = f"{hundredths // 100}.{hundredths % 100:02d}"
     return {"status": "estimated", "shares": str(total_shares), "gross": _units(gross),
             "spreadPercentOfAsk": spread_pct,
@@ -164,3 +174,66 @@ def measure_depth(sample, budget):
         return dict(policy, **_estimate(sample, budget, terms))
     except (ValueError, InvalidOperation):
         return dict(policy, status="incomplete", reason="Displayed depth or precision failed validation.")
+
+
+def sell_scope(condition, token, limit):
+    if (not isinstance(condition, str) or not re.fullmatch("0x[0-9a-f]{64}", condition)
+            or not isinstance(token, str) or not re.fullmatch("[0-9]{1,78}", token)
+            or not isinstance(limit, str) or not re.fullmatch("[1-9][0-9]{0,9}", limit)):
+        raise ValueError("Choose a held outcome and a positive whole-share limit.")
+    return {"conditionId": condition, "tokenId": token, "maxShares": limit}
+
+
+def measure_sale(sample):
+    """Cap the reduction by the user's limit, the leader's sale and displayed bids."""
+    terms, scope = sample["market"], sample["exitScope"]
+    if terms["status"] != "available":
+        return {"status": "incomplete", "reason": terms["reason"]}
+    try:
+        issue = _book_issue(sample, terms, "SELL")
+        if issue:
+            return issue
+        book, event = sample["book"], sample["event"]
+        bids = book["bestBids"]
+        if not bids:
+            return {"status": "skipped", "reason": "The book had no displayed bids."}
+        if len(bids) > MAX_LEVELS or bids[0] != book["bestBid"]:
+            raise ValueError("Inconsistent bids")
+        if book["bestAsks"]:
+            ask = _micros(book["bestAsks"][0]["price"])
+            if not _micros(bids[0]["price"]) < ask < SCALE or ask % _micros(terms["priceTick"]):
+                raise ValueError("Invalid opposite price")
+        if event["side"] != "SELL" or any(event[k] != scope[k] for k in ("conditionId", "tokenId")):
+            raise ValueError("Unexpected outcome")
+        if any(not isinstance(event.get(key, ""), str) for key in ("marketTitle", "outcomeLabel")):
+            raise ValueError("Invalid market labels")
+        price = decimal_value(event["price"])
+        source_shares = _micros(event["shares"])
+        if not 0 < price <= 1 or str(source_shares) != sample["participant"]["sharesBaseUnits"]:
+            raise ValueError("Unreconciled source trade")
+        floor_price = Fraction(price) * SCALE - PRICE_ALLOWANCE
+        target = min(int(scope["maxShares"]), source_shares // SCALE)
+        remaining, gross, fees = target, 0, 0
+        previous = SCALE + 1
+        tick, rate = _micros(terms["priceTick"]), _micros(terms["takerRate"])
+        for level in bids:
+            bid = _micros(level["price"])
+            if not 0 < bid < min(previous, SCALE) or bid % tick:
+                raise ValueError("Invalid bid ladder")
+            previous = bid
+            if bid < floor_price or not remaining:
+                break
+            filled = min(remaining, _micros(level["shares"]) // SCALE)
+            gross += filled * bid
+            fees += _level_fee(filled, bid, rate)
+            remaining -= filled
+        quantity = target - remaining
+        if not quantity or quantity * SCALE < _micros(terms["minimumOrderSize"]):
+            return {"status": "skipped", "reason": "The size limit or eligible bids could not cover the minimum sale."}
+        if fees > gross:
+            raise ValueError("Fees exceed the sale")
+        return {"status": "estimated", "targetShares": str(target), "shares": str(quantity),
+                "gross": _units(gross), "feeEstimate": _units(fees), "proceeds": _units(gross-fees),
+                "reason": "Estimated sale against delayed displayed bids."}
+    except (ValueError, ArithmeticError):
+        return {"status": "incomplete", "reason": "The sale price, size or fee data could not be reconciled."}
