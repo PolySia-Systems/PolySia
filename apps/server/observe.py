@@ -221,26 +221,6 @@ def observe(address: str, seconds: int, index_wait_seconds: int = 0, *, budget: 
     if not trades:
         return result
     event = min(trades, key=lambda e: e["eventTimeSeconds"])
-    return measure_trade(result, trades, event, budget, retry_empty=retry_empty, exit_scope=exit_scope, check_sales=check_sales)
-
-
-def _candidate_sales(wallet, event):
-    # Bound the query to the candidate lifetime, then check the original book deadlines.
-    requested = time.time_ns() // 1_000_000
-    start, end = event["eventTimeSeconds"], requested // 1000
-    check = {"requestedMs": requested, "startSeconds": start, "endSeconds": end}
-    if not 0 <= requested - start * 1000 <= public_depth.MAX_SIGNAL_AGE_MS:
-        return dict(check, reason="The prospective entry was already outside its age limit.")
-    try:
-        sales, coverage, received = read_trade_page(wallet, start, end, "SELL", scope=event)
-        return dict(check, coverage=coverage, receivedMs=received, firstSale=sales[0] if sales else None)
-    except (OSError, HTTPException, KeyError, ValueError, InvalidOperation, RecursionError):
-        return dict(check, reason="Later leader sales could not be checked.")
-
-
-def measure_trade(result, trades, event, budget, *, retry_empty=False, exit_scope=None, check_sales=False):
-    """Check a selected trade against its complete detection page, market and delayed book."""
-    address = result["wallet"]
     result.update(event=event, status="incomplete",
                   identityLimit="Public TRADE rows expose a transaction hash without a per-fill identity.")
     if retry_empty and not _can_still_sample(event["eventTimeSeconds"], result["activityReceivedMs"]):
@@ -270,6 +250,20 @@ def measure_trade(result, trades, event, budget, *, retry_empty=False, exit_scop
     result = _sample_book(result, event)
     result["capacity"] = public_depth.measure_sale(result) if exit_scope else public_depth.measure_depth(result, budget)
     return result
+
+
+def _candidate_sales(wallet, event):
+    # Bound the query to the candidate lifetime, then check the original book deadlines.
+    requested = time.time_ns() // 1_000_000
+    start, end = event["eventTimeSeconds"], requested // 1000
+    check = {"requestedMs": requested, "startSeconds": start, "endSeconds": end}
+    if not 0 <= requested - start * 1000 <= public_depth.MAX_SIGNAL_AGE_MS:
+        return dict(check, reason="The prospective entry was already outside its age limit.")
+    try:
+        sales, coverage, received = read_trade_page(wallet, start, end, "SELL", scope=event)
+        return dict(check, coverage=coverage, receivedMs=received, firstSale=sales[0] if sales else None)
+    except (OSError, HTTPException, KeyError, ValueError, InvalidOperation, RecursionError):
+        return dict(check, reason="Later leader sales could not be checked.")
 
 
 def _sample_book(result, event):

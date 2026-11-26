@@ -110,7 +110,7 @@ A second 25-second window used the first eligible different wallet and condition
 
 Keep the existing interval-close activity read for public shadow runs. In a bounded source-checkout trial, requiring immediate public corroboration of a Polygon notification added zero usable BUY estimates. This decision applies to that trigger policy and the two sampled wallets. The pilot does not establish general recall, latency, fill probability or profitability.
 
-Before sampling at 09:18:23 UTC, the [research command](../research/paired_observation.py) wrote its plan. It alternated three two-second windows per wallet between the prior active reference and the public SDK fixture. One arm selected the earliest BUY on the interval-close page. The other subscribed to both supported Polygon exchanges for the wallet and checked the first BUY notification against activity in a ten-second lookback through its arrival second. Each arm used the same participant, market, fee and delayed-book checks with an unfunded 10 pUSD budget. After the series and a further 30 seconds the command reread each original interval. To advance the trigger for controlled integration, the plan required paired estimates for two additional distinct orders in two windows, complete comparisons in all windows, and no window with a usable estimate only from polling.
+Before sampling at 09:18:23 UTC, the research command wrote its plan. It alternated three two-second windows per wallet between the prior active reference and the public SDK fixture. One arm selected the earliest BUY on the interval-close page. The other subscribed to both supported Polygon exchanges for the wallet and checked the first BUY notification against activity in a ten-second lookback through its arrival second. Each arm used the same participant, market, fee and delayed-book checks with an unfunded 10 pUSD budget. After the series and a further 30 seconds the command reread each original interval. To advance the trigger for controlled integration, the plan required paired estimates for two additional distinct orders in two windows, complete comparisons in all windows, and no window with a usable estimate only from polling.
 
 | Wallet | Two-second windows | Later BUY rows | Polygon BUY notifications | Immediately corroborated notifications | Polling estimates paired to later activity | Triggered estimates paired to later activity |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -121,13 +121,7 @@ All six interval-close and reference pages and all three trigger lookbacks were 
 
 The local JSON Lines receipt has SHA-256 `a841c9427ff647a4f72f6309b76fe637c70714d921d25308870649183bcb2b05`. Raw windows include source, identity, coverage, timing and book evidence. Reference reads never backfill a decision. Blocks could reorganize after a window closed, and time between windows was unobserved. The quiet wallet supplied no active-market comparison. Revisit source selection if a changed observation policy can produce a materially different user decision under the same safeguards.
 
-To reproduce, use Python 3.12+ with `websockets==15.0.1` in a research environment. Run from the repository root with a new output path. The application and installed runtime do not import this research dependency.
-
-```sh
-PYTHONPATH=. python3 research/paired_observation.py \
-  0xc69bd5567b40ef4d11922eaa57e1f9be1c642076 \
-  0x7c3db723f1d4d8cb9c550095203b686cb11e5c6b --to /tmp/polysia-paired.jsonl
-```
+The trial ended with the decision to retain polling. The trial revision preserves the WebSocket observer, comparison tests and reproduction command. [Study code and instructions](https://github.com/PolySia-Systems/PolySia/blob/380c9681c66b3153419b8f8a155afb3ede922f09/docs/provider.md#paired-source-decision-26-november-2026)
 
 ## Public shadow sales
 
