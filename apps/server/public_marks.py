@@ -66,6 +66,7 @@ def portfolio_value(basis):
                 "capital": basis["capital"], "cash": basis["cash"], "realized": basis["realized"],
                 "openCost": basis["openCost"], "complete": complete, "total": len(positions),
                 "priced": len(priced), "checked": len(marks), "maxBooks": MAX_PORTFOLIO_BOOKS, "marks": marks,
+                "uncheckedPositions": positions[MAX_PORTFOLIO_BOOKS:],
                 "pricedValue": format(marked.normalize(), "f") if priced or not positions else None,
                 "equity": format(equity.normalize(), "f") if complete else None,
                 "unrealized": format((marked - Decimal(basis["openCost"])).normalize(), "f") if complete else None,

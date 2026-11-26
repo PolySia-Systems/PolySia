@@ -16,7 +16,7 @@ from apps.server import public_shadow
 from apps.server.archive import copy_workspace
 from apps.server.http import LocalServer
 from apps.server.store import Workspace
-from test_public_shadow import ID, WALLET, observed_buy
+from test_public_shadow import ID, STARTED, WALLET, observed_buy, observed_sell
 
 ADDRESS = "0x" + "AB" * 20
 
@@ -176,6 +176,34 @@ class WorkspaceHttpTest(unittest.TestCase):
             self.assertEqual((status, failed["revision"], failed["cash"], failed["decisions"][0]["kind"]),
                              (200, 4, "25", "unavailable"))
         self.assertIsNone(self.request("GET", "/api/v1/workspace")[1]["account"])
+
+    def test_closed_position_supersedes_inflight_mark(self):
+        route = "/api/v1/public-runs/" + ID + "/positions/734"
+        with self.server.store.connection() as db, patch.object(public_shadow, "timestamp", return_value=STARTED):
+            public_shadow.create(db, ID, WALLET, "Paper", "25", "10")
+        with self.server.store.connection() as db, patch.object(public_shadow, "timestamp", return_value="2020-01-02T00:00:00Z"):
+            public_shadow.record(db, ID, 1, observed_buy(WALLET, "10.00", start=1577836810))
+        entered, release = Event(), Event()
+        def price(basis):
+            entered.set()
+            self.assertTrue(release.wait(4))
+            return {"value": "9.5", "shares": basis["shares"]}
+
+        with (patch("apps.server.http.public_marks.read_mark", side_effect=price),
+              patch.object(self.server, "sample_sell", side_effect=lambda w, s: observed_sell(w, s, depth="19")),
+              ThreadPoolExecutor(max_workers=1) as pool):
+            release.set()
+            self.assertEqual(self.request("POST", route + "/mark", {"revision": 2}), (200, {"value": "9.5", "shares": "19"}))
+            entered.clear()
+            release.clear()
+            pending = pool.submit(self.request, "POST", route + "/mark", {"revision": 2})
+            try:
+                self.assertTrue(entered.wait(3))
+                status, closed = self.request("POST", route + "/observe-sell", {"revision": 2, "maxShares": "19"})
+                self.assertEqual((status, closed["revision"], closed["positions"]), (200, 3, []))
+            finally:
+                release.set()
+            self.assertEqual(pending.result()[0], 409)
 
     def test_stop_supersedes_inflight_sell_and_valuation(self):
         route = "/api/v1/public-runs/" + ID

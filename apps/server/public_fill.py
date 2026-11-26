@@ -73,6 +73,37 @@ def _amount_match_basis(event, role, paid, shares, fee):
     return None
 
 
+def _settlement_fields(event, role, paid, shares, fee):
+    basis = _amount_match_basis(event, role, paid, shares, fee)
+    if not basis or role not in ("maker", "taker"):
+        raise ValueError("Participant amounts do not reconcile with the public trade.")
+    fields = {"amountMatchBasis": basis}
+    if role == "taker":
+        selling = event.get("side", "BUY") == "SELL"
+        fields.update(grossCollateral=units_from_micros(paid), chargedFee=units_from_micros(fee))
+        fields["netProceeds" if selling else "totalCollateral"] = units_from_micros(paid - fee if selling else paid + fee)
+    return fields
+
+
+def verify_retained_amounts(receipt, side):
+    participant = receipt.get("participant")
+    if not isinstance(participant, dict) or participant.get("status") != "matched":
+        return
+    event = receipt["event"]
+    if event["side"] != side or receipt["schemaVersion"] not in ((4,) if side == "SELL" else (2, 3)):
+        raise ValueError("Participant side or receipt version mismatch.")
+    amounts = []
+    for key in ("collateralBaseUnits", "sharesBaseUnits", "feeBaseUnits"):
+        value = participant[key]
+        if not isinstance(value, str) or not re.fullmatch(r"0|[1-9][0-9]{0,77}", value) or int(value).bit_length() > 256:
+            raise ValueError("Invalid participant base units.")
+        amounts.append(int(value))
+    expected = _settlement_fields(event, participant["role"], *amounts)
+    keys = ("amountMatchBasis", "grossCollateral", "chargedFee", "netProceeds", "totalCollateral")
+    if {key: participant[key] for key in keys if key in participant} != expected:
+        raise ValueError("Retained participant settlement fields disagree.")
+
+
 def _match(receipt, wallet, event):
     side_name = event.get("side", "BUY")
     if side_name not in ("BUY", "SELL"):
@@ -131,15 +162,14 @@ def _match(receipt, wallet, event):
         role = "taker"
     elif counterparty in EXCHANGES:
         return {"status": "unresolved", "reason": "The counterparty was a different exchange contract."}
-    basis = _amount_match_basis(event, role, paid, shares, fee)
-    if not basis:
+    try:
+        amounts = _settlement_fields(event, role, paid, shares, fee)
+    except ValueError:
         return {"status": "unresolved", "reason": f"The participant amounts did not reconcile with the public {side_name}."}
-    amounts = ({"grossCollateral": units_from_micros(paid), "chargedFee": units_from_micros(fee),
-                ("netProceeds" if selling else "totalCollateral"): units_from_micros(paid - fee if selling else paid + fee)} if role == "taker" else {})
     return {"status": "matched", "chainId": 137, "blockNumber": block, "blockHash": block_hash,
             "transactionHash": tx, "exchange": exchange, "logIndex": index, "orderHash": order,
             "fillId": f"137:{tx}:{index}", "role": role, "sharesBaseUnits": str(shares),
-            "collateralBaseUnits": str(paid), "feeBaseUnits": str(fee), "amountMatchBasis": basis, **amounts}
+            "collateralBaseUnits": str(paid), "feeBaseUnits": str(fee), **amounts}
 
 
 def identify_trade(wallet, event):

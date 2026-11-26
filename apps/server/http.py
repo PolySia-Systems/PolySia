@@ -247,7 +247,10 @@ class Handler(BaseHTTPRequestHandler):
                 revision = self.body(("revision",))["revision"]
                 with store.connection(write=False) as db:
                     basis = public_shadow.position_basis(db, run_id, token, revision)
-                return public_marks.read_mark(basis)
+                mark = public_marks.read_mark(basis)
+                with store.connection(write=False) as db:
+                    public_shadow.require_revision(db, run_id, revision)
+                return mark
             body = self.body(("revision", "maxShares"))
             revision, limit = body["revision"], body["maxShares"]
             with store.connection(write=False) as db:

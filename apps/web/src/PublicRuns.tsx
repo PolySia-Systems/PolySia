@@ -189,7 +189,8 @@ function PositionSale({shares, busy, observe}: {shares: string; busy: boolean; o
           disabled={busy} onChange={e => setLimit(e.target.value)}/></label>
       <button className="btn" disabled={busy}><ScanLine size={15}/> Observe leader SELL</button>
     </form>
-    <small>The leader’s total inventory is unknown. A limit of {shares} allows this simulated position to close.</small>
+    <small>The leader’s total inventory is unknown. A limit of {shares} allows this simulated position to close.
+      Later fills of an order already modeled in this run add no further shares.</small>
   </details>
 }
 

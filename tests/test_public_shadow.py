@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from apps.server import public_depth, public_marks, public_shadow as paper
+from apps.server import public_depth, public_fill, public_marks, public_shadow as paper
 from apps.server.archive import copy_workspace
 from apps.server.store import Conflict, Workspace, add_public_runs, create_schema_v1
 from test_public_depth import MS, sample
@@ -32,7 +32,10 @@ def observed_buy(wallet, budget, *, order="07", start=None):
     tx = "0x" + "de" * 32
     data["event"] = dict(data["event"], side="BUY", eventTimeSeconds=start, transactionHash=tx,
                          marketTitle="Fixture opening day?", outcomeLabel="Yes")
-    data["participant"].update(chainId=137, transactionHash=tx, orderHash="0x" + order * 32)
+    data["event"]["shares"] = "25"
+    data["participant"].update(chainId=137, transactionHash=tx, orderHash="0x" + order * 32,
+                               role="maker", sharesBaseUnits="25000000", collateralBaseUnits="12500000",
+                               feeBaseUnits="0", amountMatchBasis="exact-price-and-shares")
     data.update(schemaVersion=2, windowStartSeconds=start, windowEndSeconds=start + 1,
                 status="observed", reason="Controlled public BUY.", wallet=wallet, asset="pUSD", researchBudget=budget)
     data["capacity"] = public_depth.measure_depth(data, budget)
@@ -45,6 +48,7 @@ def observed_sell(wallet, scope, *, start=None, order="08", depth="8", leader_sh
     data.update(schemaVersion=4, exitScope=scope)
     data["event"].update(side="SELL", shares=leader_shares)
     data["participant"]["sharesBaseUnits"] = str(public_depth._micros(leader_shares))
+    data["participant"]["collateralBaseUnits"] = str(public_depth._micros(leader_shares) // 2)
     bid = {"price": "0.48", "shares": depth}
     data["book"].update(bestBids=[bid], bestBid=bid)
     data["capacity"] = public_depth.measure_sale(data)
@@ -236,6 +240,41 @@ class PublicPortfolioTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cost basis"):
             copy_workspace(self.store.path, self.root / "invalid.db")
 
+    def test_restore_reconciles_historical_sell_settlement(self):
+        from datetime import UTC, datetime
+        historical = json.loads((Path(__file__).parent / "fixtures/polygon-sell.json").read_text())
+        event, wallet = historical["event"], historical["wallet"]
+        start = event["eventTimeSeconds"]
+        with self.store.connection() as db:
+            with patch.object(paper, "timestamp", return_value=STARTED):
+                paper.create(db, ID, wallet, "Settlement test", "25", "10")
+            entry = observed_buy(wallet, "10.00", start=start - 20)
+            entry["event"].update(conditionId=event["conditionId"], tokenId=event["tokenId"])
+            with patch.object(paper, "timestamp", return_value=datetime.fromtimestamp(start - 10, UTC).isoformat()):
+                paper.record(db, ID, 1, entry)
+            token = event["tokenId"]
+            _, scope, _ = paper.sale_terms(db, ID, 2, token, "5")
+            sale = observed_sell(wallet, scope, start=start)
+            sale["event"] = event
+            sale["participant"].update(public_fill._match(historical["receipt"], wallet, event))
+            bid = {"price": "0.99", "shares": "10"}
+            sale["book"].update(bestBid=bid, bestBids=[bid], bestAsks=[], spreadPerShare=None)
+            sale["capacity"] = public_depth.measure_sale(sale)
+            self.assertEqual(paper.record_sale(db, ID, 2, token, "5", sale)["exits"], 1)
+            saved = paper.report(db, ID, export=True)
+        copy_workspace(self.store.path, self.root / "good.db")
+        with Workspace(self.root / "good.db").connection(write=False) as db:
+            self.assertEqual(paper.report(db, ID, export=True), saved)
+        for field, key, wrong in (("event", "reportedCollateral", "2914.3827"),
+                                  ("participant", "netProceeds", "2914.3827"),
+                                  ("participant", "feeBaseUnits", "0")):
+            with self.subTest(key=key), self.store.connection() as db:
+                changed = sale | {field: sale[field] | {key: wrong}}
+                db.execute("UPDATE public_decisions SET receipt=? WHERE kind='exit'", (json.dumps(changed),))
+            with self.assertRaisesRegex(ValueError, "participant|Participant"):
+                copy_workspace(self.store.path, self.root / "bad.db")
+            self.assertFalse((self.root / "bad.db").exists())
+
     def test_sale_depth_caps_leader_floor_price_fee_and_missing_evidence(self):
         scope = public_depth.sell_scope("0x" + "12" * 32, "734", "15")
         receipt = observed_sell(WALLET, scope, leader_shares="7.9", depth="5")
@@ -269,6 +308,7 @@ class PublicPortfolioTests(unittest.TestCase):
             with patch.object(public_marks, "MAX_PORTFOLIO_BOOKS", 1):
                 bounded = public_marks.portfolio_value(mixed)
                 self.assertEqual((bounded["checked"], bounded["total"], bounded["netResult"]), (1, 2, None))
+                self.assertEqual(bounded["uncheckedPositions"], [additional])
             with patch.object(public_marks.time, "time_ns", side_effect=[now * 1_000_000, (now + 61_000) * 1_000_000]):
                 expired = public_marks.portfolio_value(basis)
                 self.assertEqual((expired["priced"], expired["unrealized"]), (0, None))

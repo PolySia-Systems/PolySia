@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from .provider import decimal_value, units_from_micros as units, validate_address
 from .public_depth import budget_amount, capacity_policy, measure_depth, measure_sale, sell_scope
-from .public_fill import EXCHANGES
+from .public_fill import EXCHANGES, verify_retained_amounts
 from .store import Conflict, timestamp
 
 
@@ -305,6 +305,7 @@ NO_ENTRY = (None, None, None, None, None, 0, 0, 0)
 
 
 def _decision(run, budget, receipt, recorded, seen):
+    verify_retained_amounts(receipt, "BUY")
     if receipt["wallet"] != run["wallet"] or receipt["researchBudget"] != budget:
         raise ValueError("Receipt scope mismatch")
     capacity = receipt.get("capacity", {})
@@ -349,6 +350,7 @@ def sale_terms(db, run_id, revision, token, limit):
 
 
 def _sale_decision(run, scope, basis, receipt, recorded, seen):
+    verify_retained_amounts(receipt, "SELL")
     if receipt["wallet"] != run["wallet"] or receipt["exitScope"] != scope:
         raise ValueError("SELL receipt scope mismatch")
     quote = receipt.get("capacity", {})
