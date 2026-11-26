@@ -1034,12 +1034,29 @@ def public_artifact_smoke(browser: Browser, cwd: Path, output: Path | None):
         assert saved["cash"] == portfolio["cash"] and saved["positions"] == portfolio["positions"]
         assert page.request.get(origin + "/api/v1/workspace").json() == workspace
         print(f"Installed public shadow window recorded {decision['kind']}, cash {saved['cash']} pUSD, {len(saved['positions'])} positions.")
+        page.get_by_role("button", name="Stop run", exact=True).click()
+        with page.expect_response("**/api/v1/public-runs/*/stop") as stopped_reply:
+            page.get_by_role("button", name="Confirm stop").click()
+        assert stopped_reply.value.ok
+        stopped = page.request.get(origin + run_path + "/export").json()
+        assert stopped["status"] == "stopped" and stopped["revision"] == portfolio["revision"] + 1
+        assert stopped["decisions"][:-1] == saved["decisions"] and stopped["decisions"][-1]["kind"] == "stop"
+        assert stopped["positions"] == saved["positions"] and stopped["cash"] == saved["cash"]
         page.get_by_role("button", name="Open navigation").click()
         page.get_by_role("dialog", name="Workspace menu").get_by_role("link", name="Accounts", exact=True).click()
         page.get_by_role("button", name="Remove watch").click()
         expect(page.get_by_role("heading", name="Account scope")).to_be_visible()
         page.close()
     assert json.loads(subprocess.check_output(installer, cwd=cwd)) == installed
+    with app(installed["launcher"], cwd) as restarted_origin:
+        page = browser.new_page()
+        page.goto(restarted_origin + "/#/paper/" + portfolio["id"])
+        with page.expect_download() as download:
+            page.get_by_role("link", name="Export run").click()
+        assert json.loads(download.value.path().read_text()) == stopped
+        page.close()
+        print("Restarted installed public portfolio preserved the complete stopped journal.")
+
 
 
 def main():
