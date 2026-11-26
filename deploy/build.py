@@ -40,7 +40,11 @@ def main():
                 entry.compress_type = ZIP_DEFLATED
                 entry.create_system = 3
                 entry.external_attr = 0o100644 << 16
-                bundle.writestr(entry, path.read_bytes())
+                contents = path.read_bytes()
+                if path.suffix == ".py":
+                    # Package the same Linux source bytes from LF and CRLF checkouts.
+                    contents = contents.replace(b"\r\n", b"\n")
+                bundle.writestr(entry, contents)
         # A concurrent installer sees the previous or the complete new bundle.
         os.replace(candidate, output)
     print(f"{output.name}  sha256 {hashlib.sha256(output.read_bytes()).hexdigest()}")
