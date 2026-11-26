@@ -2,10 +2,10 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from deploy.cloudflare_setup import (
-    Journal, applies, configure_ingress, disconnected, hostname, owner_email, verify_app, verify_policy,
+    Journal, applies, check_local_service, configure_ingress, disconnected, hostname, owner_email, verify_app, verify_policy,
 )
 
 
@@ -22,6 +22,16 @@ class ConfigAPI:
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_https_service_user_cannot_have_an_active_or_boot_enabled_local_service(self):
+        with patch("deploy.cloudflare_setup.unit_state") as state:
+            for load, active, enabled in (("not-found", "inactive", ""), ("loaded", "inactive", "disabled")):
+                state.return_value = dict(LoadState=load, ActiveState=active, UnitFileState=enabled)
+                check_local_service()
+            for active, enabled in (("active", "disabled"), ("inactive", "enabled"), ("activating", "enabled")):
+                state.return_value = dict(LoadState="loaded", ActiveState=active, UnitFileState=enabled)
+                with self.assertRaisesRegex(ValueError, "Disable and stop"):
+                    check_local_service()
+
     def test_fields_and_existing_path_application(self):
         self.assertEqual(hostname("https://APP.Example.com/"), "app.example.com")
         self.assertEqual(owner_email(" Owner@Example.com "), "owner@example.com")

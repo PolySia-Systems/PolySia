@@ -6,6 +6,7 @@ import os
 import select
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -70,6 +71,12 @@ def verify():
         shutil.copyfile(ROOT / "dist/polysia.pyz", bundle)
         prefix = cwd / "test installation"
         command = [sys.executable, str(bundle), "--prefix", str(prefix), "--json"]
+        shared = cwd / "shared"
+        shared.mkdir()
+        shared.chmod(0o777)
+        unsafe = subprocess.run([sys.executable, str(bundle), "--prefix", str(shared / "app"), "--cloudflare"],
+                                cwd=cwd, capture_output=True, text=True, timeout=5)
+        assert unsafe.returncode and "private home" in unsafe.stderr and not (shared / "app").exists()
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             listener.listen()
@@ -132,6 +139,24 @@ def verify():
         with app(repeated["launcher"], cwd) as url:
             state = json.loads(request(url, "/api/v1/workspace"))
             assert state["settings"] == updated and state["run"] == stopped
+            # Initial HTTPS deployment cannot adopt a local installation, even while it is running.
+            conversion = subprocess.run([*command[:-1], "--cloudflare"], cwd=cwd, capture_output=True,
+                                        text=True, timeout=5)
+            assert conversion.returncode and "fresh prefix" in conversion.stderr, conversion.stderr
+            assert not (prefix / "remote").exists()
+            assert json.loads(request(url, "/api/v1/workspace")) == state
+        # Model the mode reservation from the HTTPS installer. Check all local startup
+        # paths before any service, database or activation change can take place.
+        remote = prefix / "remote"
+        remote.mkdir(mode=0o700)
+        (remote / "deployment.json").write_text("{}")
+        for local in ([*command[:-1], "--start", "--port", "0"], [*command[:-1], "--service"], [launcher, "--port", "0"]):
+            denied = subprocess.run(local, cwd=cwd, env=env, capture_output=True, text=True, timeout=5)
+            assert denied.returncode and "owner-only HTTPS" in denied.stderr, denied.stderr
+        copy = cwd / "owner-backup.db"
+        subprocess.run([launcher, "backup", "--to", copy], cwd=cwd, env=env, check=True)
+        (remote / "deployment.json").unlink()
+        remote.rmdir()
         # A damaged code directory cannot be reported as a successful reinstall.
         index = Path(repeated["launcher"]).parent / "apps/web/dist/index.html"
         index.write_text("changed locally")
@@ -154,6 +179,7 @@ def verify_upgrade(previous):
             return json.loads(output)
 
         original = install(previous.resolve())
+        previous_launcher = Path(original["launcher"]).resolve()
         with app(original["launcher"], cwd, offline=True) as url:
             prior_version = json.loads(request(url, "/api/v1/health"))["version"]
             request(url, "/api/v1/settings", {"version": 1, "revision": 0, "theme": "dark"})
@@ -164,12 +190,14 @@ def verify_upgrade(previous):
             request(url, route + "/pause", {"revision": fill["revision"]}, "POST")
             legacy = None
             legacy_path = "/api/v1/public-runs/" + "30" * 16
-            if prior_version in ("0.3.0", "0.4.0"):
+            if prior_version in ("0.3.0", "0.4.0", "0.5.0"):
                 request(url, legacy_path, {"name": "Legacy rules", "wallet": "0x" + "bc" * 20, "capital": "15", "cap": "5"})
                 legacy = json.loads(request(url, legacy_path + "/pause", {"revision": 1}, "POST"))
             saved = json.loads(request(url, "/api/v1/workspace"))
             assert saved["run"]["status"] == "paused" and int(saved["run"]["quantity"]) > 0
 
+        with sqlite3.connect(Path(original["data"]) / "workspace.sqlite3") as db:
+            previous_schema = db.execute("PRAGMA user_version").fetchone()[0]
         upgraded = install(ROOT / "dist/polysia.pyz")
         assert original["artifactSha256"] != upgraded["artifactSha256"]
         launcher = upgraded["launcher"]
@@ -184,7 +212,9 @@ def verify_upgrade(previous):
             if legacy:
                 prior = json.loads(request(url, legacy_path))
                 assert prior["policy"] == legacy["policy"] and prior["decisions"] == legacy["decisions"]
-                assert prior["cash"] == legacy["cash"] and "checkSalesBeforeEntry" not in prior["policy"]
+                assert prior["cash"] == legacy["cash"]
+                if prior_version in ("0.3.0", "0.4.0"):
+                    assert "checkSalesBeforeEntry" not in prior["policy"]
                 changed = prior
                 if prior_version == "0.3.0":
                     assert not prior["exitsEnabled"]
@@ -205,6 +235,12 @@ def verify_upgrade(previous):
             assert json.loads(request(url, public_route)) == public_end
             if legacy:
                 assert json.loads(request(url, legacy_path)) == changed
+        if previous_schema < 4:
+            old = subprocess.run([previous_launcher, "--port", "0"], cwd=cwd, capture_output=True, text=True,
+                                 env={**env, "POLYSIA_DB": str(recovered)}, timeout=5)
+            assert old.returncode and "Unsupported workspace database version 4" in old.stderr, old.stderr
+            with app(launcher, cwd, recovered, offline=True) as url:
+                assert json.loads(request(url, public_route)) == public_end
         print(f"Upgrade {prior_version} to {health['version']} preserved a paused position, "
               "settings and revisions. Restore retained recorded fills and the new public shadow run.")
 

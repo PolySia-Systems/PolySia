@@ -30,7 +30,10 @@ def hostname(value):
 
 
 def owner_email(value):
-    value = value.strip().lower()
+    value = value.strip()
+    if not value.isascii():
+        raise ValueError("Use the owner's ASCII sign-in email.")
+    value = value.lower()
     if (len(value) > 254 or not re.fullmatch(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9.-]+", value)
             or email.utils.parseaddr(value)[1] != value):
         raise ValueError("Enter the owner's sign-in email, such as owner@example.com.")
@@ -273,14 +276,31 @@ def unit_text(description, argv, marker):
             + "\n[Install]\nWantedBy=default.target\n")
 
 
+def unit_state(name):
+    data = subprocess.run(["systemctl", "--user", "show", name, "--all", "-p", "LoadState",
+                           "-p", "FragmentPath", "-p", "DropInPaths", "-p", "ActiveState", "-p", "UnitFileState"],
+                          capture_output=True, text=True, timeout=10)
+    state = dict(line.split("=", 1) for line in data.stdout.splitlines() if "=" in line)
+    if data.returncode not in (0, 4) or not state.get("LoadState"):
+        raise ValueError(f"Cannot verify {name} in the user service manager.")
+    return state
+
+
+def check_local_service():
+    state = unit_state("polysia.service")
+    if state["LoadState"] == "not-found" and state.get("ActiveState") == "inactive":
+        return
+    if state.get("ActiveState") in ("inactive", "failed") and state.get("UnitFileState") in ("disabled", "masked"):
+        return
+    raise ValueError("Disable and stop the local polysia.service before deploying owner-only HTTPS "
+                     "under this dedicated service user.")
+
+
 def ensure_unit(path, definition, create):
     if path.is_symlink() or (path.exists() and path.read_text() != definition):
         raise ValueError(f"Conflicting service configuration at {path}. Inspect before retrying.")
-    data = subprocess.run(["systemctl", "--user", "show", path.name, "--all", "-p", "LoadState",
-                           "-p", "FragmentPath", "-p", "DropInPaths"], capture_output=True, text=True, timeout=10)
-    state = dict(line.split("=", 1) for line in data.stdout.splitlines() if "=" in line)
-    if (data.returncode not in (0, 4) or state.get("LoadState") not in ("loaded", "not-found")
-            or state.get("DropInPaths") or state.get("FragmentPath") not in ("", str(path))
+    state = unit_state(path.name)
+    if (state["LoadState"] not in ("loaded", "not-found") or state.get("DropInPaths") or state.get("FragmentPath") not in ("", str(path))
             or (state.get("FragmentPath") and not path.exists())):
         raise ValueError(f"Cannot verify exclusive ownership of {path.name}.")
     if create and not path.exists():
@@ -304,6 +324,7 @@ def setup(*, archive, prefix, install):
         raise ValueError("Install the supported PyJWT 2.x with RS256 support in the service interpreter.")
     if command("loginctl", "show-user", str(os.getuid()), "-p", "Linger", "--value") != "yes":
         raise ValueError("Enable systemd user lingering for this dedicated OS account first.")
+    check_local_service()
     connector = shutil.which("cloudflared")
     if not connector:
         raise ValueError("Install the authenticated cloudflared package first, then retry.")
@@ -331,8 +352,6 @@ def setup(*, archive, prefix, install):
                             "--token-file", remote / "connector.token"], name)
     ensure_unit(origin, origin_text, False)
     ensure_unit(tunnel, tunnel_text, False)
-    if tunnel.exists():
-        command("systemctl", "--user", "disable", "--now", tunnel.name)
     token = (getpass.getpass("Cloudflare management API token (hidden): ") if sys.stdin.isatty()
              else sys.stdin.readline(1025).strip())
     if not token or not token.isascii() or not all(32 < ord(c) < 127 for c in token) or len(token) > 1024:
@@ -344,6 +363,8 @@ def setup(*, archive, prefix, install):
             raise ValueError("The active Cloudflare account or zone has changed.")
         j.state[key] = actual
     j.save()
+    if tunnel.exists():
+        command("systemctl", "--user", "disable", "--now", tunnel.name)
     base = "/accounts/" + account
     apps, tunnels, dns = base + "/access/apps", base + "/cfd_tunnel", "/zones/" + zone + "/dns_records"
     records = api.rows(dns, name=host)

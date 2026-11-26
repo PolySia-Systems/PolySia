@@ -457,6 +457,12 @@ export function Status({ workspace }: Props) {
           </div>
           {health && (
             <div>
+              <dt>Workspace access</dt>
+              <dd>{health.mode === 'owner-access' ? 'Owner-only HTTPS' : health.mode === 'local' ? 'Local loopback' : 'Unknown'}</dd>
+            </div>
+          )}
+          {health && (
+            <div>
               <dt>Installed artifact</dt>
               <dd>
                 {health.artifactSha256 ? (
@@ -497,9 +503,8 @@ export function Status({ workspace }: Props) {
           observations and simulated funds. Scenario replays use fictional leaders, prices and funds.
         </p>
         <p>
-          A budgeted observation checks the wallet’s order and market fees before measuring
-          displayed depth. The next test is how often a usable quote survives those checks across
-          different wallets and market conditions.
+          The next trial follows a first-time owner selecting a leader, explaining a skipped entry
+          and finding the remaining shares after stopping and restarting.
         </p>
       </section>
     </div>

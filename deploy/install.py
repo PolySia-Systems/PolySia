@@ -10,6 +10,7 @@ import re
 import shlex
 import socket
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -79,6 +80,19 @@ def check_port(port):
         except OSError as exc:
             raise ValueError(f"Cannot use local port {port}: {exc.strerror}. "
                              "Stop its listener or choose another port with --port PORT.") from exc
+
+
+def prepare_remote_prefix(prefix):
+    """Check each directory before creating anything beneath it."""
+    uid = os.geteuid()
+    for directory in (*reversed(prefix.parents), prefix):
+        directory.mkdir(mode=0o700, exist_ok=True)
+        info = directory.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, uid)
+                or (info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX)):
+            raise ValueError("Choose an HTTPS install path under the dedicated service user's private home.")
+    if info.st_uid != uid or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError("The HTTPS installation prefix must belong to the service user and have mode 0700.")
 
 
 def manager(*arguments, allow_missing_unit=False):
@@ -185,13 +199,24 @@ def main():
             return
         prefix = args.prefix.resolve()
         archive = Path(sys.argv[0])
-        prefix.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if args.cloudflare:
+            prepare_remote_prefix(prefix)
+        else:
+            prefix.mkdir(mode=0o700, parents=True, exist_ok=True)
         with (prefix / ".polysia-install.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
+            remote = prefix / "remote"
             if args.cloudflare:
+                if not (remote / "deployment.json").is_file() and any(
+                        (prefix / item).exists() for item in ("current", "releases", "data")):
+                    raise ValueError("This prefix already contains an installation. Choose a fresh prefix "
+                                     "for owner-only HTTPS and keep the existing workspace in its original prefix.")
                 from cloudflare_setup import setup
                 setup(archive=archive, prefix=prefix, install=install)
                 return
+            if remote.exists():
+                raise ValueError("This prefix is reserved for owner-only HTTPS. Rerun with --cloudflare "
+                                 "or choose a separate prefix for a local installation.")
             if args.service:
                 unit, definition, active = prepare_service(prefix, port)
                 if active:

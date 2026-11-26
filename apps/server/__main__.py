@@ -13,7 +13,7 @@ from .store import Workspace
 from .study import record_study
 
 
-def main(*, artifact_sha256=None, serve_installed=None):
+def main(*, artifact_sha256=None, serve_installed=None, installed_prefix=None):
     parser = argparse.ArgumentParser(description="Start the PolySia local workspace")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--origin-socket", type=Path, help="Private socket for authenticated tunnel ingress")
@@ -60,6 +60,10 @@ def main(*, artifact_sha256=None, serve_installed=None):
                               Workspace(path), artifact_sha256=artifact_sha256) as server:
                 server.serve_forever()
             return
+        data_dir = path.resolve().parent
+        if ((installed_prefix is not None and (installed_prefix / "remote").exists())
+                or (data_dir.name == "data" and (data_dir.parent / "remote/deployment.json").exists())):
+            raise ValueError("This workspace uses owner-only HTTPS. Start its protected origin and tunnel services.")
         with LocalServer(args.port, Workspace(path), artifact_sha256=artifact_sha256) as server:
             if serve_installed:
                 serve_installed(server)

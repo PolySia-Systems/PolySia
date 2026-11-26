@@ -8,7 +8,7 @@ from decimal import Decimal
 from .provider import decimal_value, units_from_micros as units, validate_address
 from .public_depth import DELAY_SECONDS, budget_amount, capacity_policy, measure_depth, measure_sale, sell_scope
 from .public_fill import EXCHANGES, verify_retained_amounts
-from .store import Conflict, timestamp
+from .store import WORKSPACE_VERSION, Conflict, timestamp
 
 
 PAGE = 20
@@ -433,7 +433,7 @@ def _save(db, run_id, revision, now, kind, reason, amounts, receipt, released):
     return report(db, run_id)
 
 
-def verify_archive(db, version=3):
+def verify_archive(db, version=WORKSPACE_VERSION):
     """Replay persisted control and money decisions against their frozen receipts."""
     if db.execute("PRAGMA foreign_key_check").fetchone():
         raise ValueError("A public shadow decision has no run.")

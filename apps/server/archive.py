@@ -11,7 +11,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from .provider import decimal_value, validate_address
-from .store import add_public_exits, add_public_runs, create_schema_v1
+from .store import WORKSPACE_VERSION, add_public_exits, add_public_runs, create_schema_v1
 from .public_shadow import verify_archive
 
 
@@ -53,10 +53,12 @@ def _verify_journal(record, stored_id):
     if (record["status"] == "completed") != (remaining == 0) or not isinstance(record["policy"], dict):
         raise ValueError("Invalid replay state or policy.")
     capital = _cents(record["capital"])
-    if not 0 < _cents(record["order_size"]) <= capital:
+    order_cap = _cents(record["order_size"])
+    if not 0 < order_cap <= capital:
         raise ValueError("Invalid replay allocation or order cap.")
     cash, shares, fees = capital, 0, 0
     basis = realized = 0
+    seen_orders = set()
     for event in events:
         if event["side"] not in ("BUY", "SELL") or event["status"] not in ("skipped", "partial", "filled"):
             raise ValueError("Unknown journal entry.")
@@ -65,6 +67,15 @@ def _verify_journal(record, stored_id):
             raise ValueError("Invalid journal entry amounts.")
         if event["status"] != "skipped" and (not gross or not count):
             raise ValueError("Recorded fill has no shares or notional.")
+        order = event["source_order"]
+        if not isinstance(order, str) or not order:
+            raise ValueError("Missing replay source order.")
+        if event["status"] != "skipped":
+            if order in seen_orders:
+                raise ValueError("A replay source order was already processed.")
+            if event["side"] == "BUY" and (event["entry_state"] != "running" or gross + fee > order_cap):
+                raise ValueError("Replay purchase outside its entry state or fee-inclusive cap.")
+        seen_orders.add(order)
         direction = 1 if event["side"] == "BUY" else -1
         if direction == 1:
             basis += gross + fee
@@ -155,7 +166,7 @@ def copy_workspace(source: Path, destination: Path):
                 reader.backup(writer, pages=256)
                 writer.execute("PRAGMA trusted_schema = OFF")
                 version = writer.execute("PRAGMA user_version").fetchone()[0]
-                if version not in (1, 2, 3):
+                if not 1 <= version <= WORKSPACE_VERSION:
                     raise ValueError("This file is not a supported PolySia workspace.")
                 _verify_schema(writer, version)
                 if writer.execute("PRAGMA quick_check").fetchall() != [("ok",)]:

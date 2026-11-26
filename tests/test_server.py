@@ -448,17 +448,22 @@ class WorkspaceHttpTest(unittest.TestCase):
         store = self.server.store
         old = store.create_run("atlas", "100", "10")
         store.change_run(old["id"], "step", old["revision"])
-        old = store.change_run(old["id"], "stop", old["revision"] + 1)
+        store.change_run(old["id"], "step", old["revision"] + 1)
+        old = store.change_run(old["id"], "stop", old["revision"] + 2)
         store.create_run("mira", "20", "5")  # Damage is in an older run.
         destination = self.root / "recovered.db"
         altered_fill = {**old["events"][0], "quantity": 19.9}
+        first, second = old["events"]
         # Add exactly one dollar to each total; their difference still reconciles.
         inflated_basis = str(Decimal(old["cost_basis"]) + 1)
         for corrupted in ("{", "{}", json.dumps({**old, "fees": "0.00"}),
                           json.dumps({**old, "cost_basis": inflated_basis, "realized_pnl": "1.00"}),
                           json.dumps({**old, "remaining_steps": 0}),
                           json.dumps({**old, "marked_value": "NaN"}),
-                          json.dumps({**old, "events": [altered_fill]})):
+                          json.dumps({**old, "events": [altered_fill, second]}),
+                          json.dumps({**old, "order_size": "9.60"}),
+                          json.dumps({**old, "events": [first, {**second, "source_order": first["source_order"]}]}),
+                          json.dumps({**old, "events": [{**first, "entry_state": "paused"}, second]})):
             with self.subTest(corrupted=corrupted), sqlite3.connect(store.path) as db:
                 db.execute("UPDATE runs SET record = ? WHERE id = ?", (corrupted, old["id"]))
                 db.commit()

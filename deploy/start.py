@@ -42,4 +42,4 @@ def serve_installed(server):
         thread.join()
 
 
-main(artifact_sha256=release.name, serve_installed=serve_installed)
+main(artifact_sha256=release.name, serve_installed=serve_installed, installed_prefix=release.parents[1])

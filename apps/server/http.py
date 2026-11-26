@@ -86,7 +86,9 @@ class AccessIdentity:
             claims = self.jwt.decode(token, key.key, algorithms=["RS256"], audience=self.audience,
                                      issuer=self.issuer, options={"require": ["exp", "email", "iss", "aud"]})
             email = claims["email"]
-            return email.casefold() if isinstance(email, str) else None
+            if claims.get("type") == "app" and isinstance(email, str) and email.isascii():
+                return email.lower()
+            return None
         except (self.jwt.PyJWTError, ValueError, TypeError, OSError, RecursionError):
             return None
 
@@ -103,12 +105,12 @@ class AccessOrigin(LocalServer):
         directory = path.parent.stat()
         if directory.st_uid != os.geteuid() or directory.st_mode & 0o077:
             raise ValueError("The socket directory must belong to this user and have mode 0700.")
-        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", hostname) or not owner:
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", hostname) or not owner or not owner.isascii():
             raise ValueError("Configure the exact Access hostname and owner.")
         self.address_family = socket.AF_UNIX
         self.identity = AccessIdentity(json.loads((path.parent / "access.json").read_bytes()))
         self.hostname = hostname
-        self.owner = owner.casefold()
+        self.owner = owner.lower()
         self.socket_path = path
         # A stopped service can leave a stale socket after power loss.
         if path.exists():

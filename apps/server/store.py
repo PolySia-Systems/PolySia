@@ -10,6 +10,9 @@ from uuid import uuid4
 from . import shadow
 
 
+WORKSPACE_VERSION = 4
+
+
 class Conflict(ValueError):
     """The client must load the latest state before it can retry."""
 
@@ -61,7 +64,7 @@ class Workspace:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with self.connection() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2, 3):
+            if not 0 <= version <= WORKSPACE_VERSION:
                 raise ValueError(f"Unsupported workspace database version {version}")
             if version == 0:
                 create_schema_v1(db)
@@ -69,6 +72,9 @@ class Workspace:
                 add_public_runs(db)
             if version < 3:
                 add_public_exits(db)
+            if version < 4:
+                # Older writers understand the tables but ignore the recorded pre-BUY sale check.
+                db.execute("PRAGMA user_version = 4")
 
     @contextmanager
     def connection(self, write=True):

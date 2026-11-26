@@ -206,6 +206,9 @@ def exercise(browser: Browser, origin: str, output: Path | None):
     expect(dark).to_have_attribute("aria-pressed", "true")
     page.reload()
     expect(dark).to_have_attribute("aria-pressed", "true")
+    page.get_by_role("link", name="System status", exact=True).click()
+    expect(page.get_by_text("Local loopback", exact=True)).to_be_visible()
+    capture(page, output, "system-status")
     page.get_by_role("link", name="Discover", exact=True).click()
     search.fill("")
     capture(page, output, "discovery-dark")
@@ -721,10 +724,13 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
     from apps.server import public_marks, public_shadow
     from apps.server.http import LocalServer
     from apps.server.store import Workspace
+    from install_smoke import app
     from test_public_shadow import observed_buy, observed_sell, WALLET
     from test_observe import book
 
-    server = LocalServer(0, Workspace(cwd / "shadow.sqlite3"))
+    installer = [sys.executable, str(ROOT / "dist/polysia.pyz"), "--prefix", str(cwd / "public-app"), "--json"]
+    installed = json.loads(subprocess.check_output(installer, cwd=cwd))
+    server = LocalServer(0, Workspace(Path(installed["data"]) / "workspace.sqlite3"))
     origin = f"http://127.0.0.1:{server.server_port}"
     thread = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
     thread.start()
@@ -919,6 +925,19 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
         server.shutdown()
         server.server_close()
         thread.join()
+
+    assert json.loads(subprocess.check_output(installer, cwd=cwd)) == installed
+    with app(installed["launcher"], cwd, offline=True) as reopened:
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        try:
+            page.goto(reopened + "/#" + route.split("#", 1)[1])
+            expect(page.get_by_role("status").filter(has_text=remaining)).to_be_visible()
+            with page.expect_download() as download:
+                page.get_by_role("link", name="Export run").click()
+            assert json.loads(download.value.path().read_text()) == exported
+            print("Installed restart after reinstall preserved the stopped portfolio, partial exit and complete export.")
+        finally:
+            page.close()
 
 
 def public_artifact_smoke(browser: Browser, cwd: Path, output: Path | None):
