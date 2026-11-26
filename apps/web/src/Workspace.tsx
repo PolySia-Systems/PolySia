@@ -379,7 +379,7 @@ export function Settings({ workspace, refresh }: Props) {
         <h2>Appearance</h2>
       </header>
       <p>
-        Choose the theme for this local workspace. Your selection takes effect immediately and
+        Choose the theme for this workspace. Your selection takes effect immediately and
         persists across restarts.
       </p>
       <div className="theme-choices" role="group" aria-label="Workspace theme">
@@ -446,7 +446,7 @@ export function Status({ workspace }: Props) {
         </header>
         <dl className="workspace-facts">
           <div>
-            <dt>Local API</dt>
+            <dt>Workspace API</dt>
             <dd>
               {error
                 ? 'Unreachable'

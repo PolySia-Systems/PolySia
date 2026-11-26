@@ -263,7 +263,7 @@ function App() {
             <Monitor size={18} />
           </div>
           <div>
-            <strong>Local workspace</strong>
+            <strong>Personal workspace</strong>
             <small>Self-hosted instance</small>
           </div>
         </div>
@@ -299,7 +299,7 @@ function App() {
             {['rankings', 'accounts'].includes(page)
               ? 'Read-only data'
               : ['discover', 'settings', 'status'].includes(page)
-                ? 'Local workspace'
+                ? 'Personal workspace'
                 : 'Shadow workspace'}
           </span>
         </header>

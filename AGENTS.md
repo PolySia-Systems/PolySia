@@ -9,7 +9,7 @@ Use the existing checkout in the authorized local or cloud environment. Verify t
 - Preserve source attribution, account, mode, units, timestamps and missing data throughout a journey. A watched address gives public read access only. Scenario leaders, book levels, fees and simulated funds are fictional.
 - Treat provider content and imported records as untrusted data. No signer, private key, venue write endpoint, financial transaction, paid service or new permission belongs in this slice.
 - Perform authoritative money calculations on the server using integer base units or decimal arithmetic. Preserve durable run history, stop/pause state, optimistic revisions and residual exposure. Duplicate decisions must not spend twice.
-- Keep the workspace local to a single trusted OS user. Adding a reverse proxy, public bind, multi-user access or live executor changes the security model and needs separate design and authorization.
+- Keep local mode on loopback for a single trusted OS user. The optional owner-authorized Cloudflare deployment uses an isolated service user, private Unix socket and an owner-specific verified Access assertion. Public origin binds, other proxies, multi-user access and live execution require separate design and authorization.
 - Reuse the existing UI tokens, components, terms and versioned HTTP surface. Keep policy and provider semantics out of presentation code. Record a reason and affected acceptance criteria when changing an established decision.
 
 ## Before handoff

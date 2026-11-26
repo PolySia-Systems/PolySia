@@ -14,7 +14,9 @@ def main():
     web = ROOT / "apps/web/dist"
     if not (web / "index.html").is_file():
         raise SystemExit("Run make build to compile the web app before packaging.")
-    entries = {"__main__.py": ROOT / "deploy/install.py", "polysia": ROOT / "deploy/start.py"}
+    entries = {"__main__.py": ROOT / "deploy/install.py", "polysia": ROOT / "deploy/start.py",
+               "cloudflare_setup.py": ROOT / "deploy/cloudflare_setup.py",
+               "prepare_host.py": ROOT / "deploy/prepare_host.py"}
     for path in sorted((ROOT / "apps/server").rglob("*.py")):
         entries[path.relative_to(ROOT).as_posix()] = path
     for path in sorted(web.rglob("*")):

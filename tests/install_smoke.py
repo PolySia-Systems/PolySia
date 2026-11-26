@@ -5,6 +5,7 @@ import json
 import os
 import select
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -28,14 +29,17 @@ class Assets(HTMLParser):
 
 
 @contextmanager
-def app(launcher, cwd, database=None, offline=False):
+def app(launcher, cwd, database=None, offline=False, install_prefix=None):
     # Use an ephemeral OS-selected port. Exclude development workspace overrides.
     env = {k: v for k, v in os.environ.items() if k not in ("POLYSIA_DB", "PYTHONPATH")}
     if offline:
         env.update(https_proxy="http://127.0.0.1:1", no_proxy="127.0.0.1,localhost")
     if database is not None:
         env["POLYSIA_DB"] = str(database)
-    with subprocess.Popen([launcher, "--port", "0"], cwd=cwd, env=env,
+    command = [launcher] if install_prefix is None else [
+        sys.executable, launcher, "--start", "--prefix", install_prefix
+    ]
+    with subprocess.Popen([*command, "--port", "0"], cwd=cwd, env=env,
                           stdout=subprocess.PIPE, text=True) as server:
         try:
             if not select.select([server.stdout], [], [], 15)[0]:
@@ -66,9 +70,15 @@ def verify():
         shutil.copyfile(ROOT / "dist/polysia.pyz", bundle)
         prefix = cwd / "test installation"
         command = [sys.executable, str(bundle), "--prefix", str(prefix), "--json"]
-        installed = json.loads(subprocess.check_output(command, cwd=cwd))
-        with app(installed["launcher"], cwd, offline=True) as url:
-            assert json.loads(request(url, "/api/v1/health"))["artifactSha256"] == installed["artifactSha256"]
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            busy = subprocess.run([*command[:-1], "--start", "--port", str(listener.getsockname()[1])],
+                                  cwd=cwd, capture_output=True, text=True, timeout=10)
+            assert busy.returncode and "choose another port" in busy.stderr and not (prefix / "current").exists()
+        with app(bundle, cwd, offline=True, install_prefix=prefix) as url:
+            health = json.loads(request(url, "/api/v1/health"))
+            assert health["status"] == "ok" and health["version"]
             assets = Assets()
             assets.feed(request(url, "/").decode())
             assert assets.scripts, "Installed index has no entry module"
@@ -86,6 +96,14 @@ def verify():
             settings["theme"] = "dark"
             updated = json.loads(request(url, "/api/v1/settings", settings))
             assert updated["theme"] == "dark" and updated["revision"] > settings["revision"]
+            run = json.loads(request(url, "/api/v1/runs",
+                                     {"leaderId": "atlas", "allocation": "100", "orderSize": "10"}, "POST"))
+            route = "/api/v1/runs/" + run["id"]
+            fill = json.loads(request(url, route + "/step", {"revision": run["revision"]}, "POST"))
+            stopped = json.loads(request(url, route + "/stop", {"revision": fill["revision"]}, "POST"))
+            assert int(stopped["quantity"]) > 0 and stopped["status"] == "stopped"
+        installed = json.loads(subprocess.check_output(command, cwd=cwd))
+        assert health["artifactSha256"] == installed["artifactSha256"]
         env = {k: v for k, v in os.environ.items() if k not in ("POLYSIA_DB", "PYTHONPATH")}
         launcher = installed["launcher"]
         study_path = cwd / "public-study.jsonl"
@@ -105,13 +123,15 @@ def verify():
         subprocess.run([launcher, "restore", "--from", backup, "--to", restore],
                        cwd=cwd, env=env, check=True)
         with app(launcher, cwd, restore) as url:
-            assert json.loads(request(url, "/api/v1/workspace"))["settings"] == updated
+            restored = json.loads(request(url, "/api/v1/workspace"))
+            assert restored["settings"] == updated and restored["run"] == stopped
 
         repeated = json.loads(subprocess.check_output(command, cwd=cwd))
         assert installed == repeated
         assert len(list((prefix / "releases").iterdir())) == 1
         with app(repeated["launcher"], cwd) as url:
-            assert json.loads(request(url, "/api/v1/workspace"))["settings"] == updated
+            state = json.loads(request(url, "/api/v1/workspace"))
+            assert state["settings"] == updated and state["run"] == stopped
         # A damaged code directory cannot be reported as a successful reinstall.
         index = Path(repeated["launcher"]).parent / "apps/web/dist/index.html"
         index.write_text("changed locally")
@@ -144,7 +164,7 @@ def verify_upgrade(previous):
             request(url, route + "/pause", {"revision": fill["revision"]}, "POST")
             legacy = None
             legacy_path = "/api/v1/public-runs/" + "30" * 16
-            if prior_version == "0.3.0":
+            if prior_version in ("0.3.0", "0.4.0"):
                 request(url, legacy_path, {"name": "Legacy rules", "wallet": "0x" + "bc" * 20, "capital": "15", "cap": "5"})
                 legacy = json.loads(request(url, legacy_path + "/pause", {"revision": 1}, "POST"))
             saved = json.loads(request(url, "/api/v1/workspace"))
@@ -164,13 +184,17 @@ def verify_upgrade(previous):
             if legacy:
                 prior = json.loads(request(url, legacy_path))
                 assert prior["policy"] == legacy["policy"] and prior["decisions"] == legacy["decisions"]
-                assert prior["cash"] == legacy["cash"] and not prior["exitsEnabled"]
-                changed = json.loads(request(url, legacy_path + "/enable-exits", {"revision": prior["revision"]}, "POST"))
+                assert prior["cash"] == legacy["cash"] and "checkSalesBeforeEntry" not in prior["policy"]
+                changed = prior
+                if prior_version == "0.3.0":
+                    assert not prior["exitsEnabled"]
+                    changed = json.loads(request(url, legacy_path + "/enable-exits", {"revision": prior["revision"]}, "POST"))
                 assert changed["exitsEnabled"] and changed["status"] == "paused"
             public_route = "/api/v1/public-runs/" + "a1" * 16
             public_run = json.loads(request(url, public_route, {"wallet": "0x" + "ab" * 20,
                              "name": "Upgrade trial", "capital": "30", "cap": "10"}))
             assert public_run["status"] == "running" and public_run["cash"] == "30"
+            assert public_run["policy"]["checkSalesBeforeEntry"] is True
             public_end = json.loads(request(url, public_route + "/pause", {"revision": 1}, "POST"))
         backup, recovered = cwd / "backup.db", cwd / "restored.db"
         env = {k: v for k, v in os.environ.items() if k not in ("POLYSIA_DB", "PYTHONPATH")}

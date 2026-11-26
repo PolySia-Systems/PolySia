@@ -41,6 +41,23 @@ class ObservationTests(unittest.TestCase):
             result = observe.observe(WALLET, 2)
         return result, reader.call_args_list
 
+    def test_entry_sale_check_matches_wallet_window_and_outcome(self):
+        event = observe._trade(activity(), WALLET, START, START, "BUY")
+        matching = activity(side="SELL", timestamp=START + 2)
+        rows = [matching, matching | {"token_id": "735"}, matching | {"condition_id": "0x" + "aa" * 32}]
+        with (patch.object(observe.time, "time_ns", return_value=(START + 4) * 1_000_000_000),
+              patch.object(observe, "read_public_json", return_value=page(rows)) as read):
+            result = observe._candidate_sales(WALLET, event)
+        params = read.call_args.args[1]
+        self.assertEqual((params["user"], params["side"], params["start"], params["end"]),
+                         (WALLET, "SELL", START, START + 4))
+        self.assertEqual(result["coverage"], {"rowsReturned": 3, "matchingSellRows": 1, "complete": True})
+        self.assertEqual(result["firstSale"]["eventTimeSeconds"], START + 2)
+        with (patch.object(observe.time, "time_ns", return_value=(START + 20) * 1_000_000_000),
+              patch.object(observe, "read_public_json") as expired):
+            self.assertIn("reason", observe._candidate_sales(WALLET, event))
+            expired.assert_not_called()
+
     def test_delayed_read_preserves_the_predeclared_window(self):
         with (
             patch.object(observe.time, "time", return_value=START - 1),

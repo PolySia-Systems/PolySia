@@ -6,7 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from .provider import decimal_value, units_from_micros as units, validate_address
-from .public_depth import budget_amount, capacity_policy, measure_depth, measure_sale, sell_scope
+from .public_depth import DELAY_SECONDS, budget_amount, capacity_policy, measure_depth, measure_sale, sell_scope
 from .public_fill import EXCHANGES, verify_retained_amounts
 from .store import Conflict, timestamp
 
@@ -41,10 +41,13 @@ EXIT_MODEL = {"model": "displayed-bids-v1", "sizing": "operator limit capped by 
 ENABLE_REASON = "Enabled operator-capped SELL windows for this run."
 
 
-def _policy(budget, exits=False):
-    return {**capacity_policy(budget), "model": MODEL, "side": "BUY", "entryModel": "displayed whole shares",
+def _policy(budget, exits=False, check_sales=False):
+    policy = {**capacity_policy(budget), "model": MODEL, "side": "BUY", "entryModel": "displayed whole shares",
             "windowSeconds": 2, "retryEmpty": True, "venueMinimumNotionalEnforced": False,
             "exitModel": EXIT_MODEL if exits else None, "markModel": "on-demand two-sided midpoint"}
+    if check_sales:
+        policy["checkSalesBeforeEntry"] = True
+    return policy
 
 
 def create(db, run_id, wallet, name, capital, cap):
@@ -55,7 +58,7 @@ def create(db, run_id, wallet, name, capital, cap):
     if config[3] > config[2]:
         raise ValueError("The per-entry budget must fit within the starting cash.")
     now = timestamp()
-    policy = _policy(budget_amount(cap), exits=True)
+    policy = _policy(budget_amount(cap), exits=True, check_sales=True)
     db.execute("""INSERT INTO public_runs VALUES (?,?,?,?,?,?,?,?,'running',1)
                   ON CONFLICT(id) DO NOTHING""", (run_id, *config, json.dumps(policy), now, now))
     row = _run(db, run_id)
@@ -247,7 +250,7 @@ def sampling_terms(db, run_id, revision):
     budget = _next_budget(row["capital"] - gross - fee + sales, row["entry_cap"])
     if not budget:
         raise Conflict("Less than 1 pUSD of simulated cash remains. Review the open positions.")
-    return row["wallet"], budget
+    return row["wallet"], budget, json.loads(row["policy"]).get("checkSalesBeforeEntry", False)
 
 
 def _source_order(receipt, side):
@@ -304,6 +307,32 @@ def _check_window(run, receipt, recorded):
 NO_ENTRY = (None, None, None, None, None, 0, 0, 0)
 
 
+def _sale_check_issue(receipt):
+    check = receipt.get("saleCheck") or {}
+    event = receipt["event"]
+    coverage = check.get("coverage", {})
+    uncertain = ("incomplete", "Later leader sales could not be ruled out from a complete, timely activity page.", NO_ENTRY)
+    requested, received = check.get("requestedMs"), check.get("receivedMs")
+    eligible = receipt["evidenceCheckedMs"] + DELAY_SECONDS * 1000 + receipt["market"]["takerDelayMs"]
+    if (type(requested) is not int or type(received) is not int
+            or not eligible <= requested <= received <= receipt["bookRequestedMs"]
+            or check["startSeconds"] != event["eventTimeSeconds"] or check["endSeconds"] != requested // 1000):
+        return uncertain
+    returned = coverage.get("rowsReturned")
+    matches = coverage.get("matchingSellRows")
+    if type(returned) is not int or type(matches) is not int or not 0 <= matches <= returned or "firstSale" not in check:
+        return uncertain
+    sale = check["firstSale"]
+    if sale is not None:
+        if (matches < 1 or sale["side"] != "SELL" or sale["conditionId"] != event["conditionId"] or sale["tokenId"] != event["tokenId"]
+                or not check["startSeconds"] <= sale["eventTimeSeconds"] <= check["endSeconds"]):
+            return uncertain
+        return "skipped", "Public activity showed a sale of this outcome at or after the reported BUY second. No entry was modeled.", NO_ENTRY
+    if coverage.get("complete") is not True or matches != 0:
+        return uncertain
+    return None
+
+
 def _decision(run, budget, receipt, recorded, seen):
     verify_retained_amounts(receipt, "BUY")
     if receipt["wallet"] != run["wallet"] or receipt["researchBudget"] != budget:
@@ -315,6 +344,10 @@ def _decision(run, budget, receipt, recorded, seen):
         candidate = _entry(receipt, budget)
         if seen(candidate[0]):
             return "duplicate", "This source order already has a modeled entry in this run.", NO_ENTRY
+        if json.loads(run["policy"]).get("checkSalesBeforeEntry"):
+            issue = _sale_check_issue(receipt)
+            if issue:
+                return issue
         return "entry", "Modeled a BUY against the delayed displayed asks.", candidate
     reason = capacity.get("reason") or receipt["reason"]
     if kind not in ("waiting", "incomplete", "unavailable", "skipped") or not isinstance(reason, str):
@@ -323,7 +356,7 @@ def _decision(run, budget, receipt, recorded, seen):
 
 
 def record(db, run_id, revision, receipt):
-    wallet, budget = sampling_terms(db, run_id, revision)
+    wallet, budget, _ = sampling_terms(db, run_id, revision)
     now = timestamp()
 
     def seen(source):
@@ -413,7 +446,9 @@ def verify_archive(db, version=3):
         cash, status, revision, last = run["capital"], "running", 1, run["created"]
         policy = json.loads(run["policy"])
         exit_enabled = policy.get("exitModel") is not None
-        if (exit_enabled and version < 3) or policy != _policy(_next_budget(run["entry_cap"], run["entry_cap"]), exit_enabled):
+        check_sales = policy.get("checkSalesBeforeEntry") is True
+        if ((exit_enabled and version < 3) or (check_sales and not exit_enabled)
+                or policy != _policy(_next_budget(run["entry_cap"], run["entry_cap"]), exit_enabled, check_sales)):
             raise ValueError("Invalid public shadow policy.")
         datetime.fromisoformat(last)
         used = set()

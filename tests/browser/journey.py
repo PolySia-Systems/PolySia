@@ -1,6 +1,7 @@
 """Exercise the built application in Chromium against a short-lived local workspace."""
 
 import argparse
+import hashlib
 from contextlib import contextmanager
 import json
 import os
@@ -26,15 +27,17 @@ def isolated_server(directory: Path):
     # deterministic. All tested browser requests still reach the real local API.
     env = {
         **os.environ,
-        "POLYSIA_DB": str(directory / "workspace.sqlite3"),
+        "POLYSIA_DB": str(directory / "installation/data/workspace.sqlite3"),
         "https_proxy": "http://127.0.0.1:1",
         "no_proxy": "localhost,127.0.0.1",
     }
+    bundle = ROOT / "dist/polysia.pyz"
+    expected = hashlib.sha256(bundle.read_bytes()).hexdigest()
     log = directory / "server.log"
     with log.open("w") as output:
         server = subprocess.Popen(
-            [sys.executable, "-m", "apps.server", "--port", "0"],
-            cwd=ROOT,
+            [sys.executable, str(bundle), "--start", "--prefix", str(directory / "installation"), "--port", "0"],
+            cwd=directory,
             env=env,
             stdout=output,
             stderr=subprocess.STDOUT,
@@ -50,7 +53,7 @@ def isolated_server(directory: Path):
                 origin = address.group()
                 try:
                     with urlopen(f"{origin}/api/v1/health", timeout=1) as reply:
-                        if reply.status == 200:
+                        if reply.status == 200 and json.load(reply)["artifactSha256"] == expected:
                             break
                 except (URLError, TimeoutError):
                     time.sleep(0.1)
@@ -223,6 +226,7 @@ def exercise(browser: Browser, origin: str, output: Path | None):
     assert not errors, f"Uncaught browser errors: {errors}"
     page.close()
     print("Passed discovery, replay, stopped exposure, account outage, persistent theme and mobile layout.")
+    return stopped
 
 
 def assisted_budget_journey(browser: Browser, origin: str, output: Path | None):
@@ -742,20 +746,35 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
         unavailable = dict(wallet=WALLET, researchBudget="10.00", status="unavailable", reason="Public endpoint unreachable or denied.")
         # Advance a controlled clock past the delayed book. Every browser action
         # passes through the real HTTP service, SQLite transactions and UI.
-        future = datetime.fromtimestamp(start + 6, UTC)
-        times = ((future + timedelta(seconds=i * 10)).isoformat(timespec="milliseconds") for i in range(14))
+        recorded = datetime.fromtimestamp(start - 4, UTC)
+
+        def record_time():
+            nonlocal recorded
+            recorded += timedelta(seconds=10)
+            return recorded.isoformat(timespec="milliseconds")
+
         quiet = dict(wallet=WALLET, researchBudget="10.00", status="waiting", reason="No ordinary BUY visible.")
-        with patch.object(server, "sample_buy", side_effect=[unavailable, receipt, receipt, quiet, quiet, quiet, quiet]), patch.object(public_shadow, "timestamp", side_effect=times):
+        sale_check = dict(receipt["saleCheck"], firstSale=receipt["event"] | {"side": "SELL", "eventTimeSeconds": start + 1},
+                          coverage={"rowsReturned": 1, "matchingSellRows": 1, "complete": True})
+        reversed_entry = receipt | {"saleCheck": sale_check}
+        responses = [unavailable, reversed_entry, receipt, receipt, quiet, quiet, quiet, quiet]
+        with patch.object(server, "sample_buy", side_effect=responses), patch.object(public_shadow, "timestamp", side_effect=record_time):
             sample = page.get_by_role("button", name="Sample next window")
             sample.click()
             expect(page.get_by_text("Observation unavailable", exact=True)).to_be_visible()
             capture(page, output, "public-run-unavailable")
             sample.click()
+            blocked = page.locator(".paper-journal li").first
+            expect(blocked).to_contain_text("Entry skipped")
+            expect(blocked).to_contain_text("Public activity showed a sale of this outcome")
+            expect(page.get_by_text("No modeled BUY has opened a position.")).to_be_visible()
+            expect(page.locator(".paper-metrics dd").first).to_have_text("25 pUSD")
+            sample.click()
             expect(page.get_by_text("19 shares", exact=True)).to_be_visible()
             expect(page.locator("dd").filter(has_text="15.14256")).to_be_visible()
             page.get_by_text("Observation details", exact=True).first.click()
             expect(page.get_by_text("Polygon exchange and source order", exact=True)).to_be_visible()
-            mark_ms = int((future + timedelta(seconds=12)).timestamp() * 1000)
+            mark_ms = int((recorded + timedelta(seconds=1)).timestamp() * 1000)
             current_book = book(timestamp=str(mark_ms), bids=[{"price": "0.49", "size": "5"}],
                                 asks=[{"price": "0.51", "size": "2"}])
             with (patch.object(public_marks, "read_public_json", side_effect=[current_book, TimeoutError()]),
@@ -777,7 +796,7 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
             page.get_by_label("Decision history filter").select_option("trades")
             expect(page.get_by_text("Already modeled", exact=True)).to_have_count(0)
             expect(page.get_by_text("Modeled BUY", exact=True)).to_be_visible()
-            sale_start = int(future.timestamp()) + 72
+            sale_start = int(recorded.timestamp()) + 1
             def sell(wallet, scope):
                 return observed_sell(wallet, scope, start=sale_start)
             page.get_by_text("Follow a leader SELL", exact=True).click()
@@ -788,7 +807,7 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
                 expect(page.get_by_text("Modeled SELL", exact=True)).to_be_visible()
                 expect(page.get_by_text("Sold 8 simulated shares", exact=False)).to_be_visible()
             assert page.locator("dd").filter(has_text="18.88272").count() == 1
-            quote_ms = (sale_start + 10) * 1000
+            quote_ms = int((recorded + timedelta(seconds=1)).timestamp() * 1000)
             with (patch.object(public_marks, "read_public_json", side_effect=[current_book | {"timestamp": str(quote_ms)}, TimeoutError()]),
                   patch.object(public_marks.time, "time_ns", return_value=quote_ms * 1_000_000)):
                 page.get_by_role("button", name="Check portfolio value").click()
@@ -811,7 +830,14 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
             page.get_by_role("button", name="Resume entries").click()
             page.set_viewport_size({"width": 390, "height": 844})
             page.get_by_role("button", name="Stop run").click()
-            page.get_by_role("button", name="Confirm stop").click()
+            confirmation = page.get_by_role("group", name="Stop this run permanently")
+            remaining = "11 simulated shares remain in Fixture opening day? · Yes."
+            expect(confirmation).to_contain_text(remaining)
+            confirmation.get_by_role("button", name="Keep run").click()
+            expect(confirmation).to_have_count(0)
+            page.get_by_role("button", name="Stop run").click()
+            confirmation.get_by_role("button", name="Confirm stop").click()
+            expect(page.get_by_role("status").filter(has_text=remaining)).to_be_visible()
             expect(page.get_by_role("heading", name="Run closed to observations")).to_be_visible()
             expect(page.get_by_role("region", name="Open simulated positions").get_by_text("11 shares", exact=True)).to_be_visible()
             check_width(page)
@@ -819,12 +845,13 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
         with page.expect_download() as download:
             page.get_by_role("link", name="Export run").click()
         exported = json.loads(download.value.path().read_text())
-        assert [d["kind"] for d in exported["decisions"]] == ["unavailable", "entry", "duplicate", *(["waiting"] * 4), "pause", "exit", "resume", "stop"]
-        assert exported["cash"] == "18.88272" and exported["decisions"][1]["receipt"] == receipt
+        assert [d["kind"] for d in exported["decisions"]] == ["unavailable", "skipped", "entry", "duplicate", *(["waiting"] * 4), "pause", "exit", "resume", "stop"]
+        assert exported["cash"] == "18.88272" and exported["decisions"][2]["receipt"] == receipt
         page.get_by_role("link", name="All public runs").click()
         page.get_by_role("link", name=re.compile("Weekend research")).click()
         expect(page).to_have_url(route)
         expect(page.get_by_text("Stopped", exact=True)).to_be_visible()
+        expect(page.get_by_role("status").filter(has_text=remaining)).to_be_visible()
         page.get_by_role("link", name="All public runs").click()
         page.get_by_role("link", name="New run").click()
         page.get_by_label("Leader wallet").fill(WALLET)
@@ -1030,7 +1057,14 @@ def main():
                 public_artifact_smoke(browser, Path(temp), options.screenshots)
             else:
                 with isolated_server(Path(temp)) as origin:
-                    exercise(browser, origin, options.screenshots)
+                    stopped = exercise(browser, origin, options.screenshots)
+                with isolated_server(Path(temp)) as origin:
+                    page = browser.new_page()
+                    page.goto(origin)
+                    page.get_by_role("link", name="Review Atlas Meridian run " + stopped["id"][:8]).click()
+                    expect(page.get_by_text(stopped["quantity"] + " shares", exact=True).first).to_be_visible()
+                    assert page.request.get(origin + "/api/v1/runs/" + stopped["id"]).json() == stopped
+                    page.close()
                     assisted_budget_journey(browser, origin, options.screenshots)
                     public_rankings_journey(browser, origin, options.screenshots)
                 public_shadow_journey(browser, Path(temp), options.screenshots)

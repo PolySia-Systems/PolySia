@@ -149,7 +149,8 @@ class WorkspaceHttpTest(unittest.TestCase):
         self.assertEqual(400, self.request("POST", route + "/sample", {"revision": 1, "receipt": {}})[0])
         entered, release = Event(), Event()
 
-        def delayed(wallet, budget, *, retry_empty):
+        def delayed(wallet, budget, *, retry_empty, check_sales):
+            self.assertTrue(check_sales)
             self.assertTrue(retry_empty)
             entered.set()
             self.assertTrue(release.wait(3))
