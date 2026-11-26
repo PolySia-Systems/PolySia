@@ -54,6 +54,7 @@ interface Holding {
 }
 interface Portfolio extends Summary {
   exitsEnabled: boolean
+  activeExitPolicy: {maxPriceDecrease: string; costMethod: string} | null
   policy: { delaySeconds: number; maxSignalAgeMs: number; maxPriceIncrease: string; maxLevels: number }
   decisions: Decision[]
   nextCursor: number | null
@@ -177,12 +178,14 @@ function PositionMark({route, revision, token}: {route: string; revision: number
   </div>
 }
 
-function PositionSale({shares, busy, observe}: {shares: string; busy: boolean; observe: (limit: string) => void}) {
+function PositionSale({shares, policy, busy, observe}: {shares: string; policy: NonNullable<Portfolio['activeExitPolicy']>; busy: boolean; observe: (limit: string) => void}) {
   const [limit, setLimit] = useState('')
   return <details className="paper-sale">
     <summary>Follow a leader SELL</summary>
     <p>Observe this outcome for two seconds. A matched sale can reduce your simulated position
-      by up to your limit and the whole shares the leader sold. Available bids can reduce the fill further.</p>
+      by up to your limit and the whole shares the leader sold. The minimum bid is {policy.maxPriceDecrease} pUSD per share
+      below the leader’s price. Limited depth can leave shares open.</p>
+    <small>Cost allocation · {policy.costMethod}</small>
     <form onSubmit={e => { e.preventDefault(); observe(limit) }}>
       <label className="field">Maximum shares to sell
         <input type="number" required min="1" max={shares} step="1" value={limit} placeholder={'1–' + shares}
@@ -367,7 +370,7 @@ function Detail({id}: {id: string}) {
         <div className="paper-actions">
           {run.status === 'running' && <><button className="btn primary" disabled={!!busy || !run.nextBudget} onClick={() => act('sample')}>
             <ScanLine size={16}/>{busy === 'sample' ? 'Observing…' : windows === 1 ? 'Sample next window' : 'Start sampling'}</button>
-            <button className="btn" disabled={!!busy && busy !== 'sample' && busy !== 'sell'} onClick={() => act('pause')}><Pause size={15}/> Pause entries</button></>}
+            <button className="btn" disabled={!!busy && busy !== 'sample'} onClick={() => act('pause')}><Pause size={15}/> Pause entries</button></>}
           {run.status === 'paused' && <button className="btn primary" disabled={!!busy} onClick={() => act('resume')}><Play size={15}/> Resume entries</button>}
           {run.status !== 'stopped' && !confirmStop && <button className="btn" disabled={!!busy && busy !== 'sample' && busy !== 'sell'} onClick={() => setConfirmStop(true)}><Square size={14}/> Stop run</button>}
           <a className="btn" href={'/api/v1/' + route + '/export'} download={'polysia-public-shadow-' + id + '.json'}><Download size={15}/> Export run</a>
@@ -391,7 +394,7 @@ function Detail({id}: {id: string}) {
             <div><b>{p.shares} shares</b><small>{p.cost} pUSD cost including fees</small></div>
           </div>{p.soldShares !== '0' && <small>{p.soldShares} shares sold to date · {p.realized} pUSD realized</small>}
             <PositionMark key={run.revision} route={route} revision={run.revision} token={p.tokenId}/>
-            {run.exitsEnabled && run.status !== 'stopped' && <PositionSale shares={p.shares} busy={!!busy}
+            {run.activeExitPolicy && run.status !== 'stopped' && <PositionSale shares={p.shares} policy={run.activeExitPolicy} busy={!!busy}
               observe={limit => act('sell', {token: p.tokenId, limit})}/>}
           </div>)}</div>}
         <p className="workspace-note">Open cost includes purchase fees. A midpoint check estimates the value of the remaining shares. Realized result includes sale fees and the purchase cost of shares sold.</p>

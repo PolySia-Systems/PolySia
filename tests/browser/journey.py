@@ -853,13 +853,27 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
         expect(page.get_by_role("heading", name="Public wallet", exact=True)).to_be_visible()
         now = int(time.time()) + 1
         clocks = [datetime.fromtimestamp(now + seconds, UTC).isoformat(timespec="milliseconds") for seconds in (6, 16)]
+        sale_started, finish_sale = Event(), Event()
+        def delayed_sale(wallet, scope):
+            sale_started.set()
+            assert finish_sale.wait(10)
+            return observed_sell(wallet, scope, start=now + 10, depth="25")
+
         with (patch.object(public_shadow, "timestamp", side_effect=clocks),
               patch.object(server, "sample_buy", return_value=observed_buy(WALLET, "10.00", start=now)),
-              patch.object(server, "sample_sell", side_effect=lambda w, s: observed_sell(w, s, start=now + 10, depth="25"))):
+              patch.object(server, "sample_sell", side_effect=delayed_sale)):
             page.get_by_role("button", name="Sample next window").click()
             page.get_by_text("Follow a leader SELL", exact=True).click()
+            expect(page.get_by_text("0.03 pUSD per share below the leader", exact=False)).to_be_visible()
+            expect(page.get_by_text("pooled cost, floor to micro-pUSD", exact=False)).to_be_visible()
             page.get_by_label("Maximum shares to sell").fill("19")
             page.get_by_role("button", name="Observe leader SELL").click()
+            try:
+                assert sale_started.wait(3)
+                expect(page.get_by_role("button", name="Pause entries")).to_be_disabled()
+                expect(page.get_by_role("button", name="Stop run", exact=True)).to_be_enabled()
+            finally:
+                finish_sale.set()
             closed = page.get_by_role("region", name="Closed simulated positions")
             expect(closed.get_by_text("-0.97456 pUSD realized", exact=True)).to_be_visible()
             expect(closed.get_by_text("8.88288 pUSD received after sale fees", exact=False)).to_be_visible()
