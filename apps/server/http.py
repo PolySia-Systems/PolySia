@@ -1,4 +1,4 @@
-"""Loopback HTTP boundary for the single-user workstation."""
+"""Serve the local workspace on loopback or the owner-only website over a private Unix socket."""
 
 import json
 import logging

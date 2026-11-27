@@ -6,13 +6,21 @@ Follow a public Polymarket wallet with simulated cash. See which orders your bud
 
 ## Install on Linux
 
-Open a terminal **on the Linux machine where PolySia should run**. If you use Termius or another SSH client, connect to your server first. Copy and run this line:
+Open a terminal **on the Linux machine where PolySia should run**. If you use Termius or another SSH client, connect to your server first. Copy this command and paste it once.
 
 ```sh
-polysia=$(curl -qfsSL --proto '=https' https://github.com/PolySia-Systems/PolySia/releases/latest/download/install) && sh -c "$polysia"
+(
+  set -e
+  if [ -f /etc/debian_version ] && { ! command -v curl >/dev/null || [ ! -s /etc/ssl/certs/ca-certificates.crt ]; }; then
+    if [ "$(id -u)" = 0 ]; then set --; else set -- sudo; fi
+    "$@" apt-get -qq update
+    "$@" env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -qy --no-install-recommends --no-remove install curl ca-certificates </dev/null
+  fi
+  polysia=$(curl -qfsSL --proto '=https' https://github.com/PolySia-Systems/PolySia/releases/latest/download/install) && sh -c "$polysia"
+)
 ```
 
-The installer checks this machine, downloads the public release and verifies it before setup. If your image lacks curl or CA certificates, use the [one-paste command for minimal Ubuntu](docs/operations.md#minimal-ubuntu-images).
+On minimal Ubuntu this command installs curl and trusted certificates as needed. Use root or an account with sudo for package installation. The installer verifies the public release and guides you through setup.
 
 - **Local workspace** opens on this machine at the address printed in the terminal. The installer checks Python and SQLite and can install them on supported Ubuntu releases. Ctrl-C stops the app. Reopen it with `"$HOME/.local/share/polysia/current/polysia"`.
 - **Private website** sets up or updates an owner-only site on this server. Choose this to open the site from your phone or computer after you close SSH. Use a dedicated Ubuntu 26.04 LTS amd64 host with systemd and administrator access. Have your hostname, owner email and Cloudflare management token ready. Open the printed HTTPS address and sign in.

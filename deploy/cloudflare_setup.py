@@ -357,7 +357,8 @@ def select_recovery(api, base, tunnel_id, journal):
     remote_config = endpoint.get("config_src") == "cloudflare" if "config_src" in endpoint else endpoint.get("remote_config") is True
     if (resource_id(endpoint) != tunnel_id or not remote_config
             or endpoint.get("deleted_at") or not re.fullmatch(r"polysia-[a-f0-9]{32}", marker)):
-        raise ValueError("Select the active PolySia-managed tunnel ID from the Cloudflare dashboard.")
+        raise ValueError("The hostname must point to an active PolySia-managed tunnel. "
+                         "Check the original site hostname and its DNS record before retrying.")
     if any(key in journal.state for key in ("app", "tunnel", "policy", "dns")) and (
             journal.state["marker"] != marker or journal.state.get("tunnel", tunnel_id) != tunnel_id):
         raise ValueError("This prefix belongs to another deployment. Use the matching prefix.")
@@ -473,11 +474,11 @@ def setup(*, archive, prefix, install, recovery_id=None, backup=None, empty_work
             raise ValueError("The supplied tunnel ID differs from the hostname's DNS target.")
         recovery_id = discovered
     if j.state.get("recovery") and j.state["recovery"] != recovery_id:
-        raise ValueError("A transfer is incomplete. Rerun with the same hostname and --recover.")
+        raise ValueError("A transfer is incomplete. Choose Recover website again with the same hostname.")
     database = prefix / "data/workspace.sqlite3"
     machine = hashlib.sha256(Path("/etc/machine-id").read_bytes() + j.state["host"].encode()).hexdigest()
     if not recovery_id and j.state.get("machine", machine) != machine:
-        raise ValueError("This journal came from another host. Use --recover for a host transfer.")
+        raise ValueError("This journal came from another host. Take the previous host offline and choose Recover website.")
     if recovery_id:
         name = select_recovery(api, base, recovery_id, j)
         if backup and database.exists():
@@ -508,7 +509,8 @@ def setup(*, archive, prefix, install, recovery_id=None, backup=None, empty_work
     ensure_unit(tunnel, tunnel_text, False)
     if (not recovery_id and j.state.get("configured") and (origin.exists() or j.state.get("machine"))
             and (not database.is_file() or not database.stat().st_size)):
-        raise ValueError("The saved workspace is missing or empty. Inspect the data directory and use --recover-tunnel.")
+        raise ValueError(f"The saved workspace at {database} is missing or empty. Preserve any remaining data. "
+                         "Choose Recover website on a host with a valid workspace or a clean data directory.")
     try:
         tunnel_url, app, team, move_socket = provision(api, base, zone, host, owner, j, sock, recovery_id)
     except UnsafeAccess:
@@ -522,7 +524,8 @@ def setup(*, archive, prefix, install, recovery_id=None, backup=None, empty_work
             raise ValueError("The connector credential is unavailable.")
         local_token = remote / "connector.token"
         if not recovery_id and previous.get("configured") and local_token.is_file() and local_token.read_text() != credential:
-            raise ValueError("The tunnel credential has changed. Confirm the active host and use --recover-tunnel.")
+            raise ValueError("The tunnel credential has changed. Confirm which host should serve this site. "
+                             "For a transfer, take the previous host offline and choose Recover website.")
     # A healthy rerun can finish without changing the journal or withdrawing service.
     if (not move_socket and previous.get("artifact") and not previous.get("recovery")
             and database.is_file() and database.stat().st_size
@@ -596,8 +599,10 @@ def provision(api, base, zone, host, owner, j, sock, recovery_id):
     if j.state.get("configured") and not any(resource_id(a) == j.state.get("app") for a in relevant):
         raise UnsafeAccess("The recorded Access application is missing. Inspect its hostname and owner policy.")
     if records and (len(records) != 1 or records[0].get("comment") != name):
-        raise ValueError("DNS already contains a record at this hostname. See Recover an HTTPS site "
-                         "in the operations guide for --recover, or choose an unused hostname.")
+        if recovery_id:
+            raise ValueError("The DNS record does not match this PolySia deployment. Check the original site hostname and DNS record.")
+        raise ValueError("DNS already contains a record at this hostname. For an existing PolySia site, "
+                         "choose Recover website. For a new site, choose an unused hostname.")
     if any(a.get("name") != name for a in relevant):
         raise UnsafeAccess("Another Access application covers this hostname. Choose an unused name.")
     providers = [row for row in api.rows(base + "/access/identity_providers") if row.get("type") == "onetimepin"]
