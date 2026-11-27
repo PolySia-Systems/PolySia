@@ -80,7 +80,7 @@ export function Accounts({
       if (label === null) await api('account/saved', 'DELETE', wallet)
       else await api('account/saved', 'PUT', { ...wallet, label })
       await refresh()
-      setFeedback(label === null ? 'Removed from saved wallets.' : 'Wallet saved.')
+      setFeedback(label === null ? 'Removed from saved wallets. The current watch is still active.' : 'Wallet saved.')
     } catch (cause) {
       setError(errorText(cause))
       await refresh().catch(() => {})
@@ -98,7 +98,7 @@ export function Accounts({
       await refresh()
       setAddress('')
       setInvalidAddress(false)
-      setFeedback('Watch removed. Your wallet and replay history are unaffected.')
+      setFeedback('Watch removed. Manage ongoing simulations in Public shadow.')
     } catch (e) {
       setError(errorText(e))
       await refresh().catch(() => {})
@@ -191,6 +191,12 @@ export function Accounts({
           <button className="btn subtle" disabled={busy} onClick={disconnect}>
             Remove watch
           </button>
+          <details className="paper-evidence">
+            <summary>What happens if I remove this watch?</summary>
+            <p>Removing the watch clears the current account view. Saved addresses remain available in the wallet selector.
+              Background simulations keep their own settings. To stop one, open <a href="#/paper">Public shadow</a>,
+              choose the run and select Stop run. Its simulated holdings and journal stay available.</p>
+          </details>
         </PositionSnapshot>
       )}
       {account && (
