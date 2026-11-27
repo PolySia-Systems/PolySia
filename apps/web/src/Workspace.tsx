@@ -45,6 +45,7 @@ export function Accounts({
 }: Props & { initialAddress?: string }) {
   const account = workspace.account
   const [address, setAddress] = useState(initialAddress ?? account?.address ?? '')
+  const [invalidAddress, setInvalidAddress] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [feedback, setFeedback] = useState('')
@@ -59,6 +60,7 @@ export function Accounts({
       await api('account', 'POST', { address: nextAddress.trim(), revision: workspace.accountRevision })
       await refresh()
       setAddress(nextAddress.trim().toLowerCase())
+      setInvalidAddress(false)
       setFeedback('Read attempt complete.')
     } catch (e) {
       setError(errorText(e))
@@ -95,6 +97,7 @@ export function Accounts({
       await api('account', 'DELETE', { revision: workspace.accountRevision })
       await refresh()
       setAddress('')
+      setInvalidAddress(false)
       setFeedback('Watch removed. Your wallet and replay history are unaffected.')
     } catch (e) {
       setError(errorText(e))
@@ -142,11 +145,16 @@ export function Accounts({
               autoComplete="off"
               required
               pattern="0x[0-9a-fA-F]{40}"
-              maxLength={42}
+              aria-invalid={invalidAddress || undefined}
+              aria-describedby={invalidAddress ? 'wallet-address-error' : undefined}
+              onInvalid={() => setInvalidAddress(true)}
               title="Enter 0x followed by 40 hexadecimal characters"
               value={address}
               disabled={busy}
-              onChange={(e) => setAddress(e.target.value)}
+              onChange={(e) => {
+                setAddress(e.target.value)
+                if (e.target.validity.valid) setInvalidAddress(false)
+              }}
             />
             <button className="btn primary" disabled={busy}>
               {busy
@@ -158,6 +166,9 @@ export function Accounts({
                     : 'Watch account'}
             </button>
           </div>
+          {invalidAddress && <p className="error" id="wallet-address-error" role="alert">
+            Use 0x followed by exactly 40 hexadecimal characters.
+          </p>}
           <p className="workspace-note">
             Watching or switching reads this address from Polymarket. Each wallet has its own cash and positions.
           </p>
