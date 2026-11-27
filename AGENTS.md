@@ -2,7 +2,7 @@
 
 Start with the current scope, installation command and next evidence gate in [README.md](README.md). The single authority for intent and acceptance is [Master Plan v1.10](docs/MASTER_PLAN.md). Read the relevant sections for your task. The [provider evidence](docs/provider.md) records what the adapter has actually verified. Record routine work and evidence in the PR.
 
-Use the existing checkout in the authorized local or cloud environment. Verify the supported Linux artifact through the Makefile. Create a worktree only when requested. Before editing, check the branch, base commit, working tree and affected contracts. Use the Makefile for setup, run, checks, artifact build and end-to-end verification. Keep generated artifacts and local databases outside source control.
+Use the existing checkout in the authorized local or cloud environment. Create a worktree only when requested. Before editing, check the branch, base commit, working tree and affected contracts. Use the Makefile for setup, run, checks, building the supported Linux artifact and verifying it end to end. Keep generated artifacts and local databases outside source control.
 
 ## Repository language
 
@@ -18,4 +18,9 @@ All contributors and AI agents must write project-maintained content in English,
 
 ## Before handoff
 
-Run the relevant tests and inspect changed screens and failure states. When a user journey changes, update its entry point and affected instructions with the change. In the PR record how you followed those instructions and where a first-time user needed help, if observed. For a release candidate, run `make verify`, then `make release-check` on the tested bundle. Repeat the latter with the downloaded private asset after publication (Master Plan A01 and A03). Verify what ran, review the diff for secrets and generated artifacts, and identify untested claims explicitly. Financial invariants, CI enforcement and authorization controls require independent review before live use. Controlled product work can proceed while provider evidence or live-use review is outstanding. Leave one short continuation point in the README when the next evidence gate changes.
+- Run the relevant tests and inspect changed screens and failure states.
+- When a user journey changes, update its entry point and affected instructions with the change. In the PR record how you followed those instructions and where a first-time user needed help, if observed.
+- For a release candidate, run `make verify`, then `make release-check` on the tested bundle. Repeat the latter with the downloaded private asset after publication (Master Plan A01 and A03).
+- Verify what ran, review the diff for secrets and generated artifacts, and identify untested claims explicitly.
+- Financial invariants, CI enforcement and authorization controls require independent review before live use. Controlled product work can proceed while provider evidence or live-use review is outstanding.
+- Leave one short continuation point in the README when the next evidence gate changes.
