@@ -74,6 +74,10 @@ class SavedWalletTests(unittest.TestCase):
                     "status": kind, "reason": "Window " + kind, "wallet": WALLET, "researchBudget": "10.00"})
             items = self.store.overview()["issues"]
             self.assertEqual([item["kind"] for item in items], [] if kind == "waiting" else [kind])
+            if kind == "unavailable":
+                with self.store.connection() as db:
+                    run = public_shadow.deposit(db, ID, run["revision"], "1")
+                self.assertEqual(self.store.overview()["issues"], items)
         with self.store.connection() as db:
             run = public_shadow.record(db, ID, run["revision"], observed_buy(WALLET, "10.00"))
             self.assertEqual(run["decisions"][0]["kind"], "entry")

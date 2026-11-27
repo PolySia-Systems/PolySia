@@ -168,12 +168,16 @@ class Workspace:
         with self.connection(write=False) as db:
             counts = dict(db.execute("SELECT status, count(*) FROM public_runs GROUP BY status"))
             background = db.execute("SELECT count(*) FROM background_runs").fetchone()[0]
-            # Compare the current revision, so a later successful window clears an old warning.
+            # A new observation can clear a provider warning. Changing the cap or
+            # adding cash provides no evidence that the provider recovered.
             # Open shares remain meaningful after stop. Compute them only for stopped runs.
             issues = db.execute("""
                 WITH issues AS (
-                    SELECT r.id, r.name, r.updated, d.kind, d.reason
-                    FROM public_runs r JOIN public_decisions d ON d.run_id=r.id AND d.revision=r.revision
+                    SELECT r.id, r.name, d.recorded AS updated, d.kind, d.reason
+                    FROM public_runs r JOIN public_decisions d ON d.run_id=r.id AND d.revision=(
+                        SELECT recent.revision FROM public_decisions recent WHERE recent.run_id=r.id
+                            AND recent.kind IN ('entry','exit','waiting','skipped','duplicate','unavailable','incomplete')
+                        ORDER BY recent.revision DESC LIMIT 1)
                     WHERE r.status='running' AND d.kind IN ('unavailable','incomplete')
                     UNION ALL
                     SELECT r.id, r.name, r.updated, 'exposure', 'Stopped with open simulated shares.'
