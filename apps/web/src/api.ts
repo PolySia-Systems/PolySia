@@ -1,4 +1,5 @@
 export type Theme = 'light' | 'dark'
+export type Accent = {preset: 'forest' | 'ocean'; revision: number}
 export interface SettingsRecord {
   version: 1
   revision: number
@@ -97,6 +98,7 @@ export interface Run {
   remaining_steps: number
 }
 export interface Workspace {
+  accent: Accent
   savedWallets: { address: string; label: string }[]
   accountRevision: number
   settings: SettingsRecord

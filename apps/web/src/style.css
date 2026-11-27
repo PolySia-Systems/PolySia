@@ -45,6 +45,14 @@
   --danger: #ffaea2;
   --shadow: none;
 }
+:root[data-accent='ocean'] {
+  --accent: #145278;
+  --accent-bg: #e0eff7;
+}
+:root[data-theme='dark'][data-accent='ocean'] {
+  --accent: #a7d9f4;
+  --accent-bg: #213f51;
+}
 * {
   box-sizing: border-box;
 }

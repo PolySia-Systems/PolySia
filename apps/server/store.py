@@ -11,7 +11,7 @@ from . import shadow
 from .provider import validate_address
 
 
-WORKSPACE_VERSION = 7
+WORKSPACE_VERSION = 8
 
 
 class Conflict(ValueError):
@@ -63,6 +63,11 @@ def add_saved_wallets(db):
     db.execute("CREATE TABLE saved_wallets (address TEXT PRIMARY KEY NOT NULL, label TEXT NOT NULL)")
 
 
+def add_accent(db):
+    db.execute("ALTER TABLE workspace ADD COLUMN accent TEXT NOT NULL DEFAULT 'forest' CHECK (accent IN ('forest','ocean'))")
+    db.execute("ALTER TABLE workspace ADD COLUMN accent_revision INTEGER NOT NULL DEFAULT 0 CHECK (accent_revision >= 0)")
+
+
 def wallet_label(value):
     if not isinstance(value, str) or len(value) > 64 or (value and not value.isprintable()):
         raise ValueError("Use a wallet name of up to 64 printable characters.")
@@ -102,6 +107,9 @@ class Workspace:
                 db.execute("PRAGMA user_version = 6")
             if version < 7:
                 db.execute("PRAGMA user_version = 7")
+            if version < 8:
+                add_accent(db)
+                db.execute("PRAGMA user_version = 8")
 
     @contextmanager
     def connection(self, write=True):
@@ -122,6 +130,7 @@ class Workspace:
             run = self.latest_run(db)
             return {
                 "settings": self.settings(row),
+                "accent": {"preset": row["accent"], "revision": row["accent_revision"]},
                 "accountRevision": row["account_revision"],
                 "account": json.loads(row["account"]) if row["account"] is not None else None,
                 "savedWallets": [dict(wallet) for wallet in db.execute(
@@ -129,6 +138,16 @@ class Workspace:
                 )],
                 "run": shadow.run_report(run) if run else None,
             }
+
+    def publish_accent(self, revision, preset):
+        if type(revision) is not int or not 0 <= revision < 2**63 - 1 or preset not in ("forest", "ocean"):
+            raise ValueError("Choose a supported accent preset and its current revision.")
+        with self.connection() as db:
+            result = db.execute("""UPDATE workspace SET accent=?, accent_revision=accent_revision+1
+                                   WHERE id=1 AND accent_revision=?""", (preset, revision))
+            if not result.rowcount:
+                raise Conflict("The published accent changed. Review the current preset and preview again.")
+            return {"preset": preset, "revision": revision + 1}
 
     def set_theme(self, version, revision, theme):
         if type(version) is not int or version != 1 or type(revision) is not int or not 0 <= revision < 2**63:

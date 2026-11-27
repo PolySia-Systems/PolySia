@@ -79,6 +79,23 @@ def check_width(page: Page):
     assert sizes[0] <= sizes[1], f"Content overflowed the viewport: {sizes}"
 
 
+def check_accent_contrast(page: Page):
+    tokens = page.evaluate("""() => Object.fromEntries(['accent', 'accent-bg', 'bg', 'panel', 'side', 'soft']
+        .map(name => [name, getComputedStyle(document.documentElement).getPropertyValue('--' + name).trim()]))""")
+
+    def luminance(color):
+        digits = color.removeprefix("#")
+        if len(digits) == 3:
+            digits = "".join(digit * 2 for digit in digits)
+        channels = [int(digits[i:i+2], 16) / 255 for i in (0, 2, 4)]
+        linear = [value / 12.92 if value <= .04045 else ((value + .055) / 1.055) ** 2.4 for value in channels]
+        return sum(a * b for a, b in zip(linear, (.2126, .7152, .0722)))
+
+    for key in ("accent-bg", "bg", "panel", "side", "soft"):
+        low, high = sorted((luminance(tokens["accent"]), luminance(tokens[key])))
+        assert (high + .05) / (low + .05) >= 4.5, (key, tokens)
+
+
 def tab_to(page: Page, control: Locator):
     """Reach the control by keyboard, even with other tab stops before it."""
     expect(control).to_be_visible()
@@ -235,11 +252,36 @@ def exercise(browser: Browser, origin: str, output: Path | None):
     expect(holdings).to_have_count(0)
 
     page.get_by_role("link", name="Settings", exact=True).click()
+    forest = page.get_by_role("button", name="Forest (default)", exact=True)
+    ocean = page.get_by_role("button", name="Ocean", exact=True)
+    root = page.locator("html")
+    expect(forest).to_have_attribute("aria-pressed", "true")
+    check_accent_contrast(page)
+    ocean.click()
+    expect(root).to_have_attribute("data-accent", "ocean")
+    check_accent_contrast(page)
+    page.get_by_role("link", name="View discovery", exact=True).click()
+    expect(page.get_by_label("Search leaders")).to_be_visible()
+    expect(root).to_have_attribute("data-accent", "ocean")
+    assert page.request.get(origin + "/api/v1/workspace").json()["accent"] == {"preset": "forest", "revision": 0}
+    page.get_by_role("link", name="Return to Settings", exact=True).click()
+    page.get_by_role("button", name="Discard preview").click()
+    expect(root).to_have_attribute("data-accent", "forest")
     dark = page.get_by_role("button", name="Dark", exact=True)
     dark.click()
     expect(dark).to_have_attribute("aria-pressed", "true")
+    check_accent_contrast(page)
+    ocean.click()
+    expect(root).to_have_attribute("data-accent", "ocean")
+    check_accent_contrast(page)
+    page.get_by_role("button", name="Publish accent").click()
+    expect(page.get_by_text("Workspace accent published.", exact=True)).to_be_visible()
     page.reload()
     expect(dark).to_have_attribute("aria-pressed", "true")
+    expect(ocean).to_have_attribute("aria-pressed", "true")
+    forest.click()
+    page.get_by_role("button", name="Publish accent").click()
+    expect(page.get_by_text("Published accent · forest · Revision 2")).to_be_visible()
     page.get_by_role("link", name="System status", exact=True).click()
     expect(page.get_by_text("Local loopback", exact=True)).to_be_visible()
     capture(page, output, "system-status")

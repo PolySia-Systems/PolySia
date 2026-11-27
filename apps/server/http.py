@@ -305,6 +305,8 @@ class Handler(BaseHTTPRequestHandler):
             return shadow.compare_entry_coverage(data["allocation"], data["orderSize"])
         if path == API + "/settings" and method == "PUT":
             return store.set_theme(**self.body(("version", "revision", "theme")))
+        if path == API + "/settings/accent" and method == "PUT":
+            return store.publish_accent(**self.body(("revision", "preset")))
         if path == API + "/account/saved":
             if method == "PUT":
                 return store.update_saved_wallet(**self.body(("address", "revision", "label")))
