@@ -20,7 +20,7 @@ All contributors and AI agents must write project-maintained content in English,
 
 - Run the relevant tests and inspect changed screens and failure states.
 - When a user journey changes, update its entry point and affected instructions with the change. In the PR record how you followed those instructions and where a first-time user needed help, if observed.
-- For a release candidate, run `make verify`, then `make release-check` on the tested bundle. Repeat the latter with the downloaded private asset after publication (Master Plan A01 and A03).
+- For a release candidate, run `make verify`, then `make release-check` on the tested bundle. Repeat the latter with the anonymously downloaded release assets after publication (Master Plan A01 and A03).
 - Verify what ran, review the diff for secrets and generated artifacts, and identify untested claims explicitly.
 - Financial invariants, CI enforcement and authorization controls require independent review before live use. Controlled product work can proceed while provider evidence or live-use review is outstanding.
 - Leave one short continuation point in the README when the next evidence gate changes.

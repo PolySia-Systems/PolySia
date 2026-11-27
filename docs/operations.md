@@ -1,6 +1,24 @@
 # Operating PolySia
 
-Start with the [guided install command](../README.md#install-on-linux) on your workstation. It needs GitHub CLI with read access to release contents, a shell, and sha256sum. For offline installation, transfer the release bundle privately, compare its SHA-256 to the value for polysia.pyz in the trusted version's README, and run `python3 -I polysia.pyz --start` on Linux.
+Run the [README install command](../README.md#install-on-linux) in the destination Linux terminal. The shell keeps terminal input available for prompts and runs the installer only after curl completes successfully. The installer downloads the named public release, checks its pinned SHA-256 and runs the existing bundled setup. Website setup stages and runs the verified bundle with administrator privileges. The app runs under its dedicated service user.
+
+### Minimal Ubuntu images
+
+On a stripped-down Ubuntu server, copy this block once into the destination terminal. It obtains the HTTPS client and trust certificates through the signed Ubuntu package sources, then starts the same installer. It works from a root shell or an account with sudo. The application starts as the original user in local mode.
+
+```sh
+(
+  set -e
+  if [ "$(id -u)" = 0 ]; then set --; else set -- sudo; fi
+  "$@" apt-get -qq update
+  "$@" apt-get -y --no-install-recommends --no-remove install curl ca-certificates
+  polysia=$(curl -qfsSL --proto '=https' https://github.com/PolySia-Systems/PolySia/releases/latest/download/install) && sh -c "$polysia"
+)
+```
+
+Local mode works with Python 3.12 or later and SQLite. On Ubuntu 24.04 and 26.04 the installer can obtain a missing runtime from the distribution. Private HTTPS hosting is supported on Ubuntu 26.04 amd64 with systemd.
+
+For offline use, transfer the bundle privately and verify it against the matching tagged installer's SHA-256 before running `python3 -I polysia.pyz --start` on Linux.
 
 ## Update and recover
 
@@ -82,7 +100,7 @@ make check         # Python domain, provider-contract and HTTP tests
 make verify        # Also run the Chromium journey and offline installation checks
 ```
 
-For a private release, run `make release-check` after `make verify` on an isolated Linux machine with local port 8765 available. It runs the README install command against the existing bundle without rebuilding it. Promote those exact bytes. Publish both the tested bundle and deploy/guide.sh. After publication, download both assets with repository read access and repeat with `make release-check RELEASE_BUNDLE=/path/to/polysia.pyz RELEASE_GUIDE=/path/to/guide.sh`. The isolated check substitutes only the download. Also copy the complete README command into a fresh directory and run the real download and guided journey.
+For a release, build the bundle, set its version and SHA-256 in the top-level [install script](../install), and run `make verify` followed by `make release-check` on isolated Linux with port 8765 free. The check exercises the README command in a terminal and supplies only the network responses. Publish the tested `polysia.pyz` and `install` files. Mark that verified release as latest. The stable README command follows the published installer, which pins its own bundle. Download both files anonymously and repeat `make release-check RELEASE_BUNDLE=/path/to/polysia.pyz RELEASE_GUIDE=/path/to/install`. Finally run the published README command on a clean target with no GitHub login. If distribution becomes private, retain a reachable installation entry and design the download authorization before changing visibility.
 
 Run `make provider-test` for the optional network check. It installs the artifact in a temporary directory, samples a share-limited SELL window, reads the real public rankings, inspects one profile and its realized P/L history, watches that public address, samples one public shadow window and removes the watch. The regular verification suite runs with controlled inputs. With a prior bundle available, run `python3 tests/install_smoke.py --upgrade-from /path/to/previous.pyz` after building to verify state survives an actual upgrade.
 

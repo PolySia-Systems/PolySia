@@ -6,23 +6,17 @@ Follow a public Polymarket wallet with simulated cash. See which orders your bud
 
 ## Install on Linux
 
-Open a terminal on your own computer. Use a Linux shell, or Git Bash on Windows for a remote installation. Install [GitHub CLI](https://cli.github.com/) and sign in with a GitHub account that can read this repository (`gh auth login`). Keep that login on your computer. Copy this whole command into the terminal:
+Open a terminal **on the Linux machine where PolySia should run**. If you use Termius or another SSH client, connect to your server first. Copy and run this line:
 
 ```sh
-(
-  set -e
-  stage=$(mktemp -d)
-  cd "$stage"
-  trap 'rm -f guide.sh polysia.pyz; cd /; rmdir "$stage"' EXIT
-  gh release download v0.5.3 -R github.com/PolySia-Systems/PolySia -p guide.sh -p polysia.pyz
-  printf '%s  %s\n' 3b17a9fb7bed2a6eeaf2c1839b657d9f4ce0306eb84384d6e8b97f1498104b53 guide.sh 86574df32e1b54975384b8154e03a4b8bbff1f9b76381b08cf312a0767fafc53 polysia.pyz | sha256sum -c -
-  sh ./guide.sh
-)
+polysia=$(curl -qfsSL --proto '=https' https://github.com/PolySia-Systems/PolySia/releases/latest/download/install) && sh -c "$polysia"
 ```
 
-Choose **1** for this single-user Linux computer (Python 3.12+ with SQLite). Open the local address printed in the terminal. Ctrl-C stops the app. Reopen it with `"$HOME/.local/share/polysia/current/polysia"`.
+The installer checks this machine, downloads the public release and verifies it before setup. If your image lacks curl or CA certificates, use the [one-paste command for minimal Ubuntu](docs/operations.md#minimal-ubuntu-images).
 
-Choose **2** for a new private HTTPS site or an update on its current server. Choose **3** after replacing the server or restoring a snapshot. Both use your existing SSH access to a dedicated Ubuntu 26.04 LTS amd64 host. Have the hostname, owner's email and scoped Cloudflare token ready. For recovery, take the previous host offline first and copy any workspace backup to the new server. Open the printed HTTPS address and sign in as the owner. [Cloudflare setup and recovery](docs/operations.md#optional-owner-only-https-access)
+- **Local workspace** opens on this machine at the address printed in the terminal. The installer checks Python and SQLite and can install them on supported Ubuntu releases. Ctrl-C stops the app. Reopen it with `"$HOME/.local/share/polysia/current/polysia"`.
+- **Private website** sets up or updates an owner-only site on this server. Choose this to open the site from your phone or computer after you close SSH. Use a dedicated Ubuntu 26.04 LTS amd64 host with systemd and administrator access. Have your hostname, owner email and Cloudflare management token ready. Open the printed HTTPS address and sign in.
+- **Recover website** reconnects an existing site after replacing its server or restoring a snapshot. Take the previous host offline first. A workspace backup restores saved runs. [Website setup and recovery](docs/operations.md#optional-owner-only-https-access)
 
 ## Try your first replay
 
@@ -36,10 +30,10 @@ To try a public wallet, open **Public rankings**, choose a trader, then **Set up
 
 - **Moving an owner-only HTTPS site?** Keep its Cloudflare resources. Follow the [host recovery guide](docs/operations.md#recover-an-https-site).
 - **Updating an existing installation?** Stop local foreground use, then rerun the install command. Switching releases saves a verified pre-upgrade workspace copy. The guide includes the backup, restore and rollback commands. [Update and recovery](docs/operations.md#update-and-recover)
-- **Download missing or denied?** Sign in to GitHub with the account that can read this private repository and open the [release page](https://github.com/PolySia-Systems/PolySia/releases/latest).
+- **Download missing or denied?** Check that the server can reach GitHub and open the [release page](https://github.com/PolySia-Systems/PolySia/releases/latest).
 - **Checksum failed?** Stop there. Download a fresh copy from the linked release and repeat the check. If it still fails, report it.
 - **Local port busy?** Stop the other local instance and rerun the command.
-- **Need help?** Include the step, the exact error, your Linux and Python versions, and the build shown in **System status** if the app opens. Leave out tokens, email addresses and workspace data. [Private issue tracker](https://github.com/PolySia-Systems/PolySia/issues)
+- **Need help?** Include the step, the error, your Linux and Python versions, and the build shown in **System status** if the app opens. Leave out tokens, email addresses and workspace data. [Public issue tracker](https://github.com/PolySia-Systems/PolySia/issues)
 
 ## Project and evidence
 
