@@ -65,6 +65,16 @@ def install(archive: Path, prefix: Path):
                         bundle.extract(name, staged)
             (staged / "polysia").chmod(0o700)
             staged.rename(release)
+    database = prefix / "data/workspace.sqlite3"
+    if current.is_symlink() and previous != relative_release and database.is_file():
+        backups = prefix / "backups"
+        if backups.is_symlink():
+            raise ValueError("The backups directory must be inside the installation.")
+        backups.mkdir(mode=0o700, exist_ok=True)
+        snapshot = backups / f"{previous.name}-{uuid.uuid4().hex}.sqlite3"
+        subprocess.run([sys.executable, "-I", str(release / "polysia"), "restore",
+                        "--from", str(database), "--to", str(snapshot)], stdout=sys.stderr, check=True)
+        print(f"Pre-upgrade workspace backup: {snapshot}", file=sys.stderr)
     with tempfile.TemporaryDirectory(prefix=".activate-", dir=prefix) as stage:
         link = Path(stage) / "current"
         link.symlink_to(relative_release)

@@ -50,14 +50,14 @@ def field(env, prompt, validate, default=None):
     value = os.getenv(env)
     if value is not None:
         return validate(value)
-    if not sys.stdin.isatty():
-        if default is None:
-            raise ValueError(f"Set {env} for unattended deployment.")
+    if default is not None:
         return validate(default)
+    if not sys.stdin.isatty():
+        raise ValueError(f"Set {env} for unattended deployment.")
     while True:
-        raw = input(f"{prompt}" + (f" [{default}]" if default else "") + ": ")
+        raw = input(f"{prompt}: ")
         try:
-            return validate(raw or default or "")
+            return validate(raw)
         except ValueError as exc:
             print(exc, file=sys.stderr)
 
@@ -483,7 +483,16 @@ def setup(*, archive, prefix, install, recovery_id=None, backup=None, empty_work
         if backup and database.exists():
             raise ValueError("A workspace already exists. Inspect it and retry without --workspace-backup.")
         if not database.exists() and not (empty_workspace or backup):
-            raise ValueError("Supply --workspace-backup FILE or explicitly choose --empty-workspace.")
+            if not sys.stdin.isatty():
+                raise ValueError("Supply --workspace-backup FILE or explicitly choose --empty-workspace.")
+            print("No workspace was found on this server. Cloudflare cannot restore saved runs.")
+            choice = input("Enter the absolute backup path on this server, or type EMPTY to start without history: ").strip()
+            if choice == "EMPTY":
+                empty_workspace = True
+            elif Path(choice).is_absolute():
+                backup = Path(choice)
+            else:
+                raise ValueError("Recovery stopped. Rerun with a readable backup or explicitly choose EMPTY.")
         if backup and not backup.is_file():
             raise ValueError("The service user must be able to read the workspace backup.")
         j.state.update(marker=name, recovery=recovery_id)

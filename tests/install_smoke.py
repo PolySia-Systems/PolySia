@@ -202,8 +202,21 @@ def verify_upgrade(previous):
 
         with sqlite3.connect(Path(original["data"]) / "workspace.sqlite3") as db:
             previous_schema = db.execute("PRAGMA user_version").fetchone()[0]
+        db.close()
+        database = Path(original["data"]) / "workspace.sqlite3"
+        saved_file = cwd / "original.sqlite3"
+        database.rename(saved_file)
+        database.write_bytes(b"incomplete workspace")
+        rejected = subprocess.run([sys.executable, ROOT / "dist/polysia.pyz", "--prefix", prefix],
+                                  capture_output=True, timeout=10)
+        assert rejected.returncode and Path(original["launcher"]).resolve() == previous_launcher
+        assert database.read_bytes() == b"incomplete workspace"
+        saved_file.replace(database)
         upgraded = install(ROOT / "dist/polysia.pyz")
         assert original["artifactSha256"] != upgraded["artifactSha256"]
+        snapshot, = (prefix / "backups").glob("*.sqlite3")
+        with app(previous_launcher, cwd, snapshot, offline=True) as url:
+            assert json.loads(request(url, "/api/v1/workspace")) == saved
         launcher = upgraded["launcher"]
         with app(launcher, cwd, offline=True) as url:
             health = json.loads(request(url, "/api/v1/health"))
@@ -249,26 +262,42 @@ def verify_upgrade(previous):
               "settings and revisions. Restore retained recorded fills and the new public shadow run.")
 
 
-def verify_readme(bundle):
+def verify_readme(bundle, release_guide):
     """Exercise the user-facing release instructions with no prior installation."""
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     install = readme.split("## Install on Linux", 1)[1].split("\n## ", 1)[0]
     command = re.search(r"```sh\n(.+?)\n```", install, re.S).group(1)
-    tag = re.search(r"https://github\.com/PolySia-Systems/PolySia/releases/download/v([\d.]+)/polysia\.pyz", install).group(1)
+    tag = re.search(r"gh release download v([\d.]+)", command).group(1)
     digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
     assert digest in command, "The README checksum does not match the release bundle"
     with tempfile.TemporaryDirectory(prefix="polysia-readme-") as directory:
         cwd = Path(directory)
-        env = {"HOME": str(cwd), "PATH": os.environ["PATH"]}
-        artifact = cwd / "polysia.pyz"
-        artifact.write_text("open('executed', 'w').close()")
-        rejected = subprocess.run(["sh", "-c", command], cwd=cwd, env=env, capture_output=True, timeout=10)
-        assert rejected.returncode and not (cwd / "executed").exists(), "Changed download was accepted"
+        # Simulate only the private download for offline release checks. The release
+        # operator repeats the published command with real reader credentials.
+        assets = cwd / "assets"
+        assets.mkdir()
+        gh = cwd / "gh"
+        gh.write_text('#!/bin/sh\nset -eu\ncp "$ASSETS/guide.sh" "$ASSETS/polysia.pyz" .\n')
+        gh.chmod(0o700)
+        env = {"HOME": str(cwd), "ASSETS": str(assets), "PATH": str(cwd) + ":" + os.environ["PATH"]}
+        shutil.copyfile(bundle, assets / "polysia.pyz")
+        guide = assets / "guide.sh"
+        guide.write_text('touch "$HOME/executed"\n')
+        def reject_changed():
+            rejected = subprocess.run(["sh", "-c", command], cwd=cwd, env=env, input=b"1\n",
+                                      capture_output=True, timeout=10)
+            assert rejected.returncode and b"FAILED" in rejected.stdout and not (cwd / "executed").exists()
+        reject_changed()
+        shutil.copyfile(release_guide, guide)
+        (assets / "polysia.pyz").write_text("invalid download")
+        reject_changed()
 
-        shutil.copyfile(bundle, artifact)
+        shutil.copyfile(bundle, assets / "polysia.pyz")
         with (cwd / "output.log").open("w") as output:
             server = subprocess.Popen(["sh", "-c", command], cwd=cwd, env=env, stdout=output,
-                                      stderr=output, start_new_session=True)
+                                      stderr=output, stdin=subprocess.PIPE, start_new_session=True)
+            server.stdin.write(b"1\n")
+            server.stdin.close()
             try:
                 deadline = time.monotonic() + 15
                 while time.monotonic() < deadline:
@@ -292,13 +321,15 @@ def verify_readme(bundle):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--release-guide", type=Path, default=ROOT / "deploy/guide.sh",
+                        help="Check the exact guided installation script shipped alongside the bundle.")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--release-bundle", type=Path, help="Check the README against these release bytes.")
     mode.add_argument("--upgrade-from", type=Path, metavar="PREVIOUS.pyz",
                         help="Exercise an upgrade from this prior offline bundle.")
     args = parser.parse_args()
     if args.release_bundle:
-        verify_readme(args.release_bundle)
+        verify_readme(args.release_bundle, args.release_guide)
     elif args.upgrade_from:
         verify_upgrade(args.upgrade_from)
     else:
