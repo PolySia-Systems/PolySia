@@ -15,7 +15,7 @@ Open a terminal on your own computer. Use a Linux shell, or Git Bash on Windows 
   cd "$stage"
   trap 'rm -f guide.sh polysia.pyz; cd /; rmdir "$stage"' EXIT
   gh release download v0.5.3 -R github.com/PolySia-Systems/PolySia -p guide.sh -p polysia.pyz
-  printf '%s  %s\n' 3b17a9fb7bed2a6eeaf2c1839b657d9f4ce0306eb84384d6e8b97f1498104b53 guide.sh 45ea9d466f6da5c5f72d69bc5de3b989f0768e80e16cc09e3667b2550d13820a polysia.pyz | sha256sum -c -
+  printf '%s  %s\n' 3b17a9fb7bed2a6eeaf2c1839b657d9f4ce0306eb84384d6e8b97f1498104b53 guide.sh 86574df32e1b54975384b8154e03a4b8bbff1f9b76381b08cf312a0767fafc53 polysia.pyz | sha256sum -c -
   sh ./guide.sh
 )
 ```

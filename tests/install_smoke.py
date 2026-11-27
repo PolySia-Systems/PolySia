@@ -202,6 +202,16 @@ def verify_upgrade(previous):
 
         with sqlite3.connect(Path(original["data"]) / "workspace.sqlite3") as db:
             previous_schema = db.execute("PRAGMA user_version").fetchone()[0]
+        db.close()
+        database = Path(original["data"]) / "workspace.sqlite3"
+        saved_file = cwd / "original.sqlite3"
+        database.rename(saved_file)
+        database.write_bytes(b"incomplete workspace")
+        rejected = subprocess.run([sys.executable, ROOT / "dist/polysia.pyz", "--prefix", prefix],
+                                  capture_output=True, timeout=10)
+        assert rejected.returncode and Path(original["launcher"]).resolve() == previous_launcher
+        assert database.read_bytes() == b"incomplete workspace"
+        saved_file.replace(database)
         upgraded = install(ROOT / "dist/polysia.pyz")
         assert original["artifactSha256"] != upgraded["artifactSha256"]
         snapshot, = (prefix / "backups").glob("*.sqlite3")
@@ -252,7 +262,7 @@ def verify_upgrade(previous):
               "settings and revisions. Restore retained recorded fills and the new public shadow run.")
 
 
-def verify_readme(bundle):
+def verify_readme(bundle, release_guide):
     """Exercise the user-facing release instructions with no prior installation."""
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     install = readme.split("## Install on Linux", 1)[1].split("\n## ", 1)[0]
@@ -278,7 +288,7 @@ def verify_readme(bundle):
                                       capture_output=True, timeout=10)
             assert rejected.returncode and b"FAILED" in rejected.stdout and not (cwd / "executed").exists()
         reject_changed()
-        shutil.copyfile(ROOT / "deploy/guide.sh", guide)
+        shutil.copyfile(release_guide, guide)
         (assets / "polysia.pyz").write_text("invalid download")
         reject_changed()
 
@@ -311,13 +321,15 @@ def verify_readme(bundle):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--release-guide", type=Path, default=ROOT / "deploy/guide.sh",
+                        help="Check the exact guided installation script shipped alongside the bundle.")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--release-bundle", type=Path, help="Check the README against these release bytes.")
     mode.add_argument("--upgrade-from", type=Path, metavar="PREVIOUS.pyz",
                         help="Exercise an upgrade from this prior offline bundle.")
     args = parser.parse_args()
     if args.release_bundle:
-        verify_readme(args.release_bundle)
+        verify_readme(args.release_bundle, args.release_guide)
     elif args.upgrade_from:
         verify_upgrade(args.upgrade_from)
     else:

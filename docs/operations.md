@@ -1,6 +1,6 @@
 # Operating PolySia
 
-Use the [Linux installation instructions](../README.md#install-on-linux) for a first local installation.
+Start with the [guided install command](../README.md#install-on-linux) on your workstation. It needs GitHub CLI with read access to release contents, a shell, and sha256sum. For offline installation, transfer the release bundle privately, compare its SHA-256 to the value for polysia.pyz in the trusted version's README, and run `python3 -I polysia.pyz --start` on Linux.
 
 ## Update and recover
 
@@ -32,6 +32,8 @@ mkdir -p "$HOME/polysia-rollback/data"
 For HTTPS, stop both units on the current server. Follow **Recover an HTTPS site** on a clean supported destination with the previous verified recovery-capable bundle and matching snapshot. Keep the failed installation offline until the owner verifies the restored history. To uninstall local foreground mode, stop it, keep a verified backup outside the install prefix, and remove only the dedicated prefix when ready to discard its history. For a local user service, first run `systemctl --user disable --now polysia.service`, remove its PolySia user unit and run `systemctl --user daemon-reload`.
 
 ## Optional owner-only HTTPS access
+
+For first setup, use an active zone in your Cloudflare account and enable the [One-time PIN login method](https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/one-time-pin/). Create a [custom API token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/) limited to that account and zone. The installer reads the zone and identity providers, manages DNS records in that zone, and manages tunnels and Access applications and policies in that account. Use Zone Read, DNS Edit, Cloudflare Tunnel Edit, Access Apps and Policies Edit, and Access Organizations, Identity Providers, and Groups Read. Store the token in your password manager. Enter it at the hidden terminal prompt. On a repeat installation, the deployment journal supplies the expected hostname and owner.
 
 On a fresh designated Ubuntu 26.04 LTS amd64 host booted with systemd, use the verified bundle:
 
@@ -80,7 +82,7 @@ make check         # Python domain, provider-contract and HTTP tests
 make verify        # Also run the Chromium journey and offline installation checks
 ```
 
-For a private release, run `make release-check` after `make verify` on an isolated Linux machine with local port 8765 available. It runs the README install command against the existing bundle without rebuilding it. Promote those exact bytes. After publication, download the asset as a repository reader and repeat with `make release-check RELEASE_BUNDLE=/path/to/polysia.pyz`.
+For a private release, run `make release-check` after `make verify` on an isolated Linux machine with local port 8765 available. It runs the README install command against the existing bundle without rebuilding it. Promote those exact bytes. Publish both the tested bundle and deploy/guide.sh. After publication, download both assets with repository read access and repeat with `make release-check RELEASE_BUNDLE=/path/to/polysia.pyz RELEASE_GUIDE=/path/to/guide.sh`. The isolated check substitutes only the download. Also copy the complete README command into a fresh directory and run the real download and guided journey.
 
 Run `make provider-test` for the optional network check. It installs the artifact in a temporary directory, samples a share-limited SELL window, reads the real public rankings, inspects one profile and its realized P/L history, watches that public address, samples one public shadow window and removes the watch. The regular verification suite runs with controlled inputs. With a prior bundle available, run `python3 tests/install_smoke.py --upgrade-from /path/to/previous.pyz` after building to verify state survives an actual upgrade.
 

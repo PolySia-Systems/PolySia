@@ -50,14 +50,14 @@ def field(env, prompt, validate, default=None):
     value = os.getenv(env)
     if value is not None:
         return validate(value)
-    if not sys.stdin.isatty():
-        if default is None:
-            raise ValueError(f"Set {env} for unattended deployment.")
+    if default is not None:
         return validate(default)
+    if not sys.stdin.isatty():
+        raise ValueError(f"Set {env} for unattended deployment.")
     while True:
-        raw = input(f"{prompt}" + (f" [{default}]" if default else "") + ": ")
+        raw = input(f"{prompt}: ")
         try:
-            return validate(raw or default or "")
+            return validate(raw)
         except ValueError as exc:
             print(exc, file=sys.stderr)
 

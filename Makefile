@@ -44,8 +44,9 @@ install-test: build
 	$(PYTHON) tests/install_smoke.py
 
 RELEASE_BUNDLE ?= dist/polysia.pyz
+RELEASE_GUIDE ?= deploy/guide.sh
 
 release-check:
-	$(PYTHON) tests/install_smoke.py --release-bundle "$(RELEASE_BUNDLE)"
+	$(PYTHON) tests/install_smoke.py --release-bundle "$(RELEASE_BUNDLE)" --release-guide "$(RELEASE_GUIDE)"
 
 verify: check browser-test install-test
