@@ -84,6 +84,8 @@ function Setup() {
   const [name, setName] = useState((params.get('name') || 'Public wallet').slice(0, 80))
   const [capital, setCapital] = useState(Number(initialCap) > 100 ? '' : '100')
   const [cap, setCap] = useState(initialCap)
+  const capitalCents = validBuyBudget(capital) ? Math.round(Number(capital) * 100) : 0
+  const capCents = validBuyBudget(cap) ? Math.round(Number(cap) * 100) : 0
   const [id] = useState(() => crypto.randomUUID().replaceAll('-', ''))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -113,6 +115,23 @@ function Setup() {
           <label className="field">Per-entry cap (pUSD)<input required type="number" min="1" max={Math.min(Number(capital) || 1000, 1000)} step=".01"
             value={cap} onChange={e => setCap(e.target.value)} /></label>
         </div>
+        {capCents > 0 && capCents <= capitalCents && <p role="status">
+          If the first buy uses its full cap, at least {((capitalCents - capCents) / 100).toFixed(2)} pUSD
+          of your starting cash remains. Later buys can use more of that cash.
+        </p>}
+        <details className="paper-evidence"><summary>Compare per-buy limits</summary>
+          <p>Choose how much of your starting cash one purchase can use, including modeled fees.
+            A larger purchase can lose more on a single outcome. A smaller one may fall below the market minimum.</p>
+          <div className="actions">{[10, 25].map(percent => {
+            const cents = Math.floor(capitalCents * percent / 100)
+            return <button key={percent} type="button" className="btn" disabled={busy || cents < 100}
+              onClick={() => setCap((cents / 100).toFixed(2))}>
+              Use {percent}%{capitalCents > 0 && ' · ' + (cents / 100).toFixed(2) + ' pUSD'}
+            </button>
+          })}</div>
+          <p>These examples round down to cents. The minimum supported cap is 1 pUSD.
+            You can enter another cap above. A position can stay open after you stop, and the time needed to sell is unknown.</p>
+        </details>
         <details className="paper-evidence"><summary>How simulated trades are priced</summary>
           <p>Public activity comes from Polymarket and is checked against Polygon. A qualifying BUY uses displayed asks and estimated fees.
             The model checks the minimum share size. The venue’s minimum purchase value is unverified. Each SELL window requires a share limit and a matching leader sale.</p>
