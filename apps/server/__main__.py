@@ -8,14 +8,17 @@ import sqlite3
 from pathlib import Path
 
 from .archive import copy_workspace
-from .http import LocalServer
+from .http import AccessOrigin, LocalServer
 from .store import Workspace
 from .study import record_study
 
 
-def main(*, artifact_sha256=None):
+def main(*, artifact_sha256=None, serve_installed=None, installed_prefix=None):
     parser = argparse.ArgumentParser(description="Start the PolySia local workspace")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--origin-socket", type=Path, help="Private socket for authenticated tunnel ingress")
+    parser.add_argument("--public-host", help="Exact protected HTTPS hostname")
+    parser.add_argument("--owner-email", help="Allowed Access identity")
     commands = parser.add_subparsers(dest="command")
     backup = commands.add_parser("backup", help="Back up the current workspace to a new local file")
     backup.add_argument("--to", required=True, type=Path, metavar="NEW_BACKUP")
@@ -50,7 +53,21 @@ def main(*, artifact_sha256=None):
             copy_workspace(source, args.to)
             print(f"Verified workspace copy saved to {args.to}.")
             return
+        if args.origin_socket or args.public_host or args.owner_email:
+            if not all((args.origin_socket, args.public_host, args.owner_email)):
+                parser.error("An Access origin requires a socket, hostname and owner.")
+            with AccessOrigin(args.origin_socket, args.public_host, args.owner_email,
+                              Workspace(path), artifact_sha256=artifact_sha256) as server:
+                server.serve_forever()
+            return
+        data_dir = path.resolve().parent
+        if ((installed_prefix is not None and (installed_prefix / "remote").exists())
+                or (data_dir.name == "data" and (data_dir.parent / "remote/deployment.json").exists())):
+            raise ValueError("This workspace uses owner-only HTTPS. Start its protected origin and tunnel services.")
         with LocalServer(args.port, Workspace(path), artifact_sha256=artifact_sha256) as server:
+            if serve_installed:
+                serve_installed(server)
+                return
             print(f"PolySia is running at http://127.0.0.1:{server.server_port}", flush=True)
             server.serve_forever()
     except KeyboardInterrupt:

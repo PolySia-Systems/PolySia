@@ -38,13 +38,17 @@ def observed_buy(wallet, budget, *, order="07", start=None):
                                feeBaseUnits="0", amountMatchBasis="exact-price-and-shares")
     data.update(schemaVersion=2, windowStartSeconds=start, windowEndSeconds=start + 1,
                 status="observed", reason="Controlled public BUY.", wallet=wallet, asset="pUSD", researchBudget=budget)
+    requested = data["bookRequestedMs"]
+    data["saleCheck"] = {"requestedMs": requested, "receivedMs": requested,
+                         "startSeconds": start, "endSeconds": requested // 1000, "firstSale": None,
+                         "coverage": {"rowsReturned": 0, "complete": True, "matchingSellRows": 0}}
     data["capacity"] = public_depth.measure_depth(data, budget)
     return data
 
 
 def observed_sell(wallet, scope, *, start=None, order="08", depth="8", leader_shares="25"):
     data = observed_buy(wallet, "10.00", order=order, start=start)
-    del data["researchBudget"]
+    del data["researchBudget"], data["saleCheck"]
     data.update(schemaVersion=4, exitScope=scope)
     data["event"].update(side="SELL", shares=leader_shares)
     data["participant"]["sharesBaseUnits"] = str(public_depth._micros(leader_shares))
@@ -91,6 +95,50 @@ class PublicPortfolioTests(unittest.TestCase):
         with Workspace(self.root / "copy.db").connection(write=False) as db:
             self.assertEqual(before, paper.report(db, ID, export=True))
         self.assertEqual([d["kind"] for d in before["decisions"]], ["entry", "duplicate", "entry", "pause", "resume", "stop"])
+
+    def test_fragmented_order_uses_the_same_single_entry_budget_as_one_fill(self):
+        self.create()
+        other = "b" * 32
+        with self.store.connection() as db:
+            with patch.object(paper, "timestamp", return_value=STARTED):
+                paper.create(db, other, WALLET, "Fragments", "25", "10")
+            whole = paper.record(db, ID, 1, observed_buy(WALLET, "10.00"))
+            for i in range(20):
+                fragment = observed_buy(WALLET, "10.00")
+                tx = f"0x{i+1:064x}"
+                fragment["event"].update(shares="1.25", transactionHash=tx)
+                fragment["participant"].update(transactionHash=tx, collateralBaseUnits="625000", sharesBaseUnits="1250000")
+                split = paper.record(db, other, i+1, fragment)
+                self.assertEqual(split["decisions"][0]["kind"], "entry" if i == 0 else "duplicate")
+            for key in ("cash", "gross", "fees", "nextBudget", "positions", "entries", "realized"):
+                self.assertEqual(split[key], whole[key], key)
+            paper.verify_archive(db)
+
+    def test_sale_during_pending_buy_and_incomplete_check_preserve_balances(self):
+        self.create()
+        with self.store.connection() as db:
+            revision = 1
+            for change, expected in (("later-sale", "skipped"), ("same-second-sale", "skipped"),
+                                     ("partial", "incomplete"), ("missing", "incomplete"),
+                                     ("late", "incomplete"), ("clear", "entry")):
+                receipt = observed_buy(WALLET, "10.00")
+                check = receipt["saleCheck"]
+                if change in ("later-sale", "same-second-sale"):
+                    second = check["startSeconds"] + (change == "later-sale")
+                    check.update(coverage={"rowsReturned": 1, "matchingSellRows": 1, "complete": True},
+                                 firstSale=receipt["event"] | {"eventTimeSeconds": second, "side": "SELL"})
+                elif change == "partial":
+                    check["coverage"]["complete"] = False
+                elif change == "missing":
+                    del receipt["saleCheck"]
+                elif change == "late":
+                    check["receivedMs"] = receipt["bookRequestedMs"] + 1000
+                result = paper.record(db, ID, revision, receipt)
+                revision = result["revision"]
+                self.assertEqual(result["decisions"][0]["kind"], expected, change)
+                if change != "clear":
+                    self.assertEqual((result["cash"], result["positions"]), ("25", []))
+            paper.verify_archive(db)
 
     def test_subcent_cash_floor_and_invalid_or_insufficient_evidence(self):
         self.create(capital="10")
@@ -142,6 +190,7 @@ class PublicPortfolioTests(unittest.TestCase):
     def test_restore_schema_two_purchase_then_enable_exits(self):
         old = self.root / "wallet-v2.db"
         receipt = observed_buy(WALLET, "10.00", start=1577836810)
+        del receipt["saleCheck"]
         recorded = "2020-01-01T00:00:20.000Z"
         with sqlite3.connect(old) as db:
             create_schema_v1(db)

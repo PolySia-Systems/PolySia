@@ -55,7 +55,7 @@ interface Holding {
 interface Portfolio extends Summary {
   exitsEnabled: boolean
   activeExitPolicy: {maxPriceDecrease: string; costMethod: string} | null
-  policy: { delaySeconds: number; maxSignalAgeMs: number; maxPriceIncrease: string; maxLevels: number }
+  policy: { checkSalesBeforeEntry?: boolean; delaySeconds: number; maxSignalAgeMs: number; maxPriceIncrease: string; maxLevels: number }
   decisions: Decision[]
   nextCursor: number | null
   positions: Holding[]
@@ -102,8 +102,10 @@ function Setup() {
           <label className="field">Per-entry cap (pUSD)<input required type="number" min="1" max={Math.min(Number(capital) || 1000, 1000)} step=".01"
             value={cap} onChange={e => setCap(e.target.value)} /></label>
         </div>
-        <p className="workspace-note">Public activity comes from Polymarket and is checked against Polygon. A qualifying BUY uses the displayed asks and an estimated fee. The model assumes available depth
-          can fill, uses the book’s share minimum and leaves venue minimum notional unverified. Each SELL window requires a share limit and a matching leader sale.</p>
+        <details className="paper-evidence"><summary>How simulated trades are priced</summary>
+          <p>Public activity comes from Polymarket and is checked against Polygon. A qualifying BUY uses displayed asks and estimated fees.
+            The model checks the minimum share size. The venue’s minimum purchase value is unverified. Each SELL window requires a share limit and a matching leader sale.</p>
+        </details>
         {error && <p className="error" role="alert">{error}</p>}
         <button className="btn primary" disabled={busy}>{busy ? 'Creating run…' : 'Create shadow run'} <ArrowRight size={16} /></button>
       </form>
@@ -135,7 +137,7 @@ function Library() {
       <a className="text-link" href="#/rankings">Browse public rankings <ArrowRight size={15}/></a></div>}
     <div className="paper-list">{list?.runs.map(run => <a key={run.id} href={'#/paper/' + run.id} className="paper-list-row">
       <div><b>{run.name}</b><small>{run.wallet.slice(0, 8)}…{run.wallet.slice(-6)} · {when(run.updatedAt)}</small></div>
-      <div><span>{labels[run.status]}</span><small>{run.cash} pUSD cash · {run.entries} {run.entries === 1 ? 'BUY' : 'BUYs'} · {run.exits} {run.exits === 1 ? 'SELL' : 'SELLs'}</small></div>
+      <div><span>{labels[run.status]}</span><small>{run.cash} pUSD cash · {run.openCost} pUSD open cost</small><small>{run.entries} {run.entries === 1 ? 'BUY' : 'BUYs'} · {run.exits} {run.exits === 1 ? 'SELL' : 'SELLs'}</small></div>
       <ArrowRight size={16} aria-hidden="true"/></a>)}</div>
     {list?.nextCursor && <button className="btn" disabled={busy} onClick={() => load(list.nextCursor!)}>Older runs</button>}
   </section>
@@ -247,6 +249,16 @@ function PortfolioValue({run}: {run: Portfolio}) {
   </div>
 }
 
+function exposureSummary(run: Portfolio) {
+  if (!run.positions.length) return 'No simulated positions remain open.'
+  const first = run.positions[0]
+  if (run.positions.length === 1) {
+    const outcome = [first.market ?? 'Market ' + first.conditionId, first.outcome ?? 'Token ' + first.tokenId].join(' · ')
+    return first.shares + ' simulated ' + (first.shares === '1' ? 'share remains' : 'shares remain') + ' in ' + outcome + '.'
+  }
+  return run.positions.length + ' simulated positions remain open with a total purchase cost of ' + run.openCost + ' pUSD.'
+}
+
 function Detail({id}: {id: string}) {
   const [run, setRun] = useState<Portfolio | null>(null)
   const [busy, setBusy] = useState('')
@@ -340,6 +352,7 @@ function Detail({id}: {id: string}) {
     {run && <>
       <section className="panel workspace-panel paper-overview">
         <div className="panel-head"><h2>{run.name}</h2><span className="badge">{labels[run.status]}</span></div>
+        {run.status === 'stopped' && <p className="paper-stop-summary" role="status">{exposureSummary(run)}</p>}
         <small className="muted">Leader wallet</small><code className="paper-wallet">{run.wallet}</code>
         <dl className="paper-metrics">
           <div><dt>Simulated cash</dt><dd>{run.cash} <small>pUSD</small></dd></div>
@@ -351,6 +364,9 @@ function Detail({id}: {id: string}) {
         <details className="paper-evidence"><summary>Entry assumptions</summary>
           <p>The model uses whole shares from up to {run.policy.maxLevels} displayed ask levels after a {run.policy.delaySeconds}-second delay.
             The price may exceed the leader’s price by up to {run.policy.maxPriceIncrease} pUSD per share. The book must arrive within {run.policy.maxSignalAgeMs / 1000} seconds of the BUY.</p>
+          <p>{run.policy.checkSalesBeforeEntry
+            ? 'Before pricing a BUY, the model checks for a sale of the same outcome since the BUY’s reported second. A visible sale blocks the entry. Public indexing can lag.'
+            : 'This run checks purchases only during BUY windows. A leader sale may go unseen.'} Each source order can use the entry budget once, even across multiple fills.</p>
           <p>Displayed depth can change. The model reserves estimated fees and checks the minimum share size. The venue’s minimum purchase value is unverified.</p>
         </details>
         <PortfolioValue key={run.revision} run={run}/>
@@ -358,7 +374,7 @@ function Detail({id}: {id: string}) {
       <div className="paper-workbench">
       <section className="panel workspace-panel">
         <h2>{run.status === 'stopped' ? 'Run closed to observations' : run.status === 'paused' ? 'New entries paused' : 'Observe a BUY window'}</h2>
-        <p>{run.status === 'stopped' ? 'Your decisions and any open simulated shares are preserved.' :
+        <p>{run.status === 'stopped' ? 'You can review the saved decisions, check current prices and export this run.' :
           run.status === 'paused' ? (run.exitsEnabled ? 'You can still observe a SELL for an open position.' : 'New entries are paused. Resume when you want to observe another BUY.') :
           run.nextBudget ? 'Sample the next two seconds. A verified BUY and a timely book can model an entry of up to ' + run.nextBudget + ' pUSD, including fees.' :
           'Less than 1 pUSD remains for a BUY. You can still manage open positions.'}</p>
@@ -375,7 +391,9 @@ function Detail({id}: {id: string}) {
           {run.status !== 'stopped' && !confirmStop && <button className="btn" disabled={!!busy && busy !== 'sample' && busy !== 'sell'} onClick={() => setConfirmStop(true)}><Square size={14}/> Stop run</button>}
           <a className="btn" href={'/api/v1/' + route + '/export'} download={'polysia-public-shadow-' + id + '.json'}><Download size={15}/> Export run</a>
         </div>
-        {confirmStop && <div className="paper-confirm"><p>Stopping is permanent for this run. Your open simulated positions will remain.</p>
+        {confirmStop && <div className="paper-confirm" role="group" aria-label="Stop this run permanently">
+          <strong>Stop observing this wallet?</strong>
+          <p>{exposureSummary(run)} Stopping ends future BUY and SELL windows for this run.</p>
           <button className="btn" onClick={() => act('stop')}>Confirm stop</button>{' '}
           <button className="text-link" onClick={() => setConfirmStop(false)}>Keep run</button></div>}
         <div role="status" className="workspace-note">{progress ||

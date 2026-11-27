@@ -4,6 +4,8 @@ import json
 import logging
 import mimetypes
 import re
+import socket
+import socketserver
 import sqlite3
 from threading import Lock
 from time import monotonic
@@ -37,8 +39,8 @@ class LocalServer(ThreadingHTTPServer):
         self.inspect_account = inspect_account or provider.inspect_account
         super().__init__(("127.0.0.1", port), Handler)
 
-    def sample_buy(self, address, budget=None, *, retry_empty=False):
-        return self._sample(address, budget, retry_empty=retry_empty)
+    def sample_buy(self, address, budget=None, *, retry_empty=False, check_sales=False):
+        return self._sample(address, budget, retry_empty=retry_empty, check_sales=check_sales)
 
     def sample_sell(self, address, scope):
         return self._sample(address, None, retry_empty=True, exit_scope=scope)
@@ -62,6 +64,83 @@ class LocalServer(ThreadingHTTPServer):
         connection, address = super().get_request()
         connection.settimeout(10)
         return connection, address
+
+
+class AccessIdentity:
+    def __init__(self, config):
+        try:
+            import jwt
+        except ImportError:
+            raise ValueError("The HTTPS origin needs PyJWT with cryptography installed.") from None
+        team = config.get("team", "")
+        self.audience = config.get("audience", "")
+        if not re.fullmatch(r"[a-z0-9-]{1,63}", team) or not re.fullmatch("[0-9a-f]{64}", self.audience):
+            raise ValueError("Invalid Access issuer or application audience.")
+        self.issuer = f"https://{team}.cloudflareaccess.com"
+        self.jwt = jwt
+        self.keys = jwt.PyJWKClient(self.issuer + "/cdn-cgi/access/certs", timeout=5)
+
+    def email(self, token):
+        try:
+            key = self.keys.get_signing_key_from_jwt(token)
+            claims = self.jwt.decode(token, key.key, algorithms=["RS256"], audience=self.audience,
+                                     issuer=self.issuer, options={"require": ["exp", "email", "iss", "aud"]})
+            email = claims["email"]
+            if claims.get("type") == "app" and isinstance(email, str) and email.isascii():
+                return email.lower()
+            return None
+        except (self.jwt.PyJWTError, ValueError, TypeError, OSError, RecursionError):
+            return None
+
+
+class AccessOrigin(LocalServer):
+    """Private Unix socket for a cloudflared ingress that verifies Access JWTs."""
+
+    def __init__(self, path, hostname, owner, store, *, artifact_sha256=None):
+        import os
+        import stat
+
+        if not path.is_absolute() or path.parent.resolve() != path.parent:
+            raise ValueError("Use an absolute socket path in a private directory.")
+        directory = path.parent.stat()
+        if directory.st_uid != os.geteuid() or directory.st_mode & 0o077:
+            raise ValueError("The socket directory must belong to this user and have mode 0700.")
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", hostname) or not owner or not owner.isascii():
+            raise ValueError("Configure the exact Access hostname and owner.")
+        self.address_family = socket.AF_UNIX
+        self.identity = AccessIdentity(json.loads((path.parent / "access.json").read_bytes()))
+        self.hostname = hostname
+        self.owner = owner.lower()
+        self.socket_path = path
+        # A stopped service can leave a stale socket after power loss.
+        if path.exists():
+            if not stat.S_ISSOCK(path.lstat().st_mode):
+                raise ValueError("The origin socket path is occupied by another file.")
+            with socket.socket(socket.AF_UNIX) as probe:
+                try:
+                    probe.settimeout(1)
+                    probe.connect(str(path))
+                except ConnectionRefusedError:
+                    path.unlink()
+                else:
+                    raise ValueError("This origin socket is already serving.")
+        super().__init__(0, store, artifact_sha256=artifact_sha256)
+
+    def server_bind(self):
+        self.server_address = str(self.socket_path)
+        socketserver.TCPServer.server_bind(self)
+
+    def authorize(self, headers, method):
+        if headers.get_all("Host") != [self.hostname]:
+            raise RequestError(403, "Incorrect application hostname.")
+        origins = headers.get_all("Origin") or []
+        if origins or method not in ("GET", "HEAD"):
+            if origins != ["https://" + self.hostname]:
+                raise RequestError(403, "Use this application's HTTPS address.")
+        assertions = headers.get_all("Cf-Access-Jwt-Assertion") or []
+        if len(assertions) == 1 and self.identity.email(assertions[0]) == self.owner:
+            return
+        raise RequestError(403, "Owner sign-in required.")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -115,6 +194,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(500, {"error": "Unexpected local service error. Check the request ID."})
 
     def enforce_local(self):
+        if isinstance(self.server, AccessOrigin):
+            self.server.authorize(self.headers, self.command)
+            return
         port = self.server.server_port
         hosts = {f"localhost:{port}", f"127.0.0.1:{port}"}
         if port == 80:
@@ -156,7 +238,7 @@ class Handler(BaseHTTPRequestHandler):
         self.operation = resource if resource in ("health", "workspace", "leaders", "settings", "account", "runs", "public-runs") else "unknown"
         if path == API + "/health" and method == "GET":
             store.account_revision()  # Confirm an initialized database is actually readable.
-            return {"status": "ok", "mode": "local", "liveExecution": False, "version": VERSION,
+            return {"status": "ok", "mode": "owner-access" if isinstance(self.server, AccessOrigin) else "local", "liveExecution": False, "version": VERSION,
                     "artifactSha256": self.server.artifact_sha256}
         if path == API + "/workspace" and method == "GET":
             return store.read()
@@ -312,9 +394,9 @@ class Handler(BaseHTTPRequestHandler):
                 with store.connection() as db:
                     return public_shadow.control(db, run_id, revision, action)
             with store.connection(write=False) as db:
-                wallet, budget = public_shadow.sampling_terms(db, run_id, revision)
+                wallet, budget, check_sales = public_shadow.sampling_terms(db, run_id, revision)
             try:
-                receipt = self.server.sample_buy(wallet, budget, retry_empty=True)
+                receipt = self.server.sample_buy(wallet, budget, retry_empty=True, check_sales=check_sales)
             except RequestError as exc:
                 if exc.status not in (503, 504):
                     raise

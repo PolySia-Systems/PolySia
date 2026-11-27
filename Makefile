@@ -33,7 +33,7 @@ $(BROWSER_TOOLS): tests/browser/requirements.txt
 	$(BROWSER_ENV)/bin/python -m pip install --disable-pip-version-check --cache-dir "$(CURDIR)/.cache/pip" -r $<
 	@touch $@
 
-browser-test: web $(BROWSER_TOOLS)
+browser-test: build $(BROWSER_TOOLS)
 	$(BROWSER_ENV)/bin/python tests/browser/journey.py $(BROWSER_ARGS)
 
 provider-test: build $(BROWSER_TOOLS)

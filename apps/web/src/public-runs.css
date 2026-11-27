@@ -25,6 +25,8 @@
 .paper-list-row b, .paper-position b, .paper-position small { overflow-wrap: anywhere; }
 .paper-list small { display: block; }
 .paper-confirm { margin: 12px 0; padding: 12px; background: var(--soft); border-radius: 8px; }
+.paper-stop-summary { margin: 10px 0 14px; padding: 10px 14px; border-left: 3px solid var(--accent); background: var(--panel); }
+.paper-confirm p { margin: 4px 0 10px; }
 .paper-journal { list-style: none; padding: 0; margin: 0; }
 .paper-journal li { border-top: 1px solid var(--line); padding: 12px 0; }
 .paper-journal p { margin: 4px 0 0; }

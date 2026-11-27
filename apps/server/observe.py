@@ -190,7 +190,7 @@ def _detect_trades(result, retry_empty):
 
 
 def observe(address: str, seconds: int, index_wait_seconds: int = 0, *, budget: str | None = None,
-            retry_empty: bool = False, exit_scope=None) -> dict:
+            retry_empty: bool = False, exit_scope=None, check_sales=False) -> dict:
     """Sample one new window. A research budget enables a delayed book and corroborating reads."""
     address = validate_address(address)
     if type(seconds) is not int or not 1 <= seconds <= 30:
@@ -198,6 +198,8 @@ def observe(address: str, seconds: int, index_wait_seconds: int = 0, *, budget: 
     if type(index_wait_seconds) is not int or not 0 <= index_wait_seconds <= 300:
         raise ValueError("Choose an indexing wait between 0 and 300 seconds.")
     _validate_retry(retry_empty, seconds, budget, index_wait_seconds, exit_scope)
+    if check_sales and (budget is None or exit_scope is not None):
+        raise ValueError("Checking sales requires a budgeted BUY.")
     if budget is not None:
         budget = public_depth.budget_amount(budget)
     start = math.floor(time.time()) + 1
@@ -243,9 +245,25 @@ def observe(address: str, seconds: int, index_wait_seconds: int = 0, *, budget: 
         result["market"] = terms.result()
     result["evidenceCheckedMs"] = time.time_ns() // 1_000_000
     time.sleep(public_depth.DELAY_SECONDS + result["market"].get("takerDelayMs", 0) / 1000)
+    if check_sales and result["participant"]["status"] == "matched" and result["market"]["status"] == "available":
+        result["saleCheck"] = _candidate_sales(address, event)
     result = _sample_book(result, event)
     result["capacity"] = public_depth.measure_sale(result) if exit_scope else public_depth.measure_depth(result, budget)
     return result
+
+
+def _candidate_sales(wallet, event):
+    # Bound the query to the candidate lifetime, then check the original book deadlines.
+    requested = time.time_ns() // 1_000_000
+    start, end = event["eventTimeSeconds"], requested // 1000
+    check = {"requestedMs": requested, "startSeconds": start, "endSeconds": end}
+    if not 0 <= requested - start * 1000 <= public_depth.MAX_SIGNAL_AGE_MS:
+        return dict(check, reason="The prospective entry was already outside its age limit.")
+    try:
+        sales, coverage, received = read_trade_page(wallet, start, end, "SELL", scope=event)
+        return dict(check, coverage=coverage, receivedMs=received, firstSale=sales[0] if sales else None)
+    except (OSError, HTTPException, KeyError, ValueError, InvalidOperation, RecursionError):
+        return dict(check, reason="Later leader sales could not be checked.")
 
 
 def _sample_book(result, event):
@@ -281,7 +299,7 @@ def _sample_book(result, event):
         return dict(result, reason="Response shape, identity or time failed validation.")
 
 
-def sample_once(address, seconds, budget=None, *, retry_empty=False, exit_scope=None):
+def sample_once(address, seconds, budget=None, *, retry_empty=False, exit_scope=None, check_sales=False):
     """Run one bounded observation in a disposable process from source or the installed release."""
     command = [sys.executable, "-B", "-m", "apps.server.observe", address, "--seconds", str(seconds)]
     _validate_retry(retry_empty, seconds, budget, exit_scope=exit_scope)
@@ -289,6 +307,8 @@ def sample_once(address, seconds, budget=None, *, retry_empty=False, exit_scope=
         command.extend(["--sell", exit_scope["conditionId"], exit_scope["tokenId"], exit_scope["maxShares"]])
     if budget is not None:
         command.extend(["--budget", budget])
+    if check_sales:
+        command.append("--check-sales")
     if retry_empty:
         command.append("--retry-empty")
     timeout = seconds + (30 if budget or exit_scope else 15) + (RETRY_TIMEOUT_SECONDS if retry_empty else 0)
@@ -315,9 +335,12 @@ def main():
                         help="Measure displayed capacity for this unfunded research budget at a two-second delay.")
     parser.add_argument("--retry-empty", action="store_true",
                         help="Reread an initially empty two-second budgeted window three seconds after it closes.")
+    parser.add_argument("--check-sales", action="store_true", help="Check same-outcome sales before sampling the BUY book.")
     parser.add_argument("--sell", nargs=3, metavar=("CONDITION", "TOKEN", "MAX_SHARES"),
                         help="Observe a bounded sale for this outcome.")
     args = parser.parse_args()
+    if args.check_sales and (args.budget is None or args.sell):
+        parser.error("--check-sales requires a budgeted BUY.")
     try:
         scope = public_depth.sell_scope(*args.sell) if args.sell else None
         _validate_retry(args.retry_empty, args.seconds, args.budget, args.index_wait, scope)
@@ -331,7 +354,7 @@ def main():
     deadline.daemon = True
     deadline.start()
     try:
-        result = observe(args.wallet, args.seconds, args.index_wait, budget=args.budget, retry_empty=args.retry_empty, exit_scope=scope)
+        result = observe(args.wallet, args.seconds, args.index_wait, budget=args.budget, retry_empty=args.retry_empty, exit_scope=scope, check_sales=args.check_sales)
         print(json.dumps(result, indent=2))
         complete = result["status"] in ("observed", "waiting") and result.get("capacity", {}).get("status") != "incomplete"
         return 0 if complete else 2
