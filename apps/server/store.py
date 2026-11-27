@@ -11,7 +11,7 @@ from . import shadow
 from .provider import validate_address
 
 
-WORKSPACE_VERSION = 5
+WORKSPACE_VERSION = 6
 
 
 class Conflict(ValueError):
@@ -97,6 +97,9 @@ class Workspace:
                 add_table(db)
                 add_saved_wallets(db)
                 db.execute("PRAGMA user_version = 5")
+            if version < 6:
+                # Earlier writers cannot replay prospective per-entry cap changes.
+                db.execute("PRAGMA user_version = 6")
 
     @contextmanager
     def connection(self, write=True):

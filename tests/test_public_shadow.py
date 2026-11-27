@@ -389,7 +389,12 @@ class PublicPortfolioTests(unittest.TestCase):
         with self.store.connection() as db:
             empty = paper.valuation_basis(db, ID, 1)
             with patch.object(public_marks, "read_public_json") as network:
-                self.assertEqual(public_marks.portfolio_value(empty)["equity"], "25")
+                valued = public_marks.portfolio_value(empty)
+                self.assertEqual(valued["equity"], "25")
+                self.assertEqual(valued["cashBenchmark"], {
+                    "strategy": "hold starting cash", "from": STARTED, "throughMs": valued["checkedMs"],
+                    "endValue": "25", "assumedYield": "0", "additionalFlows": "0",
+                    "netReturnPct": "0", "unpricedValueNeededToMatchCash": None})
                 network.assert_not_called()
             paper.record(db, ID, 1, observed_buy(WALLET, "10.00"))
             basis = paper.valuation_basis(db, ID, 2)
@@ -398,11 +403,16 @@ class PublicPortfolioTests(unittest.TestCase):
         with patch.object(public_marks, "read_public_json", return_value=fixture):
             complete = public_marks.portfolio_value(basis)
             self.assertEqual((complete["equity"], complete["realized"], complete["netResult"]), ("24.45256", "0", "-0.54744"))
+            self.assertEqual(complete["cashBenchmark"]["netReturnPct"], "-2.1898")
+            self.assertEqual((complete["grossPurchases"], complete["grossSales"], complete["modeledFees"]),
+                             ("9.62", "0", "0.23744"))
             additional = basis["positions"][0] | {"tokenId": "735"}
             mixed = basis | {"positions": [*basis["positions"], additional]}
             partial = public_marks.portfolio_value(mixed)
             self.assertEqual((partial["priced"], partial["checked"], partial["pricedValue"]), (1, 2, "9.31"))
             self.assertIsNone(partial["equity"])
+            self.assertIsNone(partial["cashBenchmark"]["netReturnPct"])
+            self.assertEqual(partial["cashBenchmark"]["unpricedValueNeededToMatchCash"], "0.54744")
             with patch.object(public_marks, "MAX_PORTFOLIO_BOOKS", 1):
                 bounded = public_marks.portfolio_value(mixed)
                 self.assertEqual((bounded["checked"], bounded["total"], bounded["netResult"]), (1, 2, None))

@@ -61,8 +61,23 @@ def portfolio_value(basis):
         arithmetic.prec = 110
         marked = sum(priced, Decimal(0))
         equity = Decimal(basis["cash"]) + marked
+        capital = Decimal(basis["capital"])
+        net = equity - capital
+        # The shadow ledger is funded once at creation. Holding that cash has zero
+        # modeled yield, costs or later flows over the same interval.
+        benchmark = {"strategy": "hold starting cash", "from": basis["createdAt"], "throughMs": checked,
+                     "endValue": basis["capital"], "assumedYield": "0", "additionalFlows": "0",
+                     "netReturnPct": None, "unpricedValueNeededToMatchCash": None}
+        if complete:
+            pct = (net * 100 / capital).quantize(Decimal("0.0001"))
+            benchmark["netReturnPct"] = format(pct.normalize(), "f") if pct else "0"
+        else:
+            # With missing marks this is a break-even requirement, not a valuation.
+            benchmark["unpricedValueNeededToMatchCash"] = format(max(Decimal(0), -net).normalize(), "f")
         return {"runId": basis["id"], "revision": basis["revision"], "wallet": basis["wallet"],
                 "mode": basis["mode"], "asset": "pUSD", "source": BOOK, "checkedMs": checked,
+                "cashBenchmark": benchmark, "grossPurchases": basis["gross"], "grossSales": basis["sales"],
+                "modeledFees": basis["fees"], "entryCap": basis["entryCap"],
                 "capital": basis["capital"], "cash": basis["cash"], "realized": basis["realized"],
                 "openCost": basis["openCost"], "complete": complete, "total": len(positions),
                 "priced": len(priced), "checked": len(marks), "maxBooks": MAX_PORTFOLIO_BOOKS, "marks": marks,
@@ -70,4 +85,4 @@ def portfolio_value(basis):
                 "pricedValue": format(marked.normalize(), "f") if priced or not positions else None,
                 "equity": format(equity.normalize(), "f") if complete else None,
                 "unrealized": format((marked - Decimal(basis["openCost"])).normalize(), "f") if complete else None,
-                "netResult": format((equity - Decimal(basis["capital"])).normalize(), "f") if complete else None}
+                "netResult": format(net.normalize(), "f") if complete else None}

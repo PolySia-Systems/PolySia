@@ -478,6 +478,8 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     dune.check()
     expect(next_rankings).to_be_disabled()
     expect(compare).to_be_enabled()
+    shortlist = page.get_by_role("region", name="Saved comparison shortlist")
+    expect(shortlist.get_by_role("button", name="Remove Fixture Lumen from shortlist")).to_be_visible()
     page.get_by_role("button", name="Previous").click()
     expect(first_pick).to_be_checked()
     next_rankings.click()
@@ -524,7 +526,22 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     expect(comparison).to_have_count(0)
     expect(first_pick).not_to_be_checked()
     expect(compare).to_be_disabled()
+    page.reload()
+    expect(page.get_by_label("Ranking period")).to_have_value("week")
+    expect(first_pick).not_to_be_checked()
     page.get_by_label("Ranking period").select_option("month")
+    expect(first_pick).to_be_checked()
+    expect(second_pick).to_be_checked()
+    # The provider rank, wallet identity and period survive an ordinary reload.
+    reads_before_reload = list(profile_reads)
+    page.reload()
+    expect(compare).to_be_enabled()
+    expect(first_pick).to_be_checked()
+    assert profile_reads == reads_before_reload
+    page.set_viewport_size({"width": 390, "height": 844})
+    check_width(page)
+    capture(page, output, "public-shortlist-mobile")
+    page.set_viewport_size({"width": 1240, "height": 900})
     board_budget = page.get_by_label("Simulated budget per buy")
     board_budget.fill("140.50")
     lumen.click()
@@ -761,6 +778,18 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
     expect(lumen).to_have_count(0)
     expect(page.get_by_text("Fixture rankings unavailable", exact=False)).to_be_visible()
+    # An outage must leave saved snapshots inspectable and removable.
+    compare.click()
+    expect(comparison.get_by_role("heading", name="Wallet comparison")).to_be_visible()
+    expect(comparison.get_by_text("19,348.35", exact=True)).to_be_visible()
+    comparison.get_by_role("button", name="Back to rankings").click()
+    page.set_viewport_size({"width": 390, "height": 844})
+    shortlist.get_by_role("button", name="Remove Fixture Lumen from shortlist").click()
+    expect(compare).to_be_disabled()
+    check_width(page)
+    page.reload()
+    expect(shortlist.get_by_role("button", name="Remove Fixture Stone from shortlist")).to_be_visible()
+    expect(shortlist.get_by_role("button", name="Remove Fixture Lumen from shortlist")).to_have_count(0)
     # A direct lookup reads one wallet, even when the board is unavailable.
     # Typing alone must not transmit the pasted address or replace a saved watch.
     page.set_viewport_size({"width": 390, "height": 844})
@@ -791,8 +820,37 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     expect(page.get_by_text("Polymarket returned an empty page.", exact=True)).to_be_visible()
     expect(lumen).to_have_count(0)
     assert alternate in requested_periods and default_period in requested_periods
+    # Browser policies may block writes after a shortlist was saved.
+    fixture_state = "available"
+    period.select_option(default_period)
+    expect(shortlist.get_by_role("button", name="Remove Fixture Stone from shortlist")).to_be_visible()
+    page.evaluate("""() => {Storage.prototype.removeItem = () => {throw new Error('storage blocked')}}""")
+    shortlist.get_by_role("button", name="Remove Fixture Stone from shortlist").click()
+    expect(page.get_by_text("Browser storage is unavailable.", exact=False)).to_be_visible()
+    period.select_option(alternate)
+    period.select_option(default_period)
+    expect(second_pick).not_to_be_checked()
+    expect(shortlist).to_have_count(0)
     page.close()
     print("Passed ranking filters, stale and unavailable results, direct wallet inspection, watch preservation and wallet prefill.")
+
+
+def change_cap_journey(browser: Browser, origin: str):
+    page = browser.new_page(viewport={"width": 390, "height": 844})
+    try:
+        page.goto(origin + "/#/paper/new")
+        page.get_by_label("Leader wallet").fill("0x" + "cd" * 20)
+        page.get_by_role("button", name="Create shadow run").click()
+        disclosure = page.get_by_text("Change future BUY cap", exact=True)
+        disclosure.click()
+        page.get_by_label("New per-entry cap (pUSD)").fill("3.50")
+        page.get_by_role("button", name="Save future cap").click()
+        expect(page.get_by_text("Changed future simulated BUY cap from 10 to 3.5 pUSD.")).to_be_visible()
+        page.reload()
+        expect(page.get_by_text("Changed future simulated BUY cap from 10 to 3.5 pUSD.")).to_be_visible()
+        check_width(page)
+    finally:
+        page.close()
 
 
 def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
@@ -900,16 +958,21 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
                 page.get_by_role("button", name="Check portfolio value").click()
                 expect(page.get_by_text("24.38272", exact=False)).to_be_visible()
                 expect(page.get_by_text("-0.61728", exact=False)).to_be_visible()
+                expect(page.get_by_text("The simulated return on starting cash is -2.4691%.", exact=False)).to_be_visible()
                 page.get_by_text("Valuation evidence", exact=True).click()
                 with page.expect_download() as valuation_file:
                     page.get_by_role("link", name="Download valuation").click()
                 value = json.loads(valuation_file.value.path().read_text())
                 assert (value["equity"], value["unrealized"], value["netResult"]) == ("24.38272", "-0.206939", "-0.61728")
+                assert value["cashBenchmark"]["netReturnPct"] == "-2.4691"
+                assert value["cashBenchmark"]["throughMs"] == value["checkedMs"]
+                assert value["cashBenchmark"]["endValue"] == value["capital"] == "25"
                 capture(page, output, "public-sale-valuation-desktop")
                 if output:
                     page.locator(".paper-workbench").screenshot(path=output / "public-sale-controls.png")
                 page.get_by_role("button", name="Refresh portfolio value").click()
                 expect(page.get_by_text("0 of 1 open position priced", exact=False)).to_be_visible()
+                expect(page.get_by_text("would need a combined value of 6.11728 pUSD", exact=False)).to_be_visible()
                 expect(page.get_by_text("24.38272", exact=False)).to_have_count(0)
                 page.set_viewport_size({"width": 390, "height": 844})
                 check_width(page)
@@ -1191,6 +1254,7 @@ def main():
                     page.close()
                     assisted_budget_journey(browser, origin, options.screenshots)
                     public_rankings_journey(browser, origin, options.screenshots)
+                    change_cap_journey(browser, origin)
                 public_shadow_journey(browser, Path(temp), options.screenshots)
         finally:
             browser.close()

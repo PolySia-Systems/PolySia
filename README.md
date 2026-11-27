@@ -51,6 +51,10 @@ To try a public wallet, open **Public rankings** and choose a period. Use **Next
 
 ## Updates and help
 
+Public rankings remembers your two selected wallets for each ranking period in this browser. If the provider is unavailable, you can reopen the saved comparison and check its retrieval dates.
+
+To revise a portfolio budget, open its run and choose **Change future BUY cap**. Enter an amount from 1 pUSD up to the run's starting capital. Each future BUY is also limited by remaining cash. The decision history records the previous and new limits. To return to a previous limit, enter that amount again. Changing the cap keeps a paused run paused.
+
 For hands-off simulation, open a public run and choose **Enable background sampling**. Keep the PolySia server running and close the browser if you wish. Reopen **Public shadow**, select the run and review its decisions, cash, costs and open positions. Each check covers a short BUY window. Gaps can contain missed trades. Pause or stop the run to cancel background sampling. After a pause, resume and explicitly enable it again. A server restart resumes enabled runs and skips the offline interval. SELL observations remain operator initiated.
 
 - **Moving an owner-only HTTPS site?** Keep its Cloudflare resources. Follow the [host recovery guide](docs/operations.md#recover-an-https-site).
