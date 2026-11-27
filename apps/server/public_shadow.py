@@ -88,12 +88,13 @@ def create(db, run_id, wallet, name, capital, cap):
 
 
 def _totals(db, run_id):
-    return db.execute("""SELECT coalesce(sum(CASE WHEN kind='entry' THEN gross END),0),
-                         coalesce(sum(fee),0), count(CASE WHEN kind='entry' THEN 1 END),
-                         coalesce(sum(CASE WHEN kind='exit' THEN gross END),0),
+    return db.execute("""SELECT coalesce(sum(CASE WHEN kind='entry' THEN gross END),0) AS purchases,
+                         coalesce(sum(fee),0) AS fees, count(CASE WHEN kind='entry' THEN 1 END),
+                         coalesce(sum(CASE WHEN kind='exit' THEN gross END),0) AS sales,
                          coalesce(sum(CASE WHEN kind='exit' THEN gross-fee-released_cost END),0),
                          count(CASE WHEN kind='exit' THEN 1 END),
-                         coalesce(sum(CASE WHEN kind='deposit' THEN json_extract(receipt,'$.amountMicros') END),0)
+                         coalesce(sum(CASE WHEN kind='deposit' THEN json_extract(receipt,'$.amountMicros') END),0) AS deposits,
+                         coalesce(sum(CASE WHEN kind='withdraw' THEN json_extract(receipt,'$.amountMicros') END),0) AS withdrawals
                          FROM public_decisions WHERE run_id=?""", (run_id,)).fetchone()
 
 
@@ -112,14 +113,21 @@ def _next_budget(cash, cap):
     return f"{cents // 100}.{cents % 100:02d}" if cents >= 100 else None
 
 
-def _summary(row, gross, fee, entries, sales, realized, exits, deposits):
-    funded = row["capital"] + deposits
-    cash = funded - gross - fee + sales
+def _balances(row, totals):
+    contributed = row["capital"] + totals["deposits"] - totals["withdrawals"]
+    cash = contributed - totals["purchases"] - totals["fees"] + totals["sales"]
+    return contributed, cash
+
+
+def _summary(row, totals):
+    gross, fee, entries, sales, realized, exits, deposits, withdrawals = totals
+    contributed, cash = _balances(row, totals)
     return {"id": row["id"], "name": row["name"], "wallet": row["wallet"], "mode": MODE,
             "model": MODEL, "asset": "pUSD", "status": row["status"], "revision": row["revision"],
             "createdAt": row["created"], "updatedAt": row["updated"], "capital": units(row["capital"]),
             "entryCap": units(row["entry_cap"]), "cash": units(cash), "gross": units(gross), "fees": units(fee),
-            "fundedCapital": units(funded), "deposits": units(deposits), "openCost": units(funded + realized - cash),
+            "fundedCapital": units(row["capital"] + deposits), "deposits": units(deposits), "withdrawals": units(withdrawals),
+            "netContributions": _signed(contributed), "openCost": units(contributed + realized - cash),
             "entries": entries, "sales": units(sales), "realized": _signed(realized), "exits": exits, "nextBudget": _next_budget(cash, row["entry_cap"])}
 
 
@@ -132,13 +140,13 @@ def listing(db, before=None):
         cursor = row[0]
     rows = db.execute("SELECT * FROM public_runs WHERE rowid < ? ORDER BY rowid DESC LIMIT ?",
                       (cursor, PAGE + 1)).fetchall()
-    items = [_summary(row, *_totals(db, row["id"])) for row in rows[:PAGE]]
+    items = [_summary(row, _totals(db, row["id"])) for row in rows[:PAGE]]
     return {"runs": items, "nextCursor": items[-1]["id"] if len(rows) > PAGE else None}
 
 
 def report(db, run_id, *, export=False, before=None, trades=False):
     row = _run(db, run_id)
-    result = _summary(row, *_totals(db, run_id))
+    result = _summary(row, _totals(db, run_id))
     result["policy"] = json.loads(row["policy"])
     result["backgroundEnabled"] = bool(db.execute("SELECT 1 FROM background_runs WHERE run_id=?", (run_id,)).fetchone())
     result["exitsEnabled"] = _enabled(db, row)
@@ -245,7 +253,13 @@ def position_basis(db, run_id, token, revision):
 def valuation_basis(db, run_id, revision):
     row = _run(db, run_id)
     _check_revision(row, revision)
-    summary = _summary(row, *_totals(db, run_id))
+    summary = _summary(row, _totals(db, run_id))
+    if summary["withdrawals"] != "0":
+        minimum, = db.execute("""SELECT min(balance) FROM (
+            SELECT ? + sum(CASE kind WHEN 'deposit' THEN 1 ELSE -1 END * json_extract(receipt,'$.amountMicros'))
+            OVER (ORDER BY revision) AS balance FROM public_decisions WHERE run_id=? AND kind IN ('deposit','withdraw'))""",
+            (row["capital"], run_id)).fetchone()
+        summary["cashBenchmarkFeasible"] = minimum >= 0
     positions = [{"conditionId": p["condition_id"], "tokenId": p["token_id"], "market": p["market"],
                   "outcome": p["outcome"], "shares": str(p["quantity"]), "cost": units(p["cost"]),
                   "lastEntryAt": p["last_entry"], "lastChangeAt": p["last_change"]} for p in _positions(db, run_id)]
@@ -277,8 +291,8 @@ def sampling_terms(db, run_id, revision):
     _check_revision(row, revision)
     if row["status"] != "running":
         raise Conflict("Only a running public shadow portfolio can sample a BUY.")
-    gross, fee, _, sales, _, _, deposits = _totals(db, run_id)
-    budget = _next_budget(row["capital"] + deposits - gross - fee + sales, row["entry_cap"])
+    _, cash = _balances(row, _totals(db, run_id))
+    budget = _next_budget(cash, row["entry_cap"])
     if not budget:
         raise Conflict("Less than 1 pUSD of simulated cash remains. Review the open positions.")
     return row["wallet"], budget, json.loads(row["policy"]).get("checkSalesBeforeEntry", False)
@@ -294,21 +308,39 @@ def _cap_change(previous, cap, capital):
 def _deposit_terms(amount, funded):
     micros = _budget(amount)
     if funded + micros > 1_000_000_000:
-        raise ValueError("Total simulated funding must stay within 1,000 pUSD.")
+        raise ValueError("Net simulated contributions must stay within 1,000 pUSD.")
     return micros, f"Added {units(micros)} pUSD of simulated cash."
 
 
+def _withdrawal_terms(amount, cash):
+    micros = _money(amount)
+    if not 0 < micros <= cash:
+        raise ValueError("Withdraw a positive amount within the available simulated cash.")
+    return micros, f"Withdrew {units(micros)} pUSD of free simulated cash."
+
+
 def deposit(db, run_id, revision, amount):
+    return _transfer(db, run_id, revision, amount, "deposit")
+
+
+def withdraw(db, run_id, revision, amount):
+    return _transfer(db, run_id, revision, amount, "withdraw")
+
+
+def _transfer(db, run_id, revision, amount, kind):
     row = _run(db, run_id)
     _check_revision(row, revision)
     if row["status"] == "stopped":
         raise Conflict("This portfolio has stopped.")
-    micros, reason = _deposit_terms(amount, row["capital"] + _totals(db, run_id)[-1])
+    contributed, cash = _balances(row, _totals(db, run_id))
+    micros, reason = _deposit_terms(amount, contributed) if kind == "deposit" else _withdrawal_terms(amount, cash)
     now = _recorded_time(row["updated"], timestamp())
     receipt = {"amount": units(micros), "amountMicros": micros}
     db.execute("""INSERT INTO public_decisions(run_id,revision,recorded,kind,reason,shares,gross,fee,receipt)
-                  VALUES(?,?,?,'deposit',?,0,0,0,?)""", (run_id, revision + 1, now, reason, json.dumps(receipt)))
+                  VALUES(?,?,?,?,?,0,0,0,?)""", (run_id, revision + 1, now, kind, reason, json.dumps(receipt)))
     db.execute("UPDATE public_runs SET revision=revision+1, updated=? WHERE id=?", (now, run_id))
+    if kind == "withdraw" and cash - micros < 1_000_000:
+        db.execute("DELETE FROM background_runs WHERE run_id=?", (run_id,))
     return report(db, run_id)
 
 
@@ -617,14 +649,19 @@ def verify_archive(db, version=WORKSPACE_VERSION):
             if item["revision"] != revision or not isinstance(item["reason"], str):
                 raise ValueError("Invalid public shadow journal sequence.")
             released = 0
-            if kind == "deposit":
+            if kind in ("deposit", "withdraw"):
                 transfer = json.loads(item["receipt"])
-                micros, reason = _deposit_terms(transfer["amount"], funded)
-                if (version < 7 or status == "stopped" or type(transfer.get("amountMicros")) is not int
+                if kind == "deposit":
+                    micros, reason = _deposit_terms(transfer["amount"], funded)
+                    delta = micros
+                else:
+                    micros, reason = _withdrawal_terms(transfer["amount"], cash)
+                    delta = -micros
+                if (version < (7 if kind == "deposit" else 8) or status == "stopped" or type(transfer.get("amountMicros")) is not int
                         or transfer != {"amount": units(micros), "amountMicros": micros}):
-                    raise ValueError("Invalid simulated deposit.")
-                funded += micros
-                cash += micros
+                    raise ValueError("Invalid simulated cash transfer.")
+                funded += delta
+                cash += delta
                 expected = NO_ENTRY
             elif kind == "change-cap":
                 change = json.loads(item["receipt"])

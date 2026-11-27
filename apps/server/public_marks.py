@@ -62,24 +62,30 @@ def portfolio_value(basis):
         marked = sum(priced, Decimal(0))
         equity = Decimal(basis["cash"]) + marked
         deposited = basis.get("deposits", "0")
-        funded = basis.get("fundedCapital", basis["capital"])
-        capital = Decimal(funded)
+        withdrawn = basis.get("withdrawals", "0")
+        contributed = basis.get("netContributions", basis.get("fundedCapital", basis["capital"]))
+        capital = Decimal(contributed)
         net = equity - capital
         benchmark = {"strategy": "hold starting cash" if deposited == "0" else "hold all contributed cash",
                      "from": basis["createdAt"], "throughMs": checked,
-                     "endValue": funded, "assumedYield": "0", "additionalFlows": deposited,
+                     "endValue": contributed, "assumedYield": "0", "additionalFlows": deposited,
                      "netReturnPct": None, "unpricedValueNeededToMatchCash": None}
-        if complete:
+        feasible = basis.get("cashBenchmarkFeasible", True)
+        if withdrawn != "0":
+            benchmark["strategy"] = "hold cash with the same deposits and withdrawals"
+            benchmark["endValue"] = contributed if feasible else None
+        if complete and withdrawn == "0":
             pct = (net * 100 / capital).quantize(Decimal("0.0001"))
             benchmark["netReturnPct"] = format(pct.normalize(), "f") if pct else "0"
-        else:
+        elif not complete and feasible:
             # With missing marks this is a break-even requirement, not a valuation.
             benchmark["unpricedValueNeededToMatchCash"] = format(max(Decimal(0), -net).normalize(), "f")
         return {"runId": basis["id"], "revision": basis["revision"], "wallet": basis["wallet"],
                 "mode": basis["mode"], "asset": "pUSD", "source": BOOK, "checkedMs": checked,
                 "cashBenchmark": benchmark, "grossPurchases": basis["gross"], "grossSales": basis["sales"],
                 "modeledFees": basis["fees"], "entryCap": basis["entryCap"],
-                "capital": basis["capital"], "cash": basis["cash"], "realized": basis["realized"],
+                "capital": basis["capital"], "withdrawals": withdrawn, "netContributions": contributed,
+                "cash": basis["cash"], "realized": basis["realized"],
                 "openCost": basis["openCost"], "complete": complete, "total": len(positions),
                 "priced": len(priced), "checked": len(marks), "maxBooks": MAX_PORTFOLIO_BOOKS, "marks": marks,
                 "uncheckedPositions": positions[MAX_PORTFOLIO_BOOKS:],

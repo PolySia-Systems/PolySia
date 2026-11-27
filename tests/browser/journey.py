@@ -932,6 +932,17 @@ def change_cap_journey(browser: Browser, origin: str):
         expect(page.get_by_text("Changed future simulated BUY cap from 10 to 3.5 pUSD.")).to_be_visible()
         page.reload()
         expect(page.get_by_text("Changed future simulated BUY cap from 10 to 3.5 pUSD.")).to_be_visible()
+        page.get_by_text("Withdraw simulated cash", exact=True).click()
+        page.get_by_label("Simulated withdrawal (pUSD)").fill("98")
+        page.get_by_role("button", name="Record simulated withdrawal").click()
+        expect(page.get_by_text("Simulated withdrawal recorded. Available cash is 2 pUSD.")).to_be_visible()
+        page.reload()
+        week = page.get_by_role("region", name="Last seven days")
+        expect(week.get_by_text("Withdrawn 98", exact=False)).to_be_visible()
+        with page.expect_download() as file:
+            week.get_by_role("button", name="Export this period").click()
+        period = json.loads(file.value.path().read_text())["period"]
+        assert (period["closingCash"], period["withdrawals"], period["netResult"]) == ("2", "98", "0")
         check_width(page)
     finally:
         page.close()

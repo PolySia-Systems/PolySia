@@ -61,6 +61,8 @@ In **Last seven days**, choose **Export this period** to save the displayed inte
 
 In a public run, **Add simulated cash** records a contribution separately from gains and fees. Adding cash preserves a pause. **Decision history → Recheck public activity** lets you revisit a quiet BUY window if the provider indexed trades later. A recheck keeps the original decision and portfolio balances intact.
 
+While a run is active or paused, **Withdraw simulated cash** removes up to the free cash shown. Shares stay open. Future purchases are limited by the cash left and the saved per-entry cap. Withdrawing below 1 pUSD turns off background sampling. The weekly report and its export show withdrawals separately from trading results.
+
 Public rankings remembers your two selected wallets for each ranking period in this browser. If the provider is unavailable, you can reopen the saved comparison and check its retrieval dates.
 
 To revise a portfolio budget, open its run and choose **Change future BUY cap**. Enter an amount from 1 pUSD up to the run's starting capital. Each future BUY is also limited by remaining cash. The decision history records the previous and new limits. To return to a previous limit, enter that amount again. Changing the cap keeps a paused run paused.
