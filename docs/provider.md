@@ -6,6 +6,8 @@ A separate prospective test of release 0.9.0 started at 23:23 UTC. A 100-row pub
 
 For a separate measure of on-demand discovery cost, four consecutive pages for each of the day, week, month and all-time rankings returned 160 rows and 116 distinct addresses. All four periods still advertised another page. Median ranking-page request time was 571 ms and the longest was 603 ms across 16 requests. These measurements cover one client session and exclude wallet-detail reads.
 
+A subsequent 88-second prospective trial tested capturing an order book immediately after a wallet-filtered Polygon notification and corroborating the trade later. Both streams were acknowledged before the first of ten wallet-windows. Nine owned BUY notifications produced five first-in-window book captures on one wallet. Later public reads corroborated all five trades and instruments. Each book's source timestamp preceded the required post-delay boundary by 825–1,128 ms. Neither the notification arm nor the aligned polling arm obtained a qualifying estimate. No chain removals were observed during the trial and later finality was unverified. Keep the existing freshness check and public polling. SHA-256 of the timestamped JSONL evidence is `7056f837238f0e1fbf7b9f105b468da848c8abbaa44715772331c22738bcc7b0`.
+
 Public adapter evidence through 2026-11-27. All public reads identify PolySia and its project URL. The adapter uses HTTPS GETs for Polymarket data and a fixed pair of Polygon JSON-RPC reads for budgeted observations. Each request has a bounded response size and socket timeout. The clients use public endpoints with fixed origins. A study can request a scheduled second observation of the same interval.
 
 | Capability | Verified scope |

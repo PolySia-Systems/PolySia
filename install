@@ -3,7 +3,7 @@
 set -eu
 umask 077
 version=0.10.0
-sha256=e6d974f07a35595c4045fa900e185de748a725389ce03e6e6efa6d45ecf876ef
+sha256=e0d67ca4456c6a637e1d5bc8dd9081cb43336b8bf8f241c4300628ece9c42ce9
 release="https://github.com/PolySia-Systems/PolySia/releases/download/v$version/polysia.pyz"
 
 fail() { printf 'PolySia: %s\n' "$*" >&2; exit 1; }
