@@ -262,6 +262,13 @@ class Handler(BaseHTTPRequestHandler):
             return store.read()
         if path == API + "/workspace/overview" and method == "GET":
             return store.overview()
+        if path == API + "/workspace/notifications" and method == "GET":
+            from .notifications import recent
+            query = parse_qs(urlsplit(self.path).query, keep_blank_values=True, strict_parsing=True, max_num_fields=1)
+            if set(query) - {"category"}:
+                raise ValueError("Choose a supported notification category.")
+            with store.connection(write=False) as db:
+                return recent(db, query.get("category", ["warnings"])[0])
         if path == API + "/public-runs" or path.startswith(API + "/public-runs/"):
             return self.public_runs_api(path, method)
         if path == API + "/public/leaders" and self.command == "GET":

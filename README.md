@@ -41,6 +41,8 @@ To follow multiple accounts, enter an optional wallet name and select **Save wal
 
 Open **System status → Shadow portfolio overview** to see how many portfolios use background sampling and which runs need review. Select a run name to inspect its decisions, simulated cash, fees and remaining positions.
 
+Open **Notifications** to find past observation warnings and simulated buys or sales across runs, including events recorded while your browser was closed. Repeated events are grouped by run and type. Open the linked run for the latest state and its full decision history.
+
 ## Try your first replay
 
 1. In **Discover**, choose **Try a shadow replay**, then **Start shadow**. Keep the default budget for this example.

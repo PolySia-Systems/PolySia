@@ -4,6 +4,7 @@ import {
   Activity,
   ArrowLeft,
   ArrowRight,
+  Bell,
   ChevronRight,
   ChartNoAxesColumnIncreasing,
   Compass,
@@ -21,6 +22,7 @@ import { Preview, SavedReplay, Shadow } from './Shadow'
 import { Accounts, Settings, Status } from './Workspace'
 import { PublicRankings } from './PublicRankings'
 import { PublicRuns } from './PublicRuns'
+import { Notifications } from './Notifications'
 import './style.css'
 
 const nav = [
@@ -29,6 +31,7 @@ const nav = [
   { id: 'paper', name: 'Public shadow', icon: Activity },
   { id: 'runs', name: 'Scenario replays', icon: FlaskConical },
   { id: 'accounts', name: 'Accounts', icon: Wallet },
+  { id: 'notifications', name: 'Notifications', icon: Bell },
   { id: 'settings', name: 'Settings', icon: Settings2 },
   { id: 'status', name: 'System status', icon: Activity },
 ]
@@ -143,6 +146,7 @@ function App() {
         paper: id === 'new' ? 'New public run' : id ? 'Public shadow portfolio' : 'Public shadow runs',
         runs: id ? 'Saved replay' : 'Scenario replays',
         accounts: 'Accounts',
+        notifications: 'Notifications',
         settings: 'Settings',
         status: 'System status',
         compare: 'Compare leaders',
@@ -158,6 +162,7 @@ function App() {
         discover: 'Explore public trading data or practice a copy with a simulated wallet.',
         runs: 'See how simulated decisions change your cash and open positions.',
         accounts: 'Inspect public wallet positions and read-only connection status.',
+        notifications: 'Review saved events from your simulated portfolios.',
         settings: 'Set your preferences for this workspace.',
         status: 'Review this instance and its supported capabilities.',
         compare: 'Compare your shortlist using the same sample period and metric definitions.',
@@ -236,7 +241,7 @@ function App() {
         </div>
         <nav aria-label="Workspace navigation">
           <div className="nav-label">Workspace</div>
-          {nav.slice(0, 5).map(({ id, name, icon: Icon }) => (
+          {nav.slice(0, 6).map(({ id, name, icon: Icon }) => (
             <a
               key={id}
               href={'#/' + id}
@@ -250,7 +255,7 @@ function App() {
             </a>
           ))}
           <div className="nav-label tools">Preferences</div>
-          {nav.slice(5).map(({ id, name, icon: Icon }) => (
+          {nav.slice(6).map(({ id, name, icon: Icon }) => (
             <a
               key={id}
               href={'#/' + id}
@@ -370,6 +375,7 @@ function App() {
                   <Shadow run={workspace.run} refresh={refresh} />
                 ))}
               {page === 'rankings' && <PublicRankings />}
+              {page === 'notifications' && <Notifications />}
               {page === 'paper' && <PublicRuns key={location.hash} id={id}/>}
               {page === 'accounts' && (
                 <Accounts

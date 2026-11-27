@@ -251,6 +251,10 @@ def exercise(browser: Browser, origin: str, output: Path | None):
     expect(page.get_by_role("heading", name="Account scope")).to_be_visible()
     expect(holdings).to_have_count(0)
 
+    page.get_by_role("link", name="Notifications", exact=True).click()
+    expect(page.get_by_text("No observation warnings have been recorded.")).to_be_visible()
+    page.get_by_label("Show notifications").select_option("trades")
+    expect(page.get_by_text("No simulated buys or sales have been recorded.")).to_be_visible()
     page.get_by_role("link", name="Settings", exact=True).click()
     forest = page.get_by_role("button", name="Forest (default)", exact=True)
     ocean = page.get_by_role("button", name="Ocean", exact=True)
