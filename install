@@ -1,0 +1,88 @@
+#!/bin/sh
+# The release digest is checked by make release-check before and after publication.
+set -eu
+umask 077
+version=0.5.5
+sha256=9dfb3c0c15a0eae5f85725d9e7c5512a017e9263e9503c74c103bf73e7cb1080
+release="https://github.com/PolySia-Systems/PolySia/releases/download/v$version/polysia.pyz"
+
+fail() { printf 'PolySia: %s\n' "$*" >&2; exit 1; }
+as_admin() {
+    if [ "$(id -u)" = 0 ]; then "$@"; else sudo -- "$@"; fi
+}
+as_installer() {
+    if [ "$mode" = 1 ]; then "$@"; else as_admin "$@"; fi
+}
+runtime_ready() {
+    "$python" -I -c 'import sqlite3, sys; sys.exit(sys.version_info < (3, 12))' 2>/dev/null
+}
+
+[ "$(uname -s)" = Linux ] || fail 'Open a terminal on the Linux machine where PolySia should run.'
+[ -t 0 ] || fail 'Open an interactive terminal on the target machine. For SSH, allocate a terminal.'
+printf '\nPolySia %s\n\n' "$version"
+printf '%s\n' '  1  Local workspace     Use only on this machine while the terminal is open' \
+               '  2  Private website     Open in your browser, even after you disconnect' \
+               '  3  Recover website     After a server replacement or snapshot restore'
+while :; do
+    printf '\nChoose 1, 2 or 3: '
+    IFS= read -r mode || fail 'Input closed. Rerun the install command when ready.'
+    case "$mode" in 1|2|3) break ;; *) printf '%s\n' 'Enter the number beside your choice.' ;; esac
+done
+
+ID=unknown
+VERSION_ID=unknown
+if [ -r /etc/os-release ]; then . /etc/os-release; fi
+python=python3
+set -- --start
+if [ "$mode" != 1 ]; then
+    [ "$ID:$VERSION_ID:$(uname -m)" = ubuntu:26.04:x86_64 ] &&
+        [ "$(cat /proc/1/comm)" = systemd ] ||
+        fail 'A private website needs a dedicated Ubuntu 26.04 LTS amd64 server running systemd.'
+    python=/usr/bin/python3
+    set -- --prepare-cloudflare-host
+    if [ "$mode" = 3 ]; then
+        set -- "$@" --recover
+        printf '%s\n' 'Keep the former host offline. Have its workspace backup ready if you need its history.'
+    fi
+fi
+if [ "$mode" != 1 ] || ! runtime_ready; then
+    [ "$(id -u)" = 0 ] || command -v sudo >/dev/null ||
+        fail 'This setup needs an administrator. Rerun from an account with sudo access.'
+fi
+command -v sha256sum >/dev/null || fail 'Install GNU coreutils on this Linux host and retry.'
+
+# Stage, verify and execute under the same identity. HTTPS setup uses a root-owned
+# directory even when the operator connected as an unprivileged SSH user.
+stage=$(as_installer mktemp -d /tmp/polysia-install.XXXXXXXXXX)
+bundle="$stage/polysia.pyz"
+cleanup() {
+    as_installer rm -f -- "$bundle"
+    as_installer rmdir -- "$stage"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+printf '\nDownloading PolySia %s from GitHub...\n' "$version"
+as_installer curl -q -fsSL --proto '=https' --proto-redir '=https' \
+    --connect-timeout 15 --max-time 120 --retry 2 --output "$bundle" "$release" ||
+    fail 'Could not download the public release. Check GitHub connectivity and rerun.'
+actual=$(as_installer sha256sum -- "$bundle")
+[ "${actual%% *}" = "$sha256" ] || fail 'The download failed its integrity check. Rerun with a fresh download.'
+printf 'Verified PolySia %s.\n' "$version"
+
+if ! runtime_ready; then
+    case "$ID:$VERSION_ID" in
+        ubuntu:24.04|ubuntu:26.04) ;;
+        *) fail 'Local mode needs Python 3.12 or newer with SQLite. Install it on this host and retry.' ;;
+    esac
+    printf '%s\n' 'Installing Python and SQLite support from Ubuntu...'
+    as_admin /usr/bin/apt-get -qq update
+    as_admin /usr/bin/env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l \
+        /usr/bin/apt-get -qy -o Dpkg::Use-Pty=0 --no-install-recommends --no-upgrade --no-remove \
+        install python3 libpython3-stdlib </dev/null
+    python=/usr/bin/python3
+    runtime_ready || fail 'The Ubuntu Python runtime could not load SQLite. Check the system packages and retry.'
+fi
+as_installer "$python" -I "$bundle" "$@"

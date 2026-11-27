@@ -16,7 +16,7 @@ def main():
         "Pass installer options after -- (for example -- --start)."))
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--file", type=Path, help="Path to an already transferred polysia.pyz")
-    source.add_argument("--release", metavar="TAG", help="Download this private release using an authorized gh login")
+    source.add_argument("--release", metavar="TAG", help="Download a tagged release using GitHub CLI")
     parser.add_argument("--sha256", required=True, help="Trusted SHA-256 of the exact tested release")
     parser.add_argument("options", nargs=argparse.REMAINDER, help="Options passed to the official installer")
     args = parser.parse_args()
@@ -44,7 +44,7 @@ def main():
             return subprocess.run([sys.executable, "-I", str(archive), *options]).returncode
     except FileNotFoundError as exc:
         if exc.filename == "gh":
-            parser.exit(1, "Use gh with authorized private repository access, or supply --file from a trusted transfer.\n")
+            parser.exit(1, "Use the README install command, install GitHub CLI, or supply --file after a transfer.\n")
         parser.exit(1, "Could not open the selected release file. Check its path and retry.\n")
     except subprocess.CalledProcessError:
         parser.exit(1, "Download failed. Check the release tag and existing repository access, or supply --file.\n")

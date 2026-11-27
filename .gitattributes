@@ -5,4 +5,4 @@ deploy/start.py text eol=lf
 apps/web/**/*.html text eol=lf
 apps/web/**/*.svg text eol=lf
 
-deploy/guide.sh text eol=lf
+install text eol=lf

@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import pty
 import re
 import select
 import shutil
@@ -263,45 +264,66 @@ def verify_upgrade(previous):
 
 
 def verify_readme(bundle, release_guide):
-    """Exercise the user-facing release instructions with no prior installation."""
+    """Run the copyable command on its destination. Substitute only the two downloads."""
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     install = readme.split("## Install on Linux", 1)[1].split("\n## ", 1)[0]
     command = re.search(r"```sh\n(.+?)\n```", install, re.S).group(1)
-    tag = re.search(r"gh release download v([\d.]+)", command).group(1)
+    operations = (ROOT / "docs/operations.md").read_text(encoding="utf-8")
+    minimal = operations.split("### Minimal Ubuntu images", 1)[1].split("\n## ", 1)[0]
+    assert command in minimal, "The minimal image instructions must start the same installer"
+    bootstrap = release_guide.read_bytes()
+    assert bootstrap == (ROOT / "install").read_bytes(), "The release installer differs from the reviewed entry"
+    tag = re.search(rb"^version=([\d.]+)$", bootstrap, re.M).group(1).decode()
     digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
-    assert digest in command, "The README checksum does not match the release bundle"
+    assert f"sha256={digest}".encode() in bootstrap.splitlines(), "The installer digest differs from the bundle"
     with tempfile.TemporaryDirectory(prefix="polysia-readme-") as directory:
-        cwd = Path(directory)
-        # Simulate only the private download for offline release checks. The release
-        # operator repeats the published command with real reader credentials.
-        assets = cwd / "assets"
-        assets.mkdir()
-        gh = cwd / "gh"
-        gh.write_text('#!/bin/sh\nset -eu\ncp "$ASSETS/guide.sh" "$ASSETS/polysia.pyz" .\n')
-        gh.chmod(0o700)
-        env = {"HOME": str(cwd), "ASSETS": str(assets), "PATH": str(cwd) + ":" + os.environ["PATH"]}
-        shutil.copyfile(bundle, assets / "polysia.pyz")
-        guide = assets / "guide.sh"
-        guide.write_text('touch "$HOME/executed"\n')
-        def reject_changed():
-            rejected = subprocess.run(["sh", "-c", command], cwd=cwd, env=env, input=b"1\n",
-                                      capture_output=True, timeout=10)
-            assert rejected.returncode and b"FAILED" in rejected.stdout and not (cwd / "executed").exists()
-        reject_changed()
-        shutil.copyfile(release_guide, guide)
-        (assets / "polysia.pyz").write_text("invalid download")
-        reject_changed()
+        fixture = Path(directory)
+        cwd = fixture / "empty"
+        cwd.mkdir()
+        curl = fixture / "curl"
+        curl.write_text("""#!/bin/sh
+set -eu
+for url do :; done
+case "$url" in
+  https://github.com/PolySia-Systems/PolySia/releases/latest/download/install)
+    cat "$ENTRY"
+    exit "${ENTRY_STATUS:-0}" ;;
+  "$ASSET_URL")
+    while [ "$1" != --output ]; do shift; done
+    cp "$ARCHIVE" "$2" ;;
+  *) exit 22 ;;
+esac
+""")
+        curl.chmod(0o700)
+        entry = fixture / "entry"
+        archive = fixture / "archive"
+        env = {"HOME": str(cwd), "PATH": str(fixture) + ":" + os.environ["PATH"],
+               "ENTRY": str(entry), "ARCHIVE": str(archive),
+               "ASSET_URL": f"https://github.com/PolySia-Systems/PolySia/releases/download/v{tag}/polysia.pyz"}
+        # A transport failure can leave complete, executable lines in the response.
+        entry.write_text('touch "$HOME/executed"\n')
+        rejected = subprocess.run(["sh", "-c", command], cwd=cwd, env={**env, "ENTRY_STATUS": "18"})
+        assert rejected.returncode and not (cwd / "executed").exists()
 
-        shutil.copyfile(bundle, assets / "polysia.pyz")
-        with (cwd / "output.log").open("w") as output:
-            server = subprocess.Popen(["sh", "-c", command], cwd=cwd, env=env, stdout=output,
-                                      stderr=output, stdin=subprocess.PIPE, start_new_session=True)
-            server.stdin.write(b"1\n")
-            server.stdin.close()
+        entry.write_bytes(bootstrap)
+        archive.write_text("from pathlib import Path\nPath('executed').touch()\n")
+        master, slave = pty.openpty()
+        try:
+            os.write(master, b"1\n")
+            rejected = subprocess.run(["sh", "-c", command], cwd=cwd, env=env, stdin=slave,
+                                      capture_output=True, timeout=10)
+            assert rejected.returncode and b"integrity check" in rejected.stderr and not (cwd / "executed").exists()
+            assert not (cwd / ".local").exists()
+            shutil.copyfile(bundle, archive)
+            os.write(master, b"wrong\n1\n")
+            log_path = fixture / "output.log"
+            with log_path.open("w") as output:
+                server = subprocess.Popen(["sh", "-c", command], cwd=cwd, env=env, stdout=output,
+                                          stderr=output, stdin=slave, start_new_session=True)
             try:
                 deadline = time.monotonic() + 15
                 while time.monotonic() < deadline:
-                    log = (cwd / "output.log").read_text()
+                    log = log_path.read_text()
                     assert server.poll() is None, log
                     started = re.search(r"PolySia is running at (http://127\.0\.0\.1:\d+)", log)
                     if started:
@@ -312,16 +334,20 @@ def verify_readme(bundle, release_guide):
                 health = json.loads(request(started.group(1), "/api/v1/health"))
                 assert health["status"] == "ok" and health["version"] == tag, health
                 assert health["artifactSha256"] == digest, health
+                assert "Enter the number beside your choice." in log
             finally:
                 if server.poll() is None:
                     os.killpg(server.pid, signal.SIGTERM)
                 server.wait(timeout=5)
-        print(f"README rejected a changed download and started verified PolySia {tag} ({digest}).")
+        finally:
+            os.close(master)
+            os.close(slave)
+        print(f"README rejected incomplete and changed downloads and started verified PolySia {tag} ({digest}).")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--release-guide", type=Path, default=ROOT / "deploy/guide.sh",
+    parser.add_argument("--release-guide", type=Path, default=ROOT / "install",
                         help="Check the exact guided installation script shipped alongside the bundle.")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--release-bundle", type=Path, help="Check the README against these release bytes.")
