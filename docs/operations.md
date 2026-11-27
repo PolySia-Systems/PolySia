@@ -17,6 +17,20 @@ launcher="$HOME/.local/share/polysia/current/polysia"
 POLYSIA_DB="$PWD/workspace-restored.sqlite3" "$launcher" --port 8766
 ```
 
+### Return to a previous release
+
+Pause use during an upgrade. A version change with an existing database saves a checked copy under `backups/` before switching the launcher. The backup filename starts with the previous release digest. Keep an off-host copy. A snapshot contains only changes committed by the time it was taken.
+
+For a local rollback, stop the application, obtain the verified previous bundle, and install it into a **new** prefix with `python3 -I polysia.pyz --prefix "$HOME/polysia-rollback"`. Use its launcher to restore the matching snapshot to that prefix's unused database path, then start it:
+
+```sh
+mkdir -p "$HOME/polysia-rollback/data"
+"$HOME/polysia-rollback/current/polysia" restore --from /path/to/snapshot.sqlite3 --to "$HOME/polysia-rollback/data/workspace.sqlite3"
+"$HOME/polysia-rollback/current/polysia"
+```
+
+For HTTPS, stop both units on the current server. Follow **Recover an HTTPS site** on a clean supported destination with the previous verified recovery-capable bundle and matching snapshot. Keep the failed installation offline until the owner verifies the restored history. To uninstall local foreground mode, stop it, keep a verified backup outside the install prefix, and remove only the dedicated prefix when ready to discard its history. For a local user service, first run `systemctl --user disable --now polysia.service`, remove its PolySia user unit and run `systemctl --user daemon-reload`.
+
 ## Optional owner-only HTTPS access
 
 On a fresh designated Ubuntu 26.04 LTS amd64 host booted with systemd, use the verified bundle:

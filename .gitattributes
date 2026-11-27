@@ -4,3 +4,5 @@ deploy/start.py text eol=lf
 # Preserve the same UI inputs when producing the verified Linux bundle.
 apps/web/**/*.html text eol=lf
 apps/web/**/*.svg text eol=lf
+
+deploy/guide.sh text eol=lf

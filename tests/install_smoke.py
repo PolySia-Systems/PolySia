@@ -204,6 +204,9 @@ def verify_upgrade(previous):
             previous_schema = db.execute("PRAGMA user_version").fetchone()[0]
         upgraded = install(ROOT / "dist/polysia.pyz")
         assert original["artifactSha256"] != upgraded["artifactSha256"]
+        snapshot, = (prefix / "backups").glob("*.sqlite3")
+        with app(previous_launcher, cwd, snapshot, offline=True) as url:
+            assert json.loads(request(url, "/api/v1/workspace")) == saved
         launcher = upgraded["launcher"]
         with app(launcher, cwd, offline=True) as url:
             health = json.loads(request(url, "/api/v1/health"))
@@ -254,21 +257,37 @@ def verify_readme(bundle):
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     install = readme.split("## Install on Linux", 1)[1].split("\n## ", 1)[0]
     command = re.search(r"```sh\n(.+?)\n```", install, re.S).group(1)
-    tag = re.search(r"https://github\.com/PolySia-Systems/PolySia/releases/download/v([\d.]+)/polysia\.pyz", install).group(1)
+    tag = re.search(r"gh release download v([\d.]+)", command).group(1)
     digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
     assert digest in command, "The README checksum does not match the release bundle"
     with tempfile.TemporaryDirectory(prefix="polysia-readme-") as directory:
         cwd = Path(directory)
-        env = {"HOME": str(cwd), "PATH": os.environ["PATH"]}
-        artifact = cwd / "polysia.pyz"
-        artifact.write_text("open('executed', 'w').close()")
-        rejected = subprocess.run(["sh", "-c", command], cwd=cwd, env=env, capture_output=True, timeout=10)
-        assert rejected.returncode and not (cwd / "executed").exists(), "Changed download was accepted"
+        # Simulate only the private download for offline release checks. The release
+        # operator repeats the published command with real reader credentials.
+        assets = cwd / "assets"
+        assets.mkdir()
+        gh = cwd / "gh"
+        gh.write_text('#!/bin/sh\nset -eu\ncp "$ASSETS/guide.sh" "$ASSETS/polysia.pyz" .\n')
+        gh.chmod(0o700)
+        env = {"HOME": str(cwd), "ASSETS": str(assets), "PATH": str(cwd) + ":" + os.environ["PATH"]}
+        shutil.copyfile(bundle, assets / "polysia.pyz")
+        guide = assets / "guide.sh"
+        guide.write_text('touch "$HOME/executed"\n')
+        def reject_changed():
+            rejected = subprocess.run(["sh", "-c", command], cwd=cwd, env=env, input=b"1\n",
+                                      capture_output=True, timeout=10)
+            assert rejected.returncode and b"FAILED" in rejected.stdout and not (cwd / "executed").exists()
+        reject_changed()
+        shutil.copyfile(ROOT / "deploy/guide.sh", guide)
+        (assets / "polysia.pyz").write_text("invalid download")
+        reject_changed()
 
-        shutil.copyfile(bundle, artifact)
+        shutil.copyfile(bundle, assets / "polysia.pyz")
         with (cwd / "output.log").open("w") as output:
             server = subprocess.Popen(["sh", "-c", command], cwd=cwd, env=env, stdout=output,
-                                      stderr=output, start_new_session=True)
+                                      stderr=output, stdin=subprocess.PIPE, start_new_session=True)
+            server.stdin.write(b"1\n")
+            server.stdin.close()
             try:
                 deadline = time.monotonic() + 15
                 while time.monotonic() < deadline:
