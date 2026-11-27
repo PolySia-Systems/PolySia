@@ -21,10 +21,10 @@ from urllib.parse import urlencode, urlsplit
 
 
 def hostname(value):
-    value = value.strip()
+    value = value.strip().lower()
     if value.startswith("https://"):
         value = value[8:]
-    value = value.removesuffix("/").lower()
+    value = value.removesuffix("/")
     if (len(value) > 253 or "." not in value
             or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in value.split("."))):
         raise ValueError("Enter a hostname such as polysia.example.com, without a path or port.")
@@ -62,11 +62,35 @@ def field(env, prompt, validate, default=None):
             print(exc, file=sys.stderr)
 
 
+def choice(prompt, options):
+    for number, label in enumerate(options, 1):
+        print(f"  {number}  {label}")
+    while True:
+        answer = input(prompt).strip()
+        if answer.isdecimal() and len(answer) == 1 and 1 <= int(answer) <= len(options):
+            return int(answer)
+        print("Enter the number beside your choice.")
+
+
+class TokenDenied(ValueError):
+    pass
+
+
 class API:
     def __init__(self, token):
         self.token = token
 
     def request(self, method, path, body=None, missing=False):
+        while True:
+            try:
+                return self._request(method, path, body, missing)
+            except TokenDenied as error:
+                if not sys.stdin.isatty():
+                    raise
+                print(error)
+                self.token = management_token(True)
+
+    def _request(self, method, path, body, missing):
         conn = http.client.HTTPSConnection("api.cloudflare.com", timeout=20)
         try:
             conn.request(method, "/client/v4" + path,
@@ -78,10 +102,24 @@ class API:
             data = response.read(4194305)
             if len(data) > 4194304:
                 raise ValueError("Cloudflare response exceeded the read limit.")
+            invalid_header = False
+            if response.status == 400:
+                try:
+                    errors = json.loads(data).get("errors", [])
+                    invalid_header = any(detail.get("code") == 6111 for error in errors
+                                         for detail in error.get("error_chain", []))
+                except (ValueError, TypeError, AttributeError):
+                    pass
+            if response.status in (401, 403) or invalid_header:
+                raise TokenDenied(f"Cloudflare denied access (HTTP {response.status}). "
+                                  "Check the management token and its permissions for this site.")
+            if response.status == 429 or response.status >= 500:
+                raise ValueError(f"Cloudflare is temporarily unavailable (HTTP {response.status}). "
+                                 "Wait a moment and rerun the installer on this host.")
             if response.status >= 400:
                 # Error bodies can echo resource names, request parameters or confidential fields.
                 raise ValueError(f"Cloudflare {method} {path.split('?')[0]} returned HTTP {response.status}. "
-                                 "Check the token scope and account settings, then rerun the same command.")
+                                 "Check this resource in the site account before retrying.")
             parsed = json.loads(data)
             if not isinstance(parsed, dict) or parsed.get("success") is not True or "result" not in parsed:
                 raise ValueError("Unexpected Cloudflare response. Check the resource before retrying.")
@@ -442,6 +480,52 @@ def deployment_connector():
     return connector
 
 
+def site_identity(previous, interactive):
+    while True:
+        host = field("POLYSIA_HOSTNAME", "Site address (polysia.example.com)", hostname, previous.get("host"))
+        owner = field("POLYSIA_OWNER_EMAIL", "Owner sign-in email", owner_email, previous.get("owner"))
+        if not interactive:
+            return host, owner
+        print(f"Site: https://{host}\nOwner: {owner}")
+        if previous:
+            return host, owner
+        if choice("Choose 1 or 2: ", ["Continue", "Edit site details"]) == 1:
+            return host, owner
+        if os.getenv("POLYSIA_HOSTNAME") or os.getenv("POLYSIA_OWNER_EMAIL"):
+            raise ValueError("Update the supplied environment settings and retry.")
+
+
+def management_token(interactive):
+    while True:
+        token = (getpass.getpass("Cloudflare API token (hidden): ") if interactive
+                 else sys.stdin.readline(1025).strip())
+        if token and len(token) <= 1024 and all(32 < ord(c) < 127 for c in token):
+            return token
+        if not interactive:
+            raise ValueError("Supply a scoped Cloudflare token on standard input.")
+        print("Paste the API token without spaces. Input is hidden.")
+
+
+def workspace_source():
+    print("No saved workspace on this server. Cloudflare stores the site settings only.")
+    while True:
+        action = choice("Choose 1 or 2: ", ["Restore saved history from a backup",
+                                            "Start a new workspace without past runs"])
+        if action == 2:
+            return None
+        source = Path(input("Absolute path to the backup on this server: ").strip())
+        try:
+            if source.is_absolute() and source.is_file():
+                with source.open("rb") as stream:
+                    if stream.read(16) == b"SQLite format 3\x00":
+                        return source
+                print("This file is not a SQLite workspace backup. Choose another file.")
+                continue
+        except OSError:
+            pass
+        print("The service user cannot read a file at that path. Check the path and its directory permissions.")
+
+
 def setup(*, archive, prefix, install, recovery_id=None, backup=None, empty_workspace=False):
     connector = deployment_connector()
     remote = prefix / "remote"
@@ -453,32 +537,48 @@ def setup(*, archive, prefix, install, recovery_id=None, backup=None, empty_work
         raise ValueError("The installation path is too long for a Unix socket. Choose a shorter prefix.")
     path = remote / "deployment.json"
     previous = json.loads(path.read_bytes()) if path.exists() else {}
-    host = field("POLYSIA_HOSTNAME", "Application hostname (polysia.example.com)", hostname, previous.get("host"))
-    owner = field("POLYSIA_OWNER_EMAIL", "Owner email (owner@example.com)", owner_email, previous.get("owner"))
-    j = Journal(path, host, owner, deferred=bool(recovery_id))
-    token = (getpass.getpass("Cloudflare management API token (hidden): ") if sys.stdin.isatty()
-             else sys.stdin.readline(1025).strip())
-    if not token or not token.isascii() or not all(32 < ord(c) < 127 for c in token) or len(token) > 1024:
-        raise ValueError("Supply a scoped Cloudflare token on standard input or at the hidden prompt.")
-    api = API(token)
+    interactive = sys.stdin.isatty()
+    host, owner = site_identity(previous, interactive)
+    api = API(management_token(interactive))
     zone, account = discover_zone(api, host)
+    j = Journal(path, host, owner, deferred=True)
     for key, actual in (("zone", zone), ("account", account)):
         if j.state.get(key, actual) != actual:
             raise ValueError("The active Cloudflare account or zone has changed.")
         j.state[key] = actual
-    j.save()
     base = "/accounts/" + account
+    database = prefix / "data/workspace.sqlite3"
+    machine = hashlib.sha256(Path("/etc/machine-id").read_bytes() + host.encode()).hexdigest()
+    units = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "systemd/user"
+    origin = units / "polysia-origin.service"
+    tunnel = units / "polysia-tunnel.service"
+    if interactive and not recovery_id:
+        if previous.get("recovery") or previous.get("machine", machine) != machine:
+            recovery_id = "auto"
+        elif previous.get("configured"):
+            credential_file = remote / "connector.token"
+            if (not database.is_file() or not database.stat().st_size or not credential_file.is_file()
+                    or not service_invocations(origin, tunnel)
+                    or credential_file.read_text() != api.request("GET", base + "/cfd_tunnel/" +
+                                                                  previous["tunnel"] + "/token")["result"]):
+                recovery_id = "auto"
+        elif not previous.get("dns"):
+            records = api.rows("/zones/" + zone + "/dns_records", name=host)
+            if records and (len(records) != 1 or records[0].get("comment") != j.state["marker"]):
+                recovery_id = "auto"
     if recovery_id:
         discovered = discover_tunnel(api, zone, host)
         if recovery_id not in ("auto", discovered):
             raise ValueError("The supplied tunnel ID differs from the hostname's DNS target.")
         recovery_id = discovered
+    else:
+        j.deferred = False
+        j.save()
     if j.state.get("recovery") and j.state["recovery"] != recovery_id:
-        raise ValueError("A transfer is incomplete. Choose Recover website again with the same hostname.")
-    database = prefix / "data/workspace.sqlite3"
-    machine = hashlib.sha256(Path("/etc/machine-id").read_bytes() + j.state["host"].encode()).hexdigest()
+        raise ValueError("A transfer is incomplete. Rerun the website installer with the same hostname.")
     if not recovery_id and j.state.get("machine", machine) != machine:
-        raise ValueError("This journal came from another host. Take the previous host offline and choose Recover website.")
+        raise ValueError("This journal came from another host. Take the previous host offline and use --recover.")
+    had_workspace = database.is_file()
     if recovery_id:
         name = select_recovery(api, base, recovery_id, j)
         if backup and database.exists():
@@ -486,21 +586,12 @@ def setup(*, archive, prefix, install, recovery_id=None, backup=None, empty_work
         if not database.exists() and not (empty_workspace or backup):
             if not sys.stdin.isatty():
                 raise ValueError("Supply --workspace-backup FILE or explicitly choose --empty-workspace.")
-            print("No workspace was found on this server. Cloudflare cannot restore saved runs.")
-            choice = input("Enter the absolute backup path on this server, or type EMPTY to start without history: ").strip()
-            if choice == "EMPTY":
-                empty_workspace = True
-            elif Path(choice).is_absolute():
-                backup = Path(choice)
-            else:
-                raise ValueError("Recovery stopped. Rerun with a readable backup or explicitly choose EMPTY.")
+            backup = workspace_source()
+            empty_workspace = backup is None
         if backup and not backup.is_file():
             raise ValueError("The service user must be able to read the workspace backup.")
         j.state.update(marker=name, recovery=recovery_id)
     name = j.state["marker"]
-    units = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "systemd/user"
-    origin = units / "polysia-origin.service"
-    tunnel = units / "polysia-tunnel.service"
     origin_text = unit_text("PolySia protected workspace", [sys.executable, "-I", prefix / "current/polysia",
                             "--origin-socket", sock, "--public-host", host, "--owner-email", owner], name)
     tunnel_text = unit_text("PolySia authenticated tunnel", [connector, "tunnel", "--no-autoupdate", "run",
@@ -510,7 +601,7 @@ def setup(*, archive, prefix, install, recovery_id=None, backup=None, empty_work
     if (not recovery_id and j.state.get("configured") and (origin.exists() or j.state.get("machine"))
             and (not database.is_file() or not database.stat().st_size)):
         raise ValueError(f"The saved workspace at {database} is missing or empty. Preserve any remaining data. "
-                         "Choose Recover website on a host with a valid workspace or a clean data directory.")
+                         "Use --recover on a host with a valid workspace or a clean data directory.")
     try:
         tunnel_url, app, team, move_socket = provision(api, base, zone, host, owner, j, sock, recovery_id)
     except UnsafeAccess:
@@ -518,6 +609,11 @@ def setup(*, archive, prefix, install, recovery_id=None, backup=None, empty_work
             command("systemctl", "--user", "disable", "--now", tunnel.name)
         raise
     access = json.dumps({"team": team, "audience": app["aud"]}) + "\n"
+    if not recovery_id and previous.get("configured"):
+        clients = api.request("GET", tunnel_url + "/connections")["result"]
+        if (not isinstance(clients, list) or len(clients) > 1 or
+                (clients and previous.get("connector") and resource_id(clients[0]) != previous["connector"])):
+            raise ValueError("Another connector may be serving this site. Check the previous host before continuing.")
     if not recovery_id or previous.get("artifact"):
         credential = api.request("GET", tunnel_url + "/token")["result"]
         if not valid_token(credential):
@@ -525,7 +621,7 @@ def setup(*, archive, prefix, install, recovery_id=None, backup=None, empty_work
         local_token = remote / "connector.token"
         if not recovery_id and previous.get("configured") and local_token.is_file() and local_token.read_text() != credential:
             raise ValueError("The tunnel credential has changed. Confirm which host should serve this site. "
-                             "For a transfer, take the previous host offline and choose Recover website.")
+                             "For a transfer, take the previous host offline and rerun the website installer.")
     # A healthy rerun can finish without changing the journal or withdrawing service.
     if (not move_socket and previous.get("artifact") and not previous.get("recovery")
             and database.is_file() and database.stat().st_size
@@ -539,10 +635,21 @@ def setup(*, archive, prefix, install, recovery_id=None, backup=None, empty_work
                 and healthy_connector(api, tunnel_url) == previous.get("connector")):
             check_origin(sock, host)
             install(archive, prefix)
-            print(f"PolySia is already running at https://{host}. No restart was needed.")
+            print(f"Already running at https://{host}. No restart was needed.\n"
+                  "Sign in as the owner. Saved history is available. You can close SSH.")
             return
     if recovery_id:
-        disconnected(api, tunnel_url)
+        if interactive:
+            print(f"Verified the existing owner-only site at https://{host}.")
+            print("Keep the previous host offline. Reconnecting will replace its tunnel credential.")
+            if choice("Choose 1 or 2: ", ["Reconnect on this server", "Cancel"]) == 2:
+                raise ValueError("Transfer cancelled before changing the site.")
+        if previous.get("recovery") == recovery_id and tunnel.exists():
+            # A previous transfer may have started our verified local unit just before SSH closed.
+            command("systemctl", "--user", "disable", "--now", tunnel.name)
+            wait_for(lambda: disconnected(api, tunnel_url), 30)
+        else:
+            disconnected(api, tunnel_url)
     j.deferred = False
     j.save()
     installed = install(archive, prefix)
@@ -585,9 +692,12 @@ def setup(*, archive, prefix, install, recovery_id=None, backup=None, empty_work
     j.state.update(machine=machine, artifact=installed["artifactSha256"], connector=client,
                    invocations=service_invocations(origin, tunnel))
     j.save()
-    print(f"PolySia is ready for owner sign-in at https://{host}.\n"
-          f"Installed artifact {installed['artifactSha256'][:12]}. Anonymous browser and API access require sign-in.\n"
-          "To withdraw access, run systemctl --user disable --now polysia-tunnel.service.")
+    history = "Saved workspace in use" if had_workspace else "New workspace"
+    if backup:
+        history = "Restored from backup"
+    print(f"Site ready: https://{host}\nOpen the link and sign in with your owner email.\n"
+          f"Only the owner has access. Trading is simulated.\nHistory: {history}.\nYou can close SSH. The website stays online.")
+
 
 
 def provision(api, base, zone, host, owner, j, sock, recovery_id):
@@ -602,7 +712,7 @@ def provision(api, base, zone, host, owner, j, sock, recovery_id):
         if recovery_id:
             raise ValueError("The DNS record does not match this PolySia deployment. Check the original site hostname and DNS record.")
         raise ValueError("DNS already contains a record at this hostname. For an existing PolySia site, "
-                         "choose Recover website. For a new site, choose an unused hostname.")
+                         "use --recover. For a new site, choose an unused hostname.")
     if any(a.get("name") != name for a in relevant):
         raise UnsafeAccess("Another Access application covers this hostname. Choose an unused name.")
     providers = [row for row in api.rows(base + "/access/identity_providers") if row.get("type") == "onetimepin"]

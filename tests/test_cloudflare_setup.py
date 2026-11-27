@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from deploy.cloudflare_setup import (
-    LEGACY_SOCKET, SERVICE_SOCKET, discover_tunnel, Journal, UnsafeAccess, setup, login_team, healthy_connector, provision, select_recovery, transfer_token, applies, check_local_service, configure_ingress, disconnected, hostname, owner_email, verify_app, verify_policy,
+    API, LEGACY_SOCKET, SERVICE_SOCKET, discover_tunnel, Journal, UnsafeAccess, setup, login_team, healthy_connector, provision, select_recovery, transfer_token, applies, check_local_service, configure_ingress, disconnected, hostname, owner_email, verify_app, verify_policy,
 )
 
 
@@ -39,7 +39,7 @@ class DeploymentTests(unittest.TestCase):
                     check_local_service()
 
     def test_fields_and_existing_path_application(self):
-        self.assertEqual(hostname("https://APP.Example.com/"), "app.example.com")
+        self.assertEqual(hostname("  HTTPS://APP.Example.com/ "), "app.example.com")
         self.assertEqual(owner_email(" Owner@Example.com "), "owner@example.com")
         for value in ("app.example.com/private", "user@app.example.com", "app.example.com:443"):
             with self.assertRaises(ValueError):
@@ -47,6 +47,20 @@ class DeploymentTests(unittest.TestCase):
         app = {"destinations": [{"type": "public", "uri": "*.example.com/admin"}]}
         self.assertTrue(applies(app, "app.example.com"))
         self.assertFalse(applies(app, "unrelated.test"))
+
+    def test_rejected_token_can_be_replaced_without_restarting_or_retrying_network_errors(self):
+        api = API("first-test-token")
+        with patch("deploy.cloudflare_setup.http.client.HTTPSConnection") as connect, \
+                patch("sys.stdin.isatty", return_value=True), patch("getpass.getpass", return_value="replacement") as prompt:
+            denied, ok = Mock(status=400), Mock(status=200)
+            denied.read.return_value = b'{"errors":[{"error_chain":[{"code":6111}]}]}'
+            ok.read.return_value = b'{"success":true,"result":[]}'
+            connect.return_value.getresponse.side_effect = [denied, ok, OSError("network unavailable")]
+            self.assertEqual(api.request("GET", "/zones")["result"], [])
+            self.assertEqual(api.token, "replacement")
+            with self.assertRaises(OSError):
+                api.request("GET", "/zones")
+            prompt.assert_called_once()
 
     def test_only_one_identity_and_hostname(self):
         row = {"type": "self_hosted", "name": "ours", "domain": "app.example.com", "aud": "a" * 64,
@@ -293,7 +307,15 @@ class RecoveryTests(unittest.TestCase):
             installed.assert_not_called()
             self.assertFalse((prefix / "remote/deployment.json").exists())
             active = False
-            setup(prefix=prefix, archive=archive, install=installed, recovery_id="auto", empty_workspace=True)
+            # The ordinary website journey discovers the existing DNS target with no journal.
+            with patch("sys.stdin.isatty", return_value=True), patch("getpass.getpass", return_value="management"):
+                with patch("builtins.input", side_effect=["1", "2", "2"]):
+                    with self.assertRaisesRegex(ValueError, "cancelled"):
+                        setup(prefix=prefix, archive=archive, install=installed)
+                self.assertFalse((prefix / "remote/deployment.json").exists())
+                self.assertEqual(rotations, [])
+                with patch("builtins.input", side_effect=["1", "1", "relative.db", "۲", "۱"]):
+                    setup(prefix=prefix, archive=archive, install=installed)
             self.assertTrue(active)
             self.assertEqual(len(rotations), 1)
             calls.clear()
@@ -301,12 +323,12 @@ class RecoveryTests(unittest.TestCase):
             setup(prefix=prefix, archive=archive, install=installed)
             credential = prefix / "remote/connector.token"
             credential.write_text("old-test-connector-credential")
-            with self.assertRaisesRegex(ValueError, "credential has changed.*choose Recover website"):
+            with self.assertRaisesRegex(ValueError, "credential has changed.*rerun the website installer"):
                 setup(prefix=prefix, archive=archive, install=installed)
             credential.write_text(token)
             database = prefix / "data/workspace.sqlite3"
             database.unlink()
-            with self.assertRaisesRegex(ValueError, "workspace.*missing or empty.*Choose Recover website"):
+            with self.assertRaisesRegex(ValueError, "workspace.*missing or empty.*--recover"):
                 setup(prefix=prefix, archive=archive, install=installed)
             database.write_bytes(b"test workspace")
             self.api.rows.side_effect = OSError("read failed")

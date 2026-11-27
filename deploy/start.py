@@ -29,6 +29,8 @@ def serve_installed(server):
         url = f"http://127.0.0.1:{server.server_port}"
         print(f"PolySia is running at {url}", flush=True)
         print(f"Version {health['version']} · Storage healthy · Simulated trading", flush=True)
+        if not os.environ.get("NOTIFY_SOCKET"):
+            print("Open the address on this Linux machine. Closing this terminal stops local mode.", flush=True)
         print("To try it offline, open Discover and choose Try a shadow replay.", flush=True)
         # A managed start finishes only after this process has served its own readiness probe.
         address = os.environ.get("NOTIFY_SOCKET")

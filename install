@@ -2,8 +2,8 @@
 # The release digest is checked by make release-check before and after publication.
 set -eu
 umask 077
-version=0.5.6
-sha256=c53caf7a553b657e7da7596fa4545607723b09fdfccf9a5195257ac2a4a74679
+version=0.6.0
+sha256=1a93163a3a0b93a8fdff97b5f6ea16ad953b6772d988f81ade79b0936bd5dc48
 release="https://github.com/PolySia-Systems/PolySia/releases/download/v$version/polysia.pyz"
 
 fail() { printf 'PolySia: %s\n' "$*" >&2; exit 1; }
@@ -20,13 +20,12 @@ runtime_ready() {
 [ "$(uname -s)" = Linux ] || fail 'Open a terminal on the Linux machine where PolySia should run.'
 [ -t 0 ] || fail 'Open an interactive terminal on the target machine. For SSH, allocate a terminal.'
 printf '\nPolySia %s\n\n' "$version"
-printf '%s\n' '  1  Local workspace     Use only on this machine while the terminal is open' \
-               '  2  Private website     Open in your browser, even after you disconnect' \
-               '  3  Recover website     After a server replacement or snapshot restore'
+printf '%s\n' '  1  Local workspace     Open on this machine' \
+               '  2  Private website     Open from your phone or computer'
 while :; do
-    printf '\nChoose 1, 2 or 3: '
-    IFS= read -r mode || fail 'Input closed. Rerun the install command when ready.'
-    case "$mode" in 1|2|3) break ;; *) printf '%s\n' 'Enter the number beside your choice.' ;; esac
+    printf '\nChoose 1 or 2: '
+    read -r mode || fail 'Input closed. Rerun the install command when ready.'
+    case "$mode" in 1|۱|١) mode=1; break ;; 2|۲|٢) mode=2; break ;; *) printf '%s\n' 'Enter the number beside your choice.' ;; esac
 done
 
 ID=unknown
@@ -40,10 +39,7 @@ if [ "$mode" != 1 ]; then
         fail 'A private website needs a dedicated Ubuntu 26.04 LTS amd64 server running systemd.'
     python=/usr/bin/python3
     set -- --prepare-cloudflare-host
-    if [ "$mode" = 3 ]; then
-        set -- "$@" --recover
-        printf '%s\n' 'Keep the former host offline. Have its workspace backup ready if you need its history.'
-    fi
+    printf '%s\n' 'Have your site address, owner email and Cloudflare API token ready.'
 fi
 if [ "$mode" != 1 ] || ! runtime_ready; then
     [ "$(id -u)" = 0 ] || command -v sudo >/dev/null ||

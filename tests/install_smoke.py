@@ -312,7 +312,7 @@ esac
             assert rejected.returncode and b"integrity check" in rejected.stderr and not (cwd / "executed").exists()
             assert not (cwd / ".local").exists()
             shutil.copyfile(bundle, archive)
-            os.write(master, b"wrong\n1\n")
+            os.write(master, "wrong\n ۱ \n".encode())
             log_path = fixture / "output.log"
             with log_path.open("w") as output:
                 server = subprocess.Popen(["sh", "-c", command], cwd=cwd, env=env, stdout=output,

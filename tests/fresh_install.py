@@ -20,7 +20,8 @@ def main():
     digest = re.search(r"^sha256=([0-9a-f]{64})$", entry, re.M)[1]
     guide = (ROOT / "README.md").read_text(encoding="utf-8")
     section = guide.split("## Install on Linux", 1)[1].split("\n## ", 1)[0]
-    command = re.search(r"```sh\n(.+?)\n```", section, re.S)[1]
+    standard, command = re.findall(r"```sh\n(.+?)\n```", section, re.S)
+    assert standard in command, "Both copy buttons must start the same installer"
     if args.candidate:
         assert command.count("releases/latest/download/install") == 1
         command = command.replace("releases/latest/download/install", f"releases/download/v{version}/install")
@@ -49,7 +50,7 @@ def main():
         page = subprocess.check_output(["docker", "exec", container, "curl", "-qfsS", "http://127.0.0.1:8765/"])
         assert b"/assets/" in page, "The installed web UI has no built assets"
         log = subprocess.check_output(["docker", "logs", container], stderr=subprocess.STDOUT)
-        assert b"Choose 1, 2 or 3:" in log and b"Geographic area:" not in log
+        assert b"Choose 1 or 2:" in log and b"Geographic area:" not in log
         print(f"Fresh Ubuntu reached PolySia {version} ({digest}) with a single local-mode choice.")
     except (AssertionError, ValueError, subprocess.SubprocessError):
         subprocess.run(["docker", "logs", "--tail", "24", container], check=False)
