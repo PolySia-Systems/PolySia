@@ -1,3 +1,3 @@
 """Local read-only research and simulated replay workspace."""
 
-VERSION = "0.5.4"
+VERSION = "0.5.5"

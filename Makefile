@@ -8,7 +8,7 @@ BROWSER_ENV := .venv
 BROWSER_TOOLS := $(BROWSER_ENV)/.polysia-installed
 
 .PHONY: setup web build run check browser-test provider-test install-test verify
-.PHONY: release-check
+.PHONY: release-check fresh-install-check
 .DEFAULT_GOAL := setup
 
 setup: web
@@ -48,5 +48,8 @@ RELEASE_GUIDE ?= install
 
 release-check:
 	$(PYTHON) tests/install_smoke.py --release-bundle "$(RELEASE_BUNDLE)" --release-guide "$(RELEASE_GUIDE)"
+
+fresh-install-check:
+	$(PYTHON) tests/fresh_install.py $(FRESH_INSTALL_ARGS)
 
 verify: check browser-test install-test

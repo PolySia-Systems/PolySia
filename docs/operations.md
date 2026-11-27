@@ -11,7 +11,7 @@ On a stripped-down Ubuntu server, copy this block once into the destination term
   set -e
   if [ "$(id -u)" = 0 ]; then set --; else set -- sudo; fi
   "$@" apt-get -qq update
-  "$@" apt-get -y --no-install-recommends --no-remove install curl ca-certificates
+  "$@" env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -qy --no-install-recommends --no-remove install curl ca-certificates </dev/null
   polysia=$(curl -qfsSL --proto '=https' https://github.com/PolySia-Systems/PolySia/releases/latest/download/install) && sh -c "$polysia"
 )
 ```
@@ -100,7 +100,7 @@ make check         # Python domain, provider-contract and HTTP tests
 make verify        # Also run the Chromium journey and offline installation checks
 ```
 
-For a release, build the bundle, set its version and SHA-256 in the top-level [install script](../install), and run `make verify` followed by `make release-check` on isolated Linux with port 8765 free. The check exercises the README command in a terminal and supplies only the network responses. Publish the tested `polysia.pyz` and `install` files. Mark that verified release as latest. The stable README command follows the published installer, which pins its own bundle. Download both files anonymously and repeat `make release-check RELEASE_BUNDLE=/path/to/polysia.pyz RELEASE_GUIDE=/path/to/install`. Finally run the published README command on a clean target with no GitHub login. If distribution becomes private, retain a reachable installation entry and design the download authorization before changing visibility.
+For a release, build the bundle, set its version and SHA-256 in the top-level [install script](../install), and run `make verify` followed by `make release-check` on isolated Linux with port 8765 free. That check exercises the README command in a terminal with controlled download responses. Upload the tested `polysia.pyz` and `install` as a prerelease. On a machine with Docker, run `make fresh-install-check FRESH_INSTALL_ARGS=--candidate` to exercise the real downloads and package installation on minimal Ubuntu before promotion. Mark the passing release as latest. Rerun `make fresh-install-check` with the published instructions and `make release-check RELEASE_BUNDLE=/path/to/polysia.pyz RELEASE_GUIDE=/path/to/install` with both anonymously downloaded assets. Exercise the live owner-only route when it changes. If distribution becomes private, retain a reachable installation entry and design the download authorization before changing visibility.
 
 Run `make provider-test` for the optional network check. It installs the artifact in a temporary directory, samples a share-limited SELL window, reads the real public rankings, inspects one profile and its realized P/L history, watches that public address, samples one public shadow window and removes the watch. The regular verification suite runs with controlled inputs. With a prior bundle available, run `python3 tests/install_smoke.py --upgrade-from /path/to/previous.pyz` after building to verify state survives an actual upgrade.
 

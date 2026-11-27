@@ -2,8 +2,8 @@
 # The release digest is checked by make release-check before and after publication.
 set -eu
 umask 077
-version=0.5.4
-sha256=44b933216d6c38e58284bce96d27903389da52c9f8d0dcb743379e0291faec58
+version=0.5.5
+sha256=9dfb3c0c15a0eae5f85725d9e7c5512a017e9263e9503c74c103bf73e7cb1080
 release="https://github.com/PolySia-Systems/PolySia/releases/download/v$version/polysia.pyz"
 
 fail() { printf 'PolySia: %s\n' "$*" >&2; exit 1; }
@@ -79,7 +79,9 @@ if ! runtime_ready; then
     esac
     printf '%s\n' 'Installing Python and SQLite support from Ubuntu...'
     as_admin /usr/bin/apt-get -qq update
-    as_admin /usr/bin/apt-get -y --no-install-recommends --no-upgrade --no-remove install python3 libpython3-stdlib
+    as_admin /usr/bin/env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l \
+        /usr/bin/apt-get -qy -o Dpkg::Use-Pty=0 --no-install-recommends --no-upgrade --no-remove \
+        install python3 libpython3-stdlib </dev/null
     python=/usr/bin/python3
     runtime_ready || fail 'The Ubuntu Python runtime could not load SQLite. Check the system packages and retry.'
 fi
