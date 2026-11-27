@@ -6,12 +6,12 @@ Follow a public Polymarket wallet with simulated cash. See which orders your bud
 
 ## Install on Linux
 
-You need a single-user Linux machine with Python 3.12 or newer, SQLite support in Python, and `sha256sum`. Use your existing GitHub access to [download polysia.pyz](https://github.com/PolySia-Systems/PolySia/releases/download/v0.5.1/polysia.pyz). You can transfer this file to an offline machine. Only the download needs GitHub access.
+You need a single-user Linux machine with Python 3.12 or newer, SQLite support in Python, and `sha256sum`. Use your existing GitHub access to [download polysia.pyz](https://github.com/PolySia-Systems/PolySia/releases/download/v0.5.2/polysia.pyz). You can transfer this file to an offline machine. Only the download needs GitHub access.
 
 Save `polysia.pyz` in a folder only you can change. Open a terminal in that folder. Copy and run both lines together to check the file and start PolySia.
 
 ```sh
-printf '%s  polysia.pyz\n' 9045a276038050adad8e7c9b77ad15894bec1c4ecc2a135dc0fa83797c31fe38 | sha256sum -c - &&
+printf '%s  polysia.pyz\n' 5df5e6e7f1818762353620dae88c8c69074b75660883b0ef123a0b2e4c915343 | sha256sum -c - &&
   python3 -I ./polysia.pyz --start
 ```
 

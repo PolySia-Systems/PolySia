@@ -243,28 +243,40 @@ def disconnected(api, tunnel_url):
         raise ValueError("The tunnel has an active connector. Confirm exclusive ownership before retrying.")
 
 
-def configure_ingress(api, cfg_url, host, sock, team, aud, already_configured):
+LEGACY_SOCKET = "/var/lib/polysia-test/.local/share/polysia/remote/origin.sock"
+SERVICE_SOCKET = "/var/lib/polysia-service/.local/share/polysia/remote/origin.sock"
+
+
+def configure_ingress(api, cfg_url, host, sock, team, aud, already_configured, *, allow_legacy=False, transfer_url=None):
     """With no known team, accept only a fresh, disconnected tunnel with no routable upstream."""
     expected = [{"hostname": host, "service": "unix:" + str(sock), "originRequest": {
         "httpHostHeader": host, "access": {"required": True, "teamName": team, "audTag": [aud]}}},
         {"service": "http_status:404"}]
 
-    def rules():
+    def read():
         result = api.request("GET", cfg_url, missing=True)["result"] or {}
         config = result.get("config") or {}
-        if config.get("originRequest") or (config.get("warp-routing") or {}).get("enabled"):
+        if config.keys() - {"ingress", "warp-routing", "originRequest"}:
+            raise ValueError("Unrecognized tunnel settings. Inspect the configuration before retrying.")
+        if config.get("originRequest") or config.get("warp-routing") not in (None, {}, {"enabled": False}):
             raise UnsafeAccess("Conflicting global tunnel configuration.")
-        entries = config.get("ingress") or []
-        return [{k: v for k, v in rule.items() if not (k == "originRequest" and v == {})} for rule in entries]
+        rules = [{k: v for k, v in rule.items() if not (k == "originRequest" and v == {})}
+                 for rule in config.get("ingress", [])]
+        return config, rules
 
-    prior = rules()
+    config, prior = read()
     if team and prior == expected:
         return
-    if already_configured or prior not in ([], [{"service": "http_status:404"}]):
+    legacy = [{**expected[0], "service": "unix:" + LEGACY_SOCKET}, expected[1]]
+    if (allow_legacy or transfer_url) and team and str(sock) == SERVICE_SOCKET and prior == legacy:
+        if allow_legacy:
+            return True  # Defer migration until workspace verification succeeds.
+        disconnected(api, transfer_url)
+    elif already_configured or prior not in ([], [{"service": "http_status:404"}]):
         raise UnsafeAccess("Unexpected tunnel configuration. Inspect it before retrying.")
     if team:
-        api.request("PUT", cfg_url, {"config": {"ingress": expected}})
-        if rules() != expected:
+        api.request("PUT", cfg_url, {"config": {**config, "ingress": expected}})
+        if read()[1] != expected:
             raise ValueError("Cloudflare has not confirmed the owner-protected ingress rules.")
 
 
@@ -322,6 +334,21 @@ def ensure_unit(path, definition, create):
             staged = Path(folder) / path.name
             staged.write_text(definition)
             os.link(staged, path)
+
+
+def discover_tunnel(api, zone, host):
+    dns = "/zones/" + zone + "/dns_records"
+    records = api.rows(dns, name=host)
+    if len(records) != 1 or records[0].get("name") != host or records[0].get("type") != "CNAME" or records[0].get("proxied") is not True:
+        raise ValueError("Recovery requires one proxied tunnel CNAME for this hostname.")
+    target = records[0].get("content") or ""
+    tunnel_id = target.removesuffix(".cfargotunnel.com")
+    if not target.endswith(".cfargotunnel.com") or not re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", tunnel_id):
+        raise ValueError("The hostname does not point to a Cloudflare tunnel.")
+    aliases = api.rows(dns, type="CNAME", **{"content.exact": target})
+    if len(aliases) != 1 or resource_id(aliases[0]) != resource_id(records[0]):
+        raise ValueError("The tunnel DNS target must belong to this hostname alone in its zone.")
+    return tunnel_id
 
 
 def select_recovery(api, base, tunnel_id, journal):
@@ -440,12 +467,17 @@ def setup(*, archive, prefix, install, recovery_id=None, backup=None, empty_work
         j.state[key] = actual
     j.save()
     base = "/accounts/" + account
+    if recovery_id:
+        discovered = discover_tunnel(api, zone, host)
+        if recovery_id not in ("auto", discovered):
+            raise ValueError("The supplied tunnel ID differs from the hostname's DNS target.")
+        recovery_id = discovered
     if j.state.get("recovery") and j.state["recovery"] != recovery_id:
-        raise ValueError("A transfer is incomplete. Rerun with the original --recover-tunnel ID.")
+        raise ValueError("A transfer is incomplete. Rerun with the same hostname and --recover.")
     database = prefix / "data/workspace.sqlite3"
     machine = hashlib.sha256(Path("/etc/machine-id").read_bytes() + j.state["host"].encode()).hexdigest()
     if not recovery_id and j.state.get("machine", machine) != machine:
-        raise ValueError("This journal came from another host. Use --recover-tunnel with its tunnel ID.")
+        raise ValueError("This journal came from another host. Use --recover for a host transfer.")
     if recovery_id:
         name = select_recovery(api, base, recovery_id, j)
         if backup and database.exists():
@@ -469,23 +501,23 @@ def setup(*, archive, prefix, install, recovery_id=None, backup=None, empty_work
             and (not database.is_file() or not database.stat().st_size)):
         raise ValueError("The saved workspace is missing or empty. Inspect the data directory and use --recover-tunnel.")
     try:
-        tunnel_url, app, team = provision(api, base, zone, host, owner, j, sock, recovery_id)
+        tunnel_url, app, team, move_socket = provision(api, base, zone, host, owner, j, sock, recovery_id)
     except UnsafeAccess:
-        if tunnel.exists() and previous.get("configured") and previous["marker"] == name:
+        if not recovery_id and tunnel.exists() and previous.get("configured") and previous["marker"] == name:
             command("systemctl", "--user", "disable", "--now", tunnel.name)
         raise
-    j.deferred = False
-    j.save()
     access = json.dumps({"team": team, "audience": app["aud"]}) + "\n"
-    if not recovery_id:
+    if not recovery_id or previous.get("artifact"):
         credential = api.request("GET", tunnel_url + "/token")["result"]
         if not valid_token(credential):
             raise ValueError("The connector credential is unavailable.")
         local_token = remote / "connector.token"
-        if previous.get("configured") and local_token.is_file() and local_token.read_text() != credential:
+        if not recovery_id and previous.get("configured") and local_token.is_file() and local_token.read_text() != credential:
             raise ValueError("The tunnel credential has changed. Confirm the active host and use --recover-tunnel.")
-    installed = install(archive, prefix)
-    if not recovery_id and previous.get("artifact") == installed["artifactSha256"]:
+    # A healthy rerun can finish without changing the journal or withdrawing service.
+    if (not move_socket and previous.get("artifact") and not previous.get("recovery")
+            and database.is_file() and database.stat().st_size
+            and previous["artifact"] == hashlib.sha256(archive.read_bytes()).hexdigest()):
         invocations = service_invocations(origin, tunnel)
         token_file = remote / "connector.token"
         access_file = remote / "access.json"
@@ -494,8 +526,14 @@ def setup(*, archive, prefix, install, recovery_id=None, backup=None, empty_work
                 and access_file.is_file() and access_file.read_text() == access
                 and healthy_connector(api, tunnel_url) == previous.get("connector")):
             check_origin(sock, host)
+            install(archive, prefix)
             print(f"PolySia is already running at https://{host}. No restart was needed.")
             return
+    if recovery_id:
+        disconnected(api, tunnel_url)
+    j.deferred = False
+    j.save()
+    installed = install(archive, prefix)
     if recovery_id and (database.exists() or backup):
         database.parent.mkdir(mode=0o700, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=remote) as directory:
@@ -513,6 +551,9 @@ def setup(*, archive, prefix, install, recovery_id=None, backup=None, empty_work
         credential = transfer_token(api, tunnel_url, name)
     if not valid_token(credential):
         raise ValueError("The connector credential is unavailable.")
+    if move_socket:
+        configure_ingress(api, tunnel_url + "/configurations", host, sock, team, app["aud"], True,
+                          transfer_url=tunnel_url)
     write_private(remote / "connector.token", credential)
     ensure_unit(origin, origin_text, True)
     ensure_unit(tunnel, tunnel_text, True)
@@ -547,7 +588,7 @@ def provision(api, base, zone, host, owner, j, sock, recovery_id):
         raise UnsafeAccess("The recorded Access application is missing. Inspect its hostname and owner policy.")
     if records and (len(records) != 1 or records[0].get("comment") != name):
         raise ValueError("DNS already contains a record at this hostname. See Recover an HTTPS site "
-                         "in the operations guide for --recover-tunnel, or choose an unused hostname.")
+                         "in the operations guide for --recover, or choose an unused hostname.")
     if any(a.get("name") != name for a in relevant):
         raise UnsafeAccess("Another Access application covers this hostname. Choose an unused name.")
     providers = [row for row in api.rows(base + "/access/identity_providers") if row.get("type") == "onetimepin"]
@@ -608,7 +649,8 @@ def provision(api, base, zone, host, owner, j, sock, recovery_id):
     team = observed
     j.state["team"] = team
     j.save()
-    configure_ingress(api, cfg_url, host, sock, team, app["aud"], recovery_id or j.state.get("configured"))
+    move_socket = configure_ingress(api, cfg_url, host, sock, team, app["aud"], recovery_id or j.state.get("configured"),
+                                    allow_legacy=bool(recovery_id))
     j.state["configured"] = True
     j.save()
-    return tunnel_url, app, team
+    return tunnel_url, app, team, move_socket

@@ -180,16 +180,19 @@ def main():
         "Ubuntu 26.04 amd64, root: prepare a dedicated polysia-service user, Ubuntu JWT packages, "
         "pinned cloudflared and boot persistence, then continue owner-only deployment as that user."))
     parser.add_argument("--port", type=int, help="Local port for --start or --service (default 8765).")
-    parser.add_argument("--recover-tunnel", type=uuid.UUID, metavar="UUID",
+    recovery = parser.add_mutually_exclusive_group()
+    recovery.add_argument("--recover", dest="recover_tunnel", action="store_const", const="auto",
+                          help="Transfer this hostname's verified PolySia tunnel to the current host.")
+    recovery.add_argument("--recover-tunnel", type=uuid.UUID, metavar="UUID",
                         help="Transfer the selected PolySia tunnel to this host and rotate its connector token.")
     workspace = parser.add_mutually_exclusive_group()
     workspace.add_argument("--workspace-backup", type=Path, metavar="FILE", help="Restore a verified workspace during transfer.")
     workspace.add_argument("--empty-workspace", action="store_true", help="Accept a fresh workspace after losing the original.")
     args = parser.parse_args()
     if args.recover_tunnel and not (args.cloudflare or args.prepare_cloudflare_host):
-        parser.error("--recover-tunnel requires an HTTPS deployment mode.")
+        parser.error("Recovery requires an HTTPS deployment mode.")
     if (args.workspace_backup or args.empty_workspace) and not args.recover_tunnel:
-        parser.error("Workspace recovery options require --recover-tunnel.")
+        parser.error("Workspace recovery options require --recover or --recover-tunnel.")
     os.umask(0o077)
     if args.start and args.json:
         parser.error("--json is available for install-only or --service.")

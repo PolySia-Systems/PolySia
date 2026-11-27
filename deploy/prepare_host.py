@@ -161,7 +161,7 @@ def prepare(archive, recovery_id=None, backup=None, empty_workspace=False):
     # Continue as the service user before prompting for the management token.
     recovery_args = []
     if recovery_id:
-        recovery_args.extend(["--recover-tunnel", str(recovery_id)])
+        recovery_args.extend(["--recover"] if recovery_id == "auto" else ["--recover-tunnel", str(recovery_id)])
         if backup:
             recovery_args.extend(["--workspace-backup", str(backup.absolute())])
         if empty_workspace:
