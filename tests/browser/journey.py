@@ -1121,6 +1121,8 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
         pooled = page.get_by_role("region", name="Shared budget result")
         expect(pooled.get_by_text("0.14256 pUSD cash left")).to_be_visible()
         expect(pooled).to_contain_text("1 modeled sale and 5 quiet windows")
+        pooled.get_by_text("Other recorded decisions", exact=True).click()
+        expect(pooled.get_by_text("Incomplete evidence", exact=True)).to_be_visible()
         for width in (390, 1380):
             page.set_viewport_size({"width": width, "height": 900})
             check_width(page)

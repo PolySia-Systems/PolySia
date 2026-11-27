@@ -59,6 +59,16 @@ export function SharedReplay({runs}: {runs: RunOption[]}) {
       <p>{report.duplicateOrders} repeated orders across runs. {report.missingSaleChecks} missing sale checks. {report.limitedBuys} buys limited by remaining budget or depth.</p>
       <p>Books are processed in receipt order, with ties settled by run ID. Earlier purchases consume the displayed shares at each price for the rest of the replay.</p>
       <p>Only original modeled buys are eligible. The selected journals also contain {report.otherRecordedDecisions.exit ?? 0} modeled {report.otherRecordedDecisions.exit === 1 ? 'sale' : 'sales'} and {report.otherRecordedDecisions.waiting ?? 0} quiet {report.otherRecordedDecisions.waiting === 1 ? 'window' : 'windows'}. This entry-only replay leaves shares open and reports no investment return. Your saved runs keep their original balances.</p>
+      <details><summary>Other recorded decisions</summary>
+        <dl className="paper-metrics">
+          <div><dt>Provider unavailable</dt><dd>{report.otherRecordedDecisions.unavailable ?? 0}</dd></div>
+          <div><dt>Incomplete evidence</dt><dd>{report.otherRecordedDecisions.incomplete ?? 0}</dd></div>
+          <div><dt>Skipped in original runs</dt><dd>{report.otherRecordedDecisions.skipped ?? 0}</dd></div>
+          <div><dt>Duplicates in original runs</dt><dd>{report.otherRecordedDecisions.duplicate ?? 0}</dd></div>
+        </dl>
+      </details>
+      {Boolean(report.otherRecordedDecisions.unavailable || report.otherRecordedDecisions.incomplete) &&
+        <p>{report.otherRecordedDecisions.unavailable ?? 0} unavailable and {report.otherRecordedDecisions.incomplete ?? 0} incomplete observations. Whether another buy would have fit during those windows is unknown.</p>}
     </section>}
   </details>
 }
