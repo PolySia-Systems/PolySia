@@ -2,13 +2,13 @@
 
 Follow a public Polymarket wallet with simulated cash. See which orders your budget could cover, what you would still hold, and why a trade was skipped. You can also practice offline with a fictional trader. PolySia runs on your Linux machine. It never asks for a wallet key or places a real order.
 
-[Install](#install-on-linux) · [Try a replay](#try-your-first-replay) · [Updates and help](#updates-and-help) · [راهنمای شروع](#شروع-سریع)
+[Install](#install-on-linux) · [Try a replay](#try-your-first-replay) · [Updates and help](#updates-and-help)
 
 ## Install on Linux
 
 You need a single-user Linux machine with Python 3.12 or newer, SQLite support in Python, and `sha256sum`. Use your existing GitHub access to [download polysia.pyz](https://github.com/PolySia-Systems/PolySia/releases/download/v0.5.0/polysia.pyz). You can transfer this file to an offline machine. Only the download needs GitHub access.
 
-Open a terminal in a folder only you can change, containing `polysia.pyz`. Paste both lines together to check the download and start PolySia.
+Save `polysia.pyz` in a folder only you can change. Open a terminal in that folder. Copy and run both lines together to check the file and start PolySia.
 
 ```sh
 printf '%s  polysia.pyz\n' 77c6d9873cefdaa8583e3db5d0ab7c088130073171127d7b45ca81a2002c0bea | sha256sum -c - &&
@@ -34,10 +34,6 @@ To try a public wallet, open **Public rankings**, choose a trader, then **Set up
 - **Checksum failed?** Stop there. Download a fresh copy from the linked release and repeat the check. If it still fails, report it.
 - **Local port busy?** Close the other instance, or add `--port 0` after `--start` in the verified command to print a free local address.
 - **Need help?** Include the step, the exact error, your Linux and Python versions, and the build shown in **System status** if the app opens. Leave out tokens, email addresses and workspace data. [Private issue tracker](https://github.com/PolySia-Systems/PolySia/issues)
-
-## شروع سریع
-
-با حساب گیت‌هابی که به مخزن دسترسی دارد، فایل **polysia.pyz** را از [بخش نصب](#install-on-linux) بگیرید. در لینوکس، ترمینال را در پوشهٔ فایل باز کنید و هر دو خط دستور همان بخش را با هم اجرا کنید. اگر بررسی فایل موفق بود، نشانی محلی چاپ‌شده را باز کنید. برای اولین تجربه، در **Discover** گزینهٔ **Try a shadow replay** را بزنید. با **Start shadow** و سپس **Observe next signal** اولین خرید شبیه‌سازی‌شده را می‌بینید.
 
 ## Project and evidence
 

@@ -4,6 +4,10 @@ Start with the current scope, installation command and next evidence gate in [RE
 
 Use the existing checkout in the authorized local or cloud environment. Verify the supported Linux artifact through the Makefile. Create a worktree only when requested. Before editing, check the branch, base commit, working tree and affected contracts. Use the Makefile for setup, run, checks, artifact build and end-to-end verification. Keep generated artifacts and local databases outside source control.
 
+## Repository language
+
+All contributors and AI agents must write project-maintained content in English, including documentation, UI and CLI text, comments, and examples (Master Plan section 5.4). Use short instructions, standard engineering terms, and commands readers can copy. In review, check that a reader with limited English can find the next action and recognize success. Preserve third-party text, user data, identifiers, and conventional notation. Adding a supported language requires an explicit owner decision.
+
 ## Boundaries
 
 - Preserve source attribution, account, mode, units, timestamps and missing data throughout a journey. A watched address gives public read access only. Scenario leaders, book levels, fees and simulated funds are fictional.
