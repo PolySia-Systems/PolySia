@@ -164,6 +164,12 @@ class RecoveryTests(unittest.TestCase):
             self.assertEqual(self.journal.state[name], getattr(self, name))
         self.assertEqual(self.journal.path.read_bytes(), self.original)
 
+    def test_hostname_pointing_to_an_unmanaged_tunnel_stops_discovery(self):
+        self.endpoint["name"] = "another-site"
+        with self.assertRaisesRegex(ValueError, "original site hostname and its DNS record"):
+            self.recover()
+        self.assertEqual(self.journal.path.read_bytes(), self.original)
+
     def test_rejects_other_target_and_missing_policy_without_binding_prefix(self):
         self.record["content"] = "other.cfargotunnel.com"
         with self.assertRaisesRegex(ValueError, "DNS"):
@@ -271,12 +277,14 @@ class RecoveryTests(unittest.TestCase):
             substitute("check_origin")
             substitute("service_invocations", return_value=["a" * 32, "b" * 32])
             substitute("command", side_effect=service)
-            substitute("sys.stdin", new=io.StringIO("test-management\n" * 7))
+            substitute("sys.stdin", new=io.StringIO("test-management\n" * 9))
             stack.enter_context(patch.dict(os.environ, {"POLYSIA_HOSTNAME": self.host, "POLYSIA_OWNER_EMAIL": self.owner,
                                                         "XDG_CONFIG_HOME": str(prefix / "config")}))
             archive = prefix / "test.pyz"
             archive.write_bytes(b"release")
             installed = Mock(return_value={"artifactSha256": hashlib.sha256(archive.read_bytes()).hexdigest()})
+            with self.assertRaisesRegex(ValueError, "differs from the hostname's DNS target"):
+                setup(prefix=prefix, archive=archive, install=installed, recovery_id=self.app)
             with self.assertRaisesRegex(ValueError, "--empty-workspace"):
                 setup(prefix=prefix, archive=archive, install=installed, recovery_id="auto")
             active = True
@@ -291,6 +299,16 @@ class RecoveryTests(unittest.TestCase):
             calls.clear()
             setup(prefix=prefix, archive=archive, install=installed, recovery_id="auto", empty_workspace=True)
             setup(prefix=prefix, archive=archive, install=installed)
+            credential = prefix / "remote/connector.token"
+            credential.write_text("old-test-connector-credential")
+            with self.assertRaisesRegex(ValueError, "credential has changed.*choose Recover website"):
+                setup(prefix=prefix, archive=archive, install=installed)
+            credential.write_text(token)
+            database = prefix / "data/workspace.sqlite3"
+            database.unlink()
+            with self.assertRaisesRegex(ValueError, "workspace.*missing or empty.*Choose Recover website"):
+                setup(prefix=prefix, archive=archive, install=installed)
+            database.write_bytes(b"test workspace")
             self.api.rows.side_effect = OSError("read failed")
             with self.assertRaises(OSError):
                 setup(prefix=prefix, archive=archive, install=installed)

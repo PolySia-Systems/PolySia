@@ -2,29 +2,15 @@
 
 Run the [README install command](../README.md#install-on-linux) in the destination Linux terminal. The shell keeps terminal input available for prompts and runs the installer only after curl completes successfully. The installer downloads the named public release, checks its pinned SHA-256 and runs the existing bundled setup. Website setup stages and runs the verified bundle with administrator privileges. The app runs under its dedicated service user.
 
-### Minimal Ubuntu images
-
-On a stripped-down Ubuntu server, copy this block once into the destination terminal. It obtains the HTTPS client and trust certificates through the signed Ubuntu package sources, then starts the same installer. It works from a root shell or an account with sudo. The application starts as the original user in local mode.
-
-```sh
-(
-  set -e
-  if [ "$(id -u)" = 0 ]; then set --; else set -- sudo; fi
-  "$@" apt-get -qq update
-  "$@" env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -qy --no-install-recommends --no-remove install curl ca-certificates </dev/null
-  polysia=$(curl -qfsSL --proto '=https' https://github.com/PolySia-Systems/PolySia/releases/latest/download/install) && sh -c "$polysia"
-)
-```
-
 Local mode works with Python 3.12 or later and SQLite. On Ubuntu 24.04 and 26.04 the installer can obtain a missing runtime from the distribution. Private HTTPS hosting is supported on Ubuntu 26.04 amd64 with systemd.
 
 For offline use, transfer the bundle privately and verify it against the matching tagged installer's SHA-256 before running `python3 -I polysia.pyz --start` on Linux.
 
 ## Update and recover
 
-The default prefix is `$HOME/.local/share/polysia`. Data lives in `data/workspace.sqlite3` within it. Before an upgrade, back up the running workspace, stop its service or foreground process and install the new bundle into the same prefix. On first start, 0.5.0 marks the database as version 4 so earlier launchers cannot write decisions under outdated rules. Existing public runs retain their recorded policy. To downgrade, restore the matching pre-upgrade backup with the earlier version.
+The default prefix is `$HOME/.local/share/polysia`. Data lives in `data/workspace.sqlite3` within it. Before a local upgrade, back up the running workspace, stop its service or foreground process and install the new bundle into the same prefix. Startup migrates the workspace and preserves the recorded policy for existing public runs. To downgrade, restore the matching pre-upgrade backup with the earlier version.
 
-With a trusted checkout and an independent release digest, operators can use [verified_install.py](../deploy/verified_install.py) with `--release TAG` on an authorized workstation or `--file` after a transfer. Both verify the bytes before invoking the bundled installer. Use `--service` after verification for a persistent local systemd user service with lingering enabled. The default foreground installation works offline.
+For a pinned or offline installation from a trusted checkout, [verified_install.py](../deploy/verified_install.py) verifies a bundle against an independently obtained release digest before running it. Use `--release TAG` to download with GitHub CLI or `--file` with a transferred bundle. The verified bundle supports offline local use and can install a persistent systemd user service with `--service` when lingering is enabled.
 
 To back up a running installation and verify a restore, choose two new file paths in an existing directory. The launcher checks SQLite storage and reconciles replay balances, public shadow positions and cash with their saved decisions before publishing the copy. Both paths must be unused.
 
@@ -53,13 +39,9 @@ For HTTPS, stop both units on the current server. Follow **Recover an HTTPS site
 
 For first setup, use an active zone in your Cloudflare account and enable the [One-time PIN login method](https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/one-time-pin/). Create a [custom API token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/) limited to that account and zone. The installer reads the zone and identity providers, manages DNS records in that zone, and manages tunnels and Access applications and policies in that account. Use Zone Read, DNS Edit, Cloudflare Tunnel Edit, Access Apps and Policies Edit, and Access Organizations, Identity Providers, and Groups Read. Store the token in your password manager. Enter it at the hidden terminal prompt. On a repeat installation, the deployment journal supplies the expected hostname and owner.
 
-On a fresh designated Ubuntu 26.04 LTS amd64 host booted with systemd, use the verified bundle:
+For a first installation or update, run the [README command](../README.md#install-on-linux) on the dedicated server and choose **Private website**. The installer prepares the service user, Ubuntu JWT libraries, a verified cloudflared binary and services that start at boot. It prompts for the management token after dropping root privileges. Keep the Ubuntu package sources and system Python trusted.
 
-```sh
-sudo /usr/bin/python3 -I polysia.pyz --prepare-cloudflare-host
-```
-
-This explicit host-preparation mode creates a dedicated service user, installs the Ubuntu JWT libraries when needed, verifies a pinned cloudflared binary, enables the user service manager at boot, and drops root privileges before requesting the Cloudflare token. Keep the Ubuntu package sources and Python installation trusted. On an already-prepared Linux host use `python3 polysia.pyz --cloudflare`. Run it as a dedicated unprivileged OS user with systemd user services and lingering enabled. The remote interpreter needs PyJWT 2.x with cryptography and the host needs an authenticated cloudflared installation supporting `tunnel run --token-file`. Prepare an active Cloudflare zone, an unused hostname, an existing One-time PIN sign-in method and a management token scoped to the required zone/DNS, tunnel, Access application/policy and identity-provider operations. The installer prompts for the hostname, owner email and hidden management token. For unattended operation supply `POLYSIA_HOSTNAME`, `POLYSIA_OWNER_EMAIL` and the token on standard input from a secret manager. Keep it out of shell history.
+For automation with the verified bundle, run `sudo /usr/bin/python3 -I polysia.pyz --prepare-cloudflare-host` on the supported server. On an already prepared host, run `python3 -I polysia.pyz --cloudflare` as the dedicated service user with a lingering systemd user manager, PyJWT 2.x with cryptography and a trusted cloudflared supporting `tunnel run --token-file`. Supply `POLYSIA_HOSTNAME`, `POLYSIA_OWNER_EMAIL` and a token on standard input from a secret manager for noninteractive use.
 
 Use a fresh, private install prefix for the first HTTPS deployment. The prefix stays reserved for HTTPS on later installs. For a separate local installation, use a single-user machine and a different prefix. When upgrading an earlier HTTPS candidate, stop any old foreground loopback launcher and disable any local `polysia.service` for that workspace first. Backup and restore remain available from the HTTPS installation’s launcher.
 
@@ -69,23 +51,18 @@ After setup, open the printed HTTPS address and sign in with the configured owne
 
 Use the original hostname and owner email. Use a tunnel dedicated to this site. To update on the original machine, back up the database and rerun the HTTPS installer. A matching running release can pass its checks without restarting. If you replace your **management API token**, enter the new token at the next installer prompt. The connector uses a separate credential.
 
-For a replacement host or a restored snapshot, schedule one transfer at a time. Use the transfer command even if the snapshot contains the journal. Clones can share a machine ID. Keep the old host offline, or disable its tunnel and stop its origin before the final database backup. Run service commands in the dedicated user's systemd session:
+For a replacement host or a restored snapshot, schedule one transfer at a time. Choose **Recover website** even if the snapshot contains the journal. Clones can share a machine ID. Keep the old host offline, or disable its tunnel and stop its origin before the final database backup. Run service commands in the dedicated user's systemd session:
 
 ```sh
 systemctl --user disable --now polysia-tunnel.service polysia-origin.service
 "$HOME/.local/share/polysia/current/polysia" backup --to ./final-backup.sqlite3
 ```
 
-Copy the backup privately to the new host. The dedicated service user needs read access to the file and its parent directories. On the new host run the verified recovery-capable bundle:
+Copy the backup privately to the new host. The dedicated service user needs read access to the file and its parent directories. On the new host run the [README command](../README.md#install-on-linux) and choose **Recover website**. The installer verifies an existing workspace. If the workspace is missing, enter the absolute backup path when prompted. Type `EMPTY` only if you accept losing the saved history. Cloudflare retains routing and identity settings.
 
-```sh
-sudo /usr/bin/python3 -I polysia.pyz --prepare-cloudflare-host \
-  --recover --workspace-backup /absolute/path/to/final-backup.sqlite3
-```
+For noninteractive recovery, add `--recover` to the verified bundle's HTTPS setup command. With no workspace on the destination, also pass `--workspace-backup /absolute/path/to/backup.sqlite3` or explicitly choose `--empty-workspace`.
 
-If the destination already has the saved workspace, omit the backup option. The installer verifies that database before reconnecting. If the original workspace was lost and you accept losing its history, replace the backup option with `--empty-workspace`. Cloudflare retains routing and identity settings. It cannot restore saved runs. On a prepared host the same options work with `--cloudflare`.
-
-The installer discovers the tunnel from the hostname's proxied DNS record. It checks the tunnel, its protected socket route, the proxied DNS target and the single-owner Access application and policy. During explicit recovery, it can move the original polysia-test socket to the standard polysia-service socket after it verifies the workspace choice and the entire owner-only route. An already correct route needs no change. It requires the previous connectors to be disconnected, rotates the tunnel credential and starts the replacement. A stopped host with the old credential cannot reconnect. Keep the management token with the operator. If setup stops after rotation, rerun recovery on the intended destination. If the workspace was already restored, omit the backup option. To return to the former host, stop the replacement, transfer the latest verified database and use the same recovery procedure there.
+The installer discovers the tunnel from the hostname's proxied DNS record. It checks the tunnel, its protected socket route, the proxied DNS target and the single-owner Access application and policy. During explicit recovery, it can move the original polysia-test socket to the standard polysia-service socket after it verifies the workspace choice and the entire owner-only route. An already correct route needs no change. It requires the previous connectors to be disconnected, rotates the tunnel credential and starts the replacement. A stopped host with the old credential cannot reconnect. Keep the management token with the operator. If setup stops after rotation, rerun recovery on the intended destination. Recovery reuses an already restored workspace. To return to the former host, stop the replacement, transfer the latest verified database and use the same recovery procedure there.
 
 If inventory is missing, the hostname has another policy, or an unrecognized socket route differs, inspect the named resource in Cloudflare. Preserve existing resources while resolving the conflict. Changing hostname, account, owner or any other install path requires a separately planned move. After success, sign in as the owner, check a saved run and confirm its status and remaining shares. A private browser window without an owner session should show the Access login challenge.
 

@@ -1,4 +1,4 @@
-"""Install the bundled PolySia release locally. No network access is required."""
+"""Install the bundled release offline locally or configure an owner-only HTTPS deployment."""
 
 import argparse
 import fcntl
@@ -193,8 +193,9 @@ def main():
     recovery = parser.add_mutually_exclusive_group()
     recovery.add_argument("--recover", dest="recover_tunnel", action="store_const", const="auto",
                           help="Transfer this hostname's verified PolySia tunnel to the current host.")
+    # Existing scripts may pin an expected UUID. Recovery still discovers and checks the DNS target.
     recovery.add_argument("--recover-tunnel", type=uuid.UUID, metavar="UUID",
-                        help="Transfer the selected PolySia tunnel to this host and rotate its connector token.")
+                          help=argparse.SUPPRESS)
     workspace = parser.add_mutually_exclusive_group()
     workspace.add_argument("--workspace-backup", type=Path, metavar="FILE", help="Restore a verified workspace during transfer.")
     workspace.add_argument("--empty-workspace", action="store_true", help="Accept a fresh workspace after losing the original.")
@@ -202,7 +203,7 @@ def main():
     if args.recover_tunnel and not (args.cloudflare or args.prepare_cloudflare_host):
         parser.error("Recovery requires an HTTPS deployment mode.")
     if (args.workspace_backup or args.empty_workspace) and not args.recover_tunnel:
-        parser.error("Workspace recovery options require --recover or --recover-tunnel.")
+        parser.error("Workspace recovery options require --recover.")
     os.umask(0o077)
     if args.start and args.json:
         parser.error("--json is available for install-only or --service.")

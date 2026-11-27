@@ -23,7 +23,7 @@ def main():
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.sha256):
         parser.error("The expected SHA-256 must contain 64 hexadecimal characters.")
     if args.release is not None and not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}", args.release):
-        parser.error("Choose a version tag such as v0.4.1.")
+        parser.error("Use the version tag from the GitHub release page.")
     options = args.options
     if options[:1] == ["--"]:
         options = options[1:]

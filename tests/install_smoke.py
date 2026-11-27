@@ -268,9 +268,6 @@ def verify_readme(bundle, release_guide):
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     install = readme.split("## Install on Linux", 1)[1].split("\n## ", 1)[0]
     command = re.search(r"```sh\n(.+?)\n```", install, re.S).group(1)
-    operations = (ROOT / "docs/operations.md").read_text(encoding="utf-8")
-    minimal = operations.split("### Minimal Ubuntu images", 1)[1].split("\n## ", 1)[0]
-    assert command in minimal, "The minimal image instructions must start the same installer"
     bootstrap = release_guide.read_bytes()
     assert bootstrap == (ROOT / "install").read_bytes(), "The release installer differs from the reviewed entry"
     tag = re.search(rb"^version=([\d.]+)$", bootstrap, re.M).group(1).decode()

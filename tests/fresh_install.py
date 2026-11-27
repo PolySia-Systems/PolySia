@@ -18,8 +18,8 @@ def main():
     entry = (ROOT / "install").read_text(encoding="utf-8")
     version = re.search(r"^version=([\d.]+)$", entry, re.M)[1]
     digest = re.search(r"^sha256=([0-9a-f]{64})$", entry, re.M)[1]
-    guide = (ROOT / "docs/operations.md").read_text(encoding="utf-8")
-    section = guide.split("### Minimal Ubuntu images", 1)[1].split("\n## ", 1)[0]
+    guide = (ROOT / "README.md").read_text(encoding="utf-8")
+    section = guide.split("## Install on Linux", 1)[1].split("\n## ", 1)[0]
     command = re.search(r"```sh\n(.+?)\n```", section, re.S)[1]
     if args.candidate:
         assert command.count("releases/latest/download/install") == 1
