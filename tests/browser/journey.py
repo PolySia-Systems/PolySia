@@ -79,6 +79,23 @@ def check_width(page: Page):
     assert sizes[0] <= sizes[1], f"Content overflowed the viewport: {sizes}"
 
 
+def check_accent_contrast(page: Page):
+    tokens = page.evaluate("""() => Object.fromEntries(['accent', 'accent-bg', 'bg', 'panel', 'side', 'soft']
+        .map(name => [name, getComputedStyle(document.documentElement).getPropertyValue('--' + name).trim()]))""")
+
+    def luminance(color):
+        digits = color.removeprefix("#")
+        if len(digits) == 3:
+            digits = "".join(digit * 2 for digit in digits)
+        channels = [int(digits[i:i+2], 16) / 255 for i in (0, 2, 4)]
+        linear = [value / 12.92 if value <= .04045 else ((value + .055) / 1.055) ** 2.4 for value in channels]
+        return sum(a * b for a, b in zip(linear, (.2126, .7152, .0722)))
+
+    for key in ("accent-bg", "bg", "panel", "side", "soft"):
+        low, high = sorted((luminance(tokens["accent"]), luminance(tokens[key])))
+        assert (high + .05) / (low + .05) >= 4.5, (key, tokens)
+
+
 def tab_to(page: Page, control: Locator):
     """Reach the control by keyboard, even with other tab stops before it."""
     expect(control).to_be_visible()
@@ -235,11 +252,36 @@ def exercise(browser: Browser, origin: str, output: Path | None):
     expect(holdings).to_have_count(0)
 
     page.get_by_role("link", name="Settings", exact=True).click()
+    forest = page.get_by_role("button", name="Forest (default)", exact=True)
+    ocean = page.get_by_role("button", name="Ocean", exact=True)
+    root = page.locator("html")
+    expect(forest).to_have_attribute("aria-pressed", "true")
+    check_accent_contrast(page)
+    ocean.click()
+    expect(root).to_have_attribute("data-accent", "ocean")
+    check_accent_contrast(page)
+    page.get_by_role("link", name="View discovery", exact=True).click()
+    expect(page.get_by_label("Search leaders")).to_be_visible()
+    expect(root).to_have_attribute("data-accent", "ocean")
+    assert page.request.get(origin + "/api/v1/workspace").json()["accent"] == {"preset": "forest", "revision": 0}
+    page.get_by_role("link", name="Return to Settings", exact=True).click()
+    page.get_by_role("button", name="Discard preview").click()
+    expect(root).to_have_attribute("data-accent", "forest")
     dark = page.get_by_role("button", name="Dark", exact=True)
     dark.click()
     expect(dark).to_have_attribute("aria-pressed", "true")
+    check_accent_contrast(page)
+    ocean.click()
+    expect(root).to_have_attribute("data-accent", "ocean")
+    check_accent_contrast(page)
+    page.get_by_role("button", name="Publish accent").click()
+    expect(page.get_by_text("Workspace accent published.", exact=True)).to_be_visible()
     page.reload()
     expect(dark).to_have_attribute("aria-pressed", "true")
+    expect(ocean).to_have_attribute("aria-pressed", "true")
+    forest.click()
+    page.get_by_role("button", name="Publish accent").click()
+    expect(page.get_by_text("Published accent · forest · Revision 2")).to_be_visible()
     page.get_by_role("link", name="System status", exact=True).click()
     expect(page.get_by_text("Local loopback", exact=True)).to_be_visible()
     capture(page, output, "system-status")
@@ -554,6 +596,20 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     expect(setup.get_by_label("Leader wallet")).to_have_value(wallet)
     expect(setup.get_by_label("Per-entry cap (pUSD)")).to_have_value("140.50")
     expect(setup.get_by_label("Starting cash (pUSD)")).to_have_value("")
+    setup.get_by_text("Compare per-buy limits", exact=True).click()
+    starting_cash = setup.get_by_label("Starting cash (pUSD)")
+    per_buy = setup.get_by_label("Per-entry cap (pUSD)")
+    starting_cash.fill("2")
+    expect(setup.get_by_role("button", name="Use 25% · 0.50 pUSD")).to_be_disabled()
+    expect(per_buy).to_have_value("140.50")
+    starting_cash.fill("33.37")
+    setup.get_by_role("button", name="Use 10% · 3.33 pUSD").click()
+    expect(per_buy).to_have_value("3.33")
+    expect(setup.get_by_text("If the first buy uses its full cap", exact=False)).to_contain_text("30.04 pUSD")
+    setup.get_by_role("button", name="Use 25% · 8.34 pUSD").click()
+    expect(per_buy).to_have_value("8.34")
+    expect(setup.get_by_text("If the first buy uses its full cap", exact=False)).to_contain_text("25.03 pUSD")
+    expect(starting_cash).to_have_value("33.37")
     setup.close()
     expect(page.get_by_text("Fixture opening day?", exact=True)).to_be_visible()
     capture(page, output, "public-profile-fixture")
@@ -876,6 +932,17 @@ def change_cap_journey(browser: Browser, origin: str):
         expect(page.get_by_text("Changed future simulated BUY cap from 10 to 3.5 pUSD.")).to_be_visible()
         page.reload()
         expect(page.get_by_text("Changed future simulated BUY cap from 10 to 3.5 pUSD.")).to_be_visible()
+        page.get_by_text("Withdraw simulated cash", exact=True).click()
+        page.get_by_label("Simulated withdrawal (pUSD)").fill("98")
+        page.get_by_role("button", name="Record simulated withdrawal").click()
+        expect(page.get_by_text("Simulated withdrawal recorded. Available cash is 2 pUSD.")).to_be_visible()
+        page.reload()
+        week = page.get_by_role("region", name="Last seven days")
+        expect(week.get_by_text("Withdrawn 98", exact=False)).to_be_visible()
+        with page.expect_download() as file:
+            week.get_by_role("button", name="Export this period").click()
+        period = json.loads(file.value.path().read_text())["period"]
+        assert (period["closingCash"], period["withdrawals"], period["netResult"]) == ("2", "98", "0")
         check_width(page)
     finally:
         page.close()
@@ -1057,6 +1124,24 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
                     release.set()
             assert page.request.get(origin + "/api/v1/public-runs/" + second).json()["revision"] == 2
             provider.assert_called_once()
+        page.get_by_text("Replay buys with one shared budget", exact=True).click()
+        page.get_by_role("checkbox", name=re.compile("^Public wallet")).check()
+        page.get_by_role("checkbox", name=re.compile("^Weekend research")).check()
+        page.get_by_label("Shared starting cash").fill("10")
+        page.get_by_role("button", name="Replay selected buys").click()
+        pooled = page.get_by_role("region", name="Shared budget result")
+        expect(pooled.get_by_text("0.14256 pUSD cash left")).to_be_visible()
+        expect(pooled).to_contain_text("1 modeled sale and 5 quiet windows")
+        pooled.get_by_text("Other recorded decisions", exact=True).click()
+        expect(pooled.get_by_text("Incomplete evidence", exact=True)).to_be_visible()
+        for width in (390, 1380):
+            page.set_viewport_size({"width": width, "height": 900})
+            check_width(page)
+        page.get_by_label("Shared starting cash").fill("1")
+        expect(pooled).to_have_count(0)
+        page.get_by_role("button", name="Replay selected buys").click()
+        expect(pooled.get_by_text("1 pUSD cash left")).to_be_visible()
+        page.get_by_text("Replay buys with one shared budget", exact=True).click()
         page.get_by_role("link", name=re.compile(r"^Public wallet")).click()
         expect(page.get_by_role("heading", name="Public wallet", exact=True)).to_be_visible()
         now = int(time.time()) + 1
@@ -1123,6 +1208,15 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
             expect(week.get_by_text("Sampling has stopped.", exact=False)).to_be_visible()
             week.get_by_text("Remaining positions", exact=True).click()
             expect(week.get_by_role("listitem").first).to_contain_text("shares")
+            with page.expect_download() as period_file:
+                with page.expect_request(lambda r: r.url.endswith("/week/export")) as requested:
+                    week.get_by_role("button", name="Export this period").click()
+            fixed = json.loads(period_file.value.path().read_text())
+            assert fixed["period"]["through"] == requested.value.post_data_json["through"]
+            assert fixed["period"]["revision"] == exported["revision"]
+            assert fixed["period"]["closingCash"] == exported["cash"] and fixed["period"]["netResult"] is None
+            assert fixed["run"]["positions"] == exported["positions"]
+            assert [d["kind"] for d in fixed["decisions"]] == [d["kind"] for d in exported["decisions"]]
             print("Installed restart after reinstall preserved the stopped portfolio, partial exit and complete export.")
         finally:
             page.close()

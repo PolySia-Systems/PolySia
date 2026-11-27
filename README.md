@@ -51,9 +51,17 @@ To try a public wallet, open **Public rankings** and choose a period. Use **Next
 
 ## Updates and help
 
+In **Saved public runs**, choose **Replay buys with one shared budget** once you have two or more runs. Select the runs, enter one simulated starting balance and replay their recorded buys together. Each purchase uses the remaining cash and displayed shares. The replay leaves positions open and shows the modeled cost for each run.
+
+In **Settings → Appearance**, choose a light or dark theme. Under **Workspace accent**, preview Forest or Ocean, open **View discovery** to see it in use, then return to Settings to publish or discard it. To restore the default, preview and publish Forest.
+
 Use **Buy check at this budget** in Public rankings to filter wallets you have browsed or shortlisted in the current period. An observation at another budget cannot establish a match. The run overview shows the last seven days of cash movements, decisions and outstanding exposure.
 
+In **Last seven days**, choose **Export this period** to save the displayed interval, its cash totals, and the decisions behind them as JSON. If the run changed in the meantime, select **Refresh report** before exporting. **Export run** includes the complete journal and retained observation receipts.
+
 In a public run, **Add simulated cash** records a contribution separately from gains and fees. Adding cash preserves a pause. **Decision history → Recheck public activity** lets you revisit a quiet BUY window if the provider indexed trades later. A recheck keeps the original decision and portfolio balances intact.
+
+While a run is active or paused, **Withdraw simulated cash** removes up to the free cash shown. Shares stay open. Future purchases are limited by the cash left and the saved per-entry cap. Withdrawing below 1 pUSD turns off background sampling. The weekly report and its export show withdrawals separately from trading results.
 
 Public rankings remembers your two selected wallets for each ranking period in this browser. If the provider is unavailable, you can reopen the saved comparison and check its retrieval dates.
 

@@ -11,7 +11,7 @@ import {
   Sun,
   Wallet,
 } from 'lucide-react'
-import { api, type Account, type Workspace } from './api'
+import { api, type Accent, type Account, type Workspace } from './api'
 import './workspace.css'
 
 type Props = { workspace: Workspace; refresh: () => Promise<void> }
@@ -419,7 +419,9 @@ export function PositionSnapshot({
   )
 }
 
-export function Settings({ workspace, refresh }: Props) {
+export function Settings({ workspace, refresh, preview, previewAccent }: Props & {
+  preview: Accent | null; previewAccent: (draft: Accent | null) => void
+}) {
   const { settings } = workspace
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -443,6 +445,22 @@ export function Settings({ workspace, refresh }: Props) {
     } finally {
       setBusy(false)
     }
+  }
+  const published = workspace.accent
+  async function publish() {
+    if (busy || !preview) return
+    setBusy(true)
+    setError('')
+    setFeedback('')
+    try {
+      await api('settings/accent', 'PUT', preview)
+      await refresh()
+      previewAccent(null)
+      setFeedback('Workspace accent published.')
+    } catch (e) {
+      setError(errorText(e))
+      await refresh().catch(() => {})
+    } finally { setBusy(false) }
   }
   return (
     <section className="panel workspace-panel">
@@ -480,6 +498,26 @@ export function Settings({ workspace, refresh }: Props) {
         })}
       </div>
       <p className="workspace-note">Workspace preference · Revision {settings.revision}</p>
+      <h3>Workspace accent</h3>
+      <p>Preview the color of links and actions across this tab. Publish to use it throughout the workspace in both light and dark themes.</p>
+      <div className="paper-actions" role="group" aria-label="Accent presets">
+        {(['forest', 'ocean'] as const).map(preset => <button key={preset} type="button" className="btn"
+          disabled={busy} aria-pressed={preset === (preview?.preset ?? published.preset)}
+          onClick={() => {
+            previewAccent(preset === published.preset ? null : {preset, revision: published.revision})
+            setError('')
+            setFeedback('')
+          }}>{preset === (preview?.preset ?? published.preset) && <Check size={16} aria-hidden="true" />}
+          {preset === 'forest' ? 'Forest (default)' : 'Ocean'}</button>)}
+      </div>
+      <p className="workspace-note">Published accent · {published.preset} · Revision {published.revision}</p>
+      {preview && <>
+        <p role="status">Previewing {preview.preset}. <a href="#/discover">View discovery</a></p>
+        <div className="paper-actions">
+          <button className="btn primary" disabled={busy} onClick={publish}>Publish accent</button>
+          <button className="btn" disabled={busy} onClick={() => previewAccent(null)}>Discard preview</button>
+        </div>
+      </>}
       <span role="status">{feedback}</span>
       {error && (
         <p role="alert" className="error">

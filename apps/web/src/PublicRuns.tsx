@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ArrowLeft, ArrowRight, Download, Pause, Play, Plus, ScanLine, Square } from 'lucide-react'
-import { api, errorMessage, validBuyBudget } from './api'
+import { api, apiResponse, errorMessage, validBuyBudget } from './api'
+import { SharedReplay } from './SharedReplay'
 import './public-runs.css'
 
 interface Summary {
@@ -56,6 +57,8 @@ interface Holding {
 interface Portfolio extends Summary {
   fundedCapital: string
   deposits: string
+  withdrawals: string
+  netContributions: string
   backgroundEnabled: boolean
   exitsEnabled: boolean
   activeExitPolicy: {maxPriceDecrease: string; costMethod: string} | null
@@ -69,6 +72,7 @@ const when = (value: string | number) => new Date(value).toLocaleString('en-GB',
 const labels: Record<string, string> = {
   'change-cap': 'BUY cap changed',
   deposit: 'Simulated cash added',
+  withdraw: 'Simulated cash withdrawn',
   running: 'Running', paused: 'Paused', stopped: 'Stopped', entry: 'Modeled BUY', duplicate: 'Already modeled',
   'background-on': 'Background sampling enabled', 'background-off': 'Background sampling disabled',
   waiting: 'No BUY observed', incomplete: 'Evidence incomplete', skipped: 'Entry skipped',
@@ -83,6 +87,8 @@ function Setup() {
   const [name, setName] = useState((params.get('name') || 'Public wallet').slice(0, 80))
   const [capital, setCapital] = useState(Number(initialCap) > 100 ? '' : '100')
   const [cap, setCap] = useState(initialCap)
+  const capitalCents = validBuyBudget(capital) ? Math.round(Number(capital) * 100) : 0
+  const capCents = validBuyBudget(cap) ? Math.round(Number(cap) * 100) : 0
   const [id] = useState(() => crypto.randomUUID().replaceAll('-', ''))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -112,6 +118,23 @@ function Setup() {
           <label className="field">Per-entry cap (pUSD)<input required type="number" min="1" max={Math.min(Number(capital) || 1000, 1000)} step=".01"
             value={cap} onChange={e => setCap(e.target.value)} /></label>
         </div>
+        {capCents > 0 && capCents <= capitalCents && <p role="status">
+          If the first buy uses its full cap, at least {((capitalCents - capCents) / 100).toFixed(2)} pUSD
+          of your starting cash remains. Later buys can use more of that cash.
+        </p>}
+        <details className="paper-evidence"><summary>Compare per-buy limits</summary>
+          <p>Choose how much of your starting cash one purchase can use, including modeled fees.
+            A larger purchase can lose more on a single outcome. A smaller one may fall below the market minimum.</p>
+          <div className="actions">{[10, 25].map(percent => {
+            const cents = Math.floor(capitalCents * percent / 100)
+            return <button key={percent} type="button" className="btn" disabled={busy || cents < 100}
+              onClick={() => setCap((cents / 100).toFixed(2))}>
+              Use {percent}%{capitalCents > 0 && ' · ' + (cents / 100).toFixed(2) + ' pUSD'}
+            </button>
+          })}</div>
+          <p>These examples round down to cents. The minimum supported cap is 1 pUSD.
+            You can enter another cap above. A position can stay open after you stop, and the time needed to sell is unknown.</p>
+        </details>
         <details className="paper-evidence"><summary>How simulated trades are priced</summary>
           <p>Public activity comes from Polymarket and is checked against Polygon. A qualifying BUY uses displayed asks and estimated fees.
             The model checks the minimum share size. The venue’s minimum purchase value is unverified. Each SELL window requires a share limit and a matching leader sale.</p>
@@ -150,6 +173,7 @@ function Library() {
       <div><span>{labels[run.status]}</span><small>{run.cash} pUSD cash · {run.openCost} pUSD open cost</small><small>{run.entries} {run.entries === 1 ? 'BUY' : 'BUYs'} · {run.exits} {run.exits === 1 ? 'SELL' : 'SELLs'}</small></div>
       <ArrowRight size={16} aria-hidden="true"/></a>)}</div>
     {list?.nextCursor && <button className="btn" disabled={busy} onClick={() => load(list.nextCursor!)}>Older runs</button>}
+    {list && list.runs.length > 1 && <SharedReplay runs={list.runs} />}
   </section>
 }
 
@@ -226,7 +250,8 @@ interface Valuation {
   grossPurchases: string
   grossSales: string
   modeledFees: string
-  cashBenchmark: { from: string; endValue: string; additionalFlows: string; netReturnPct: string | null; unpricedValueNeededToMatchCash: string | null }
+  withdrawals: string
+  cashBenchmark: { from: string; endValue: string | null; additionalFlows: string; netReturnPct: string | null; unpricedValueNeededToMatchCash: string | null }
   marks: (Mark & {tokenId: string; market: string | null; outcome: string | null})[]
 }
 function PortfolioValue({run}: {run: Portfolio}) {
@@ -254,8 +279,11 @@ function PortfolioValue({run}: {run: Portfolio}) {
         <p>{value.total ? value.priced + ' of ' + value.total + (value.total === 1 ? ' open position priced.' : ' open positions priced.') + (value.priced > 0 ? ' Midpoint value is ' + value.pricedValue + ' pUSD before exit fees.' : '') :
           'All value is held in simulated cash.'} Checked {when(value.checkedMs)}.</p>
         {value.total > value.checked && <p>This check covered {value.checked} holdings. Other holdings have no price in this snapshot.</p>}
-        <p><strong>Compared with holding cash</strong> · Keeping {value.cashBenchmark.additionalFlows === '0' ? 'the starting cash' : 'all contributed cash'} since {when(value.cashBenchmark.from)}
-          {' '}would leave {value.cashBenchmark.endValue} pUSD at zero yield.
+        <p><strong>Compared with holding cash</strong> · {value.cashBenchmark.endValue === null
+          ? 'A cash-only account could not have covered every withdrawal at the time it was made.'
+          : value.withdrawals !== '0'
+            ? 'Holding cash with the same deposits and withdrawals would leave ' + value.cashBenchmark.endValue + ' pUSD at zero yield.'
+            : <>Keeping {value.cashBenchmark.additionalFlows === '0' ? 'the starting cash' : 'all contributed cash'} since {when(value.cashBenchmark.from)} would leave {value.cashBenchmark.endValue} pUSD at zero yield.</>}
           {value.cashBenchmark.netReturnPct !== null && <> The simulated return on {value.cashBenchmark.additionalFlows === '0' ? 'starting cash' : 'total contributions'} is {value.cashBenchmark.netReturnPct}%.</>}
           {value.cashBenchmark.unpricedValueNeededToMatchCash === '0' && <> Cash and priced shares already cover the cash benchmark. Total return is unknown.</>}
           {value.cashBenchmark.unpricedValueNeededToMatchCash != null && value.cashBenchmark.unpricedValueNeededToMatchCash !== '0' && <>
@@ -264,7 +292,7 @@ function PortfolioValue({run}: {run: Portfolio}) {
       </>}
     </div>
     {value && <details className="paper-evidence"><summary>Valuation evidence</summary>
-      <p>Cash reconciliation in pUSD · {value.capital} starting cash + {value.cashBenchmark.additionalFlows} added cash − {value.grossPurchases} purchases
+      <p>Cash reconciliation in pUSD · {value.capital} starting cash + {value.cashBenchmark.additionalFlows} added cash − {value.withdrawals} withdrawn − {value.grossPurchases} purchases
         {' '}+ {value.grossSales} sales − {value.modeledFees} modeled fees = {value.cash} remaining cash.</p>
       {value.marks.map(m => <div key={m.tokenId}><b>{m.market ?? 'Outcome token ' + m.tokenId} · {m.outcome}</b>
         <p>{m.value == null ? m.reason : m.value + ' pUSD at a midpoint of ' + m.midpoint + ' pUSD per share.'}
@@ -292,6 +320,7 @@ interface WeekSummary {
   through: string
   openingCash: string
   funding: string
+  withdrawals: string
   purchases: string
   sales: string
   fees: string
@@ -301,6 +330,31 @@ interface WeekSummary {
   observations: number
   counts: Record<string, number>
   latestObservation: {kind: string; reason: string; recorded: string} | null
+}
+
+function ExportWeek({report}: {report: WeekSummary}) {
+  const [busy, setBusy] = useState(false)
+  const [issue, setIssue] = useState('')
+  async function download() {
+    setBusy(true)
+    setIssue('')
+    try {
+      const response = await apiResponse('public-runs/' + report.runId + '/week/export', 'POST', {
+        through: report.through, revision: report.revision,
+      })
+      const url = URL.createObjectURL(await response.blob())
+      const link = document.createElement('a')
+      link.href = url
+      link.download = 'polysia-week-' + report.runId + '-' + report.through.slice(0, 10) + '-r' + report.revision + '.json'
+      link.click()
+      window.setTimeout(() => URL.revokeObjectURL(url), 0)
+    } catch (cause) { setIssue(errorMessage(cause)) }
+    finally { setBusy(false) }
+  }
+  return <div>
+    <button className="btn" disabled={busy} onClick={download}><Download size={15}/>{busy ? 'Preparing export…' : 'Export this period'}</button>
+    {issue && <p role="alert">{issue} Select Refresh report and try again.</p>}
+  </div>
 }
 
 function WeekOverview({run, refreshRun}: {run: Portfolio; refreshRun: () => void}) {
@@ -331,7 +385,7 @@ function WeekOverview({run, refreshRun}: {run: Portfolio; refreshRun: () => void
           <div><dt>Fees in period</dt><dd>{report.fees}</dd></div>
         </dl>
         {report.netResult === null && <p className="workspace-note">An open position needs a price at the start or end of this period. The journal has no price for that boundary.</p>}
-        <p>Opening cash {report.openingCash} · Funding added {report.funding} · Purchases {report.purchases} · Gross sales {report.sales} · Closing cash {report.closingCash}</p>
+        <p>Opening cash {report.openingCash} · Funding added {report.funding} · Withdrawn {report.withdrawals} · Purchases {report.purchases} · Gross sales {report.sales} · Closing cash {report.closingCash}</p>
         <p>{report.observations} recorded windows · {report.counts.entry ?? 0} buys · {report.counts.exit ?? 0} sales · {report.counts.skipped ?? 0} skipped · {report.counts.waiting ?? 0} quiet · {(report.counts.incomplete ?? 0) + (report.counts.unavailable ?? 0)} with missing evidence · {report.counts.duplicate ?? 0} repeats.</p>
         <p>{run.status === 'stopped' ? 'Sampling has stopped.' : run.status === 'paused' ? 'New entries are paused. Resume to check new purchases.' :
           !run.nextBudget ? 'The remaining cash is below the minimum for a BUY window.' : run.backgroundEnabled ? 'Background BUY sampling is enabled.' : 'Manual sampling is active. Choose a window to check for a purchase.'}
@@ -341,6 +395,7 @@ function WeekOverview({run, refreshRun}: {run: Portfolio; refreshRun: () => void
             {p.market ?? p.conditionId} · {p.outcome ?? p.tokenId} · {p.shares} shares
           </li>)}</ul></details>}
         {report.latestObservation && <p className="workspace-note">Latest window at {when(report.latestObservation.recorded)} · {report.latestObservation.reason}</p>}
+        <ExportWeek key={report.through} report={report}/>
       </> : <p role="status">Reading the last seven days…</p>}
   </section>
 }
@@ -375,6 +430,7 @@ function Detail({id}: {id: string}) {
   const [windows, setWindows] = useState(1)
   const [newCap, setNewCap] = useState('')
   const [depositAmount, setDepositAmount] = useState('')
+  const [withdrawAmount, setWithdrawAmount] = useState('')
   const [progress, setProgress] = useState('')
   const [saleFeedback, setSaleFeedback] = useState('')
   const [tradesOnly, setTradesOnly] = useState(false)
@@ -429,6 +485,7 @@ function Detail({id}: {id: string}) {
         if (sale) body.maxShares = sale.limit
         if (action === 'change-cap') body.cap = newCap
         if (action === 'deposit') body.amount = depositAmount
+        if (action === 'withdraw') body.amount = withdrawAmount
         const fresh = await api<Portfolio>(endpoint, 'POST', body)
         if (ticket !== latestAction.current) return
         const displayed = tradesOnly ? await api<Portfolio>(historyRoute(true)) : fresh
@@ -437,6 +494,10 @@ function Detail({id}: {id: string}) {
         if (action === 'deposit') {
           setDepositAmount('')
           setProgress('Simulated deposit recorded. Available cash is ' + fresh.cash + ' pUSD.')
+        }
+        if (action === 'withdraw') {
+          setWithdrawAmount('')
+          setProgress('Simulated withdrawal recorded. Available cash is ' + fresh.cash + ' pUSD.')
         }
         if (action === 'change-cap') {
           setNewCap('')
@@ -482,12 +543,21 @@ function Detail({id}: {id: string}) {
           <div><dt>Realized result</dt><dd>{run.realized} <small>pUSD</small></dd></div>
         </dl>
         <p className="workspace-note">Started with {run.capital} pUSD · {run.entryCap} pUSD per entry · {when(run.createdAt)}</p>
-        {run.status !== 'stopped' && Number(run.fundedCapital) <= 999 && <details className="paper-evidence"><summary>Add simulated cash</summary>
+        {run.status !== 'stopped' && Number(run.netContributions) <= 999 && <details className="paper-evidence"><summary>Add simulated cash</summary>
           <form className="stack paper-form" onSubmit={e => { e.preventDefault(); void act('deposit') }}>
             <label className="field">Simulated deposit (pUSD)<input required type="number" min="1" step=".01"
-              max={1000 - Number(run.fundedCapital)} value={depositAmount} onChange={e => setDepositAmount(e.target.value)}/></label>
+              max={Math.min(1000, 1000 - Number(run.netContributions))} value={depositAmount} onChange={e => setDepositAmount(e.target.value)}/></label>
             <p>This adds to the funds this strategy can spend on future simulated purchases. Its per-entry cap and pause setting stay the same. Deposits appear separately from trading results.</p>
             <button className="btn" disabled={!!busy || !depositAmount}>Record simulated deposit</button>
+          </form>
+        </details>}
+        {run.status !== 'stopped' && run.cash !== '0' && <details className="paper-evidence"><summary>Withdraw simulated cash</summary>
+          <form className="stack paper-form" onSubmit={e => { e.preventDefault(); void act('withdraw') }}>
+            <label className="field">Simulated withdrawal (pUSD)<input required type="number" min="0.000001" step="0.000001" max={run.cash}
+              value={withdrawAmount} onChange={e => setWithdrawAmount(e.target.value)}/></label>
+            <p>Up to {run.cash} pUSD is free. Your shares stay open. Future purchases use the remaining cash within your cap.
+              {run.backgroundEnabled && ' Background sampling turns off if less than 1 pUSD remains.'}</p>
+            <button className="btn" disabled={!!busy || !withdrawAmount}>Record simulated withdrawal</button>
           </form>
         </details>}
         {run.status !== 'stopped' && <details className="paper-evidence"><summary>Change future BUY cap</summary>

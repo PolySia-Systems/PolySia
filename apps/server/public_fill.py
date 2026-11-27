@@ -125,8 +125,11 @@ def _match(receipt, wallet, event):
             paid, shares = (taking, making) if selling else (making, taking)
             candidates.append((index, exchange, order, taker, data, paid, shares, fee))
 
-    if len(candidates) != 1:
-        return {"status": "unresolved", "reason": f"The receipt did not isolate one {side_name} order for this wallet and token."}
+    if not candidates:
+        return {"status": "unresolved", "reason": f"No {side_name} order matched this wallet and outcome. "
+                "Transfers, splits and merges alone do not establish a trade."}
+    if len(candidates) > 1:
+        return {"status": "unresolved", "reason": f"Several {side_name} order logs matched this wallet and outcome."}
     index, exchange, order, taker, data, paid, shares, fee = candidates[0]
     if taker == owner:
         return {"status": "unresolved", "reason": "The participant was also recorded as its own counterparty."}

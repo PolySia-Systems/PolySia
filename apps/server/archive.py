@@ -11,7 +11,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from .provider import decimal_value, validate_address
-from .store import WORKSPACE_VERSION, add_public_exits, add_public_runs, add_saved_wallets, create_schema_v1, verify_saved_wallets
+from .store import WORKSPACE_VERSION, add_accent, add_public_exits, add_public_runs, add_saved_wallets, create_schema_v1, verify_saved_wallets
 from .background import add_table
 from .public_shadow import verify_archive
 
@@ -149,6 +149,8 @@ def _verify_schema(db, version):
         if version >= 5:
             add_table(reference)
             add_saved_wallets(reference)
+        if version >= 8:
+            add_accent(reference)
         expected = reference.execute(catalog).fetchall()
     if db.execute(catalog).fetchmany(len(expected) + 1) != expected:
         raise ValueError("The database schema differs from the supported PolySia workspace schema.")
@@ -182,6 +184,10 @@ def copy_workspace(source: Path, destination: Path):
                     raise ValueError("The workspace settings are missing or invalid.")
                 if any(type(revision) is not int or revision < 0 for revision in row[1:3]):
                     raise ValueError("The workspace revisions are invalid.")
+                if version >= 8:
+                    preset, revision = writer.execute("SELECT accent,accent_revision FROM workspace WHERE id=1").fetchone()
+                    if preset not in ("forest", "ocean") or type(revision) is not int or revision < 0:
+                        raise ValueError("The published accent or its revision is invalid.")
                 _verify_records(writer, row[3])
                 if version >= 5:
                     verify_saved_wallets(writer)

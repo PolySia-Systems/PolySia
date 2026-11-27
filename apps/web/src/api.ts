@@ -1,4 +1,5 @@
 export type Theme = 'light' | 'dark'
+export type Accent = {preset: 'forest' | 'ocean'; revision: number}
 export interface SettingsRecord {
   version: 1
   revision: number
@@ -97,13 +98,14 @@ export interface Run {
   remaining_steps: number
 }
 export interface Workspace {
+  accent: Accent
   savedWallets: { address: string; label: string }[]
   accountRevision: number
   settings: SettingsRecord
   account: Account | null
   run: Run | null
 }
-export async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
+export async function apiResponse(path: string, method = 'GET', body?: unknown): Promise<Response> {
   const options: RequestInit = { method, cache: 'no-store', credentials: 'same-origin' }
   if (body !== undefined) {
     options.headers = { 'Content-Type': 'application/json' }
@@ -114,7 +116,10 @@ export async function api<T>(path: string, method = 'GET', body?: unknown): Prom
     const result = await response.json().catch(() => ({}))
     throw new Error(result.error || 'Request failed (' + response.status + '). Try again.')
   }
-  return response.json()
+  return response
+}
+export async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
+  return (await apiResponse(path, method, body)).json()
 }
 export const money = (value: number | string, digits = 2) =>
   Number(value).toLocaleString('en-US', {

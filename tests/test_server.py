@@ -490,6 +490,20 @@ class WorkspaceHttpTest(unittest.TestCase):
             copy_workspace(store.path, self.root / "bad.db")
         self.assertFalse((self.root / "bad.db").exists())
 
+    def test_accent_publication_is_independent_validated_and_owner_scoped(self):
+        route = "/api/v1/settings/accent"
+        valid = {"preset": "ocean", "revision": 0}
+        self.assertEqual(self.request("PUT", route, valid, headers={"Origin": "https://elsewhere.invalid"})[0], 403)
+        for invalid in ({"preset": "#fff", "revision": 0}, {"preset": ["ocean"], "revision": 0},
+                        {**valid, "revision": True}, {**valid, "theme": "dark"}):
+            self.assertEqual(self.request("PUT", route, invalid)[0], 400)
+        self.assertEqual(self.request("PUT", route, valid), (200, {"preset": "ocean", "revision": 1}))
+        self.assertEqual(self.request("PUT", route, {"preset": "forest", "revision": 0})[0], 409)
+        self.assertEqual(self.request("PUT", "/api/v1/settings", {"version": 1, "revision": 0, "theme": "dark"})[0], 200)
+        self.assertEqual(self.server.store.read()["accent"], {"preset": "ocean", "revision": 1})
+        self.assertEqual(self.request("PUT", route, {"preset": "forest", "revision": 1})[0], 200)
+        self.assertEqual(self.server.store.read()["settings"], {"version": 1, "revision": 1, "theme": "dark"})
+
     def test_completed_replay_with_sales_round_trips_through_backup(self):
         store = self.server.store
         run = store.create_run("atlas", "100", "10")

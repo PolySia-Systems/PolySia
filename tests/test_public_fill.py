@@ -1,6 +1,7 @@
 import copy
 import json
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
@@ -74,15 +75,42 @@ class ParticipantTests(unittest.TestCase):
         self.assertEqual((result["status"], result["capacity"]["shares"], result["capacity"]["gross"]),
                          ("observed", "8", "7.976"))
 
-    def test_owner_side_survives_complementary_order_matching(self):
-        receipt = copy.deepcopy(RECEIPT)
-        maker_fill = next(log for log in receipt["logs"] if log["logIndex"] == "0x86")
-        maker_fill["data"] = receipt["logs"][4]["data"]
-        owner = "0x" + maker_fill["topics"][2][-40:]
-        result = self.identify(receipt, owner)
-        self.assertEqual((result["role"], result["logIndex"]), ("maker", 134))
-        self.assertNotIn("totalCollateral", result)
-        self.assertEqual(self.identify(receipt)["role"], "taker")
+    def test_paired_wallet_activity_and_exchange_orders(self):
+        pairs = json.loads((Path(__file__).parent / "fixtures/polygon-paired-fills.json").read_text())
+        kinds = {"ordinary": ["SELL", "BUY"], "complementary-buy": ["BUY", "BUY"],
+                 "complementary-sell": ["SELL", "SELL"]}
+        self.assertCountEqual([(pair["kind"], pair["exchange"]) for pair in pairs],
+                              [(kind, exchange) for kind in kinds for exchange in public_fill.EXCHANGES])
+        for pair in pairs:
+            with self.subTest(kind=pair["kind"], exchange=pair["exchange"]):
+                header = {k: pair[k] for k in ("transactionHash", "blockHash", "blockNumber")}
+                logs = [dict(log, **header, removed=False) for log in pair["logs"]]
+                receipt = dict(header, status=pair["status"], logs=logs)
+                participants = pair["participants"]
+                maker, taker = participants
+                self.assertEqual([p["role"] for p in participants], ["maker", "taker"])
+                self.assertEqual([p["event"]["side"] for p in participants], kinds[pair["kind"]])
+                self.assertEqual(maker["event"]["conditionId"], taker["event"]["conditionId"])
+                self.assertEqual(maker["event"]["tokenId"] == taker["event"]["tokenId"], pair["kind"] == "ordinary")
+                self.assertNotEqual(maker["index"], taker["index"])
+                inventory_only = [log for log in logs if log["address"] != pair["exchange"]]
+                self.assertTrue(inventory_only)
+                for participant, other in ((maker, taker), (taker, maker)):
+                    wallet = participant["wallet"]
+                    event = dict(participant["event"], transactionHash=pair["transactionHash"])
+                    with patch.object(polygon, "transaction_receipt", return_value=receipt):
+                        result = public_fill.identify_trade(wallet, event)
+                    self.assertEqual((result["role"], result["exchange"], result["logIndex"]),
+                                     (participant["role"], pair["exchange"], participant["index"]))
+                    self.assertEqual(result["fillId"], f"137:{pair['transactionHash']}:{participant['index']}")
+                    self.assertEqual(int(result["sharesBaseUnits"]), Decimal(event["shares"]) * 1_000_000)
+                    self.assertEqual(public_fill._match(receipt, other["wallet"], event)["status"], "unresolved")
+                    only_inventory = public_fill._match(dict(receipt, logs=inventory_only), wallet, event)
+                    self.assertNotIn("fillId", only_inventory)
+                    self.assertIn("Transfers, splits and merges", only_inventory["reason"])
+                event = dict(taker["event"], transactionHash=pair["transactionHash"])
+                without_summary = [log for log in logs if log["topics"][0] != public_fill.ORDERS_MATCHED]
+                self.assertNotIn("fillId", public_fill._match(dict(receipt, logs=without_summary), taker["wallet"], event))
 
     @staticmethod
     def receipt_with_amounts(paid, shares, fee):

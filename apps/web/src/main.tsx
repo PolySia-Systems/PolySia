@@ -15,7 +15,7 @@ import {
   Wallet,
   X,
 } from 'lucide-react'
-import { api, errorMessage, type Directory, type Workspace } from './api'
+import { api, errorMessage, type Accent, type Directory, type Workspace } from './api'
 import { Compare, Discover, LeaderDetail } from './Discover'
 import { Preview, SavedReplay, Shadow } from './Shadow'
 import { Accounts, Settings, Status } from './Workspace'
@@ -52,6 +52,10 @@ function App() {
   const menuRef = useRef<HTMLButtonElement>(null)
   const [mobileNav, setMobileNav] = useState(false)
   const [workspace, setWorkspace] = useState<Workspace | null>(null)
+  const [draftAccent, previewAccent] = useState<Accent | null>(null)
+  const preview = draftAccent?.revision === workspace?.accent.revision ? draftAccent : null
+  const accent = preview?.preset ?? workspace?.accent.preset ?? 'forest'
+  useEffect(() => { document.documentElement.dataset.accent = accent }, [accent])
   const [directory, setDirectory] = useState<Directory | null>(null)
   const leaders = directory?.leaders ?? []
   const [page = workspace?.run ? 'runs' : 'discover', id] = route
@@ -321,6 +325,9 @@ function App() {
               {storageNotice}
             </p>
           )}
+          {preview && page !== 'settings' && <p className="notice">
+            Previewing the {preview.preset} accent in this tab. <a href="#/settings">Return to Settings</a>
+          </p>}
           {loading ? (
             <div className="panel empty" role="status">
               Loading workspace…
@@ -372,7 +379,7 @@ function App() {
                   refresh={refresh}
                 />
               )}
-              {page === 'settings' && <Settings workspace={workspace} refresh={refresh} />}
+              {page === 'settings' && <Settings workspace={workspace} refresh={refresh} preview={preview} previewAccent={previewAccent} />}
               {page === 'status' && <Status workspace={workspace} refresh={refresh} />}
               {((['leader', 'preview'].includes(page) && !leader) ||
                 (!inDiscover && !nav.some((n) => n.id === page))) && (

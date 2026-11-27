@@ -305,6 +305,8 @@ class Handler(BaseHTTPRequestHandler):
             return shadow.compare_entry_coverage(data["allocation"], data["orderSize"])
         if path == API + "/settings" and method == "PUT":
             return store.set_theme(**self.body(("version", "revision", "theme")))
+        if path == API + "/settings/accent" and method == "PUT":
+            return store.publish_accent(**self.body(("revision", "preset")))
         if path == API + "/account/saved":
             if method == "PUT":
                 return store.update_saved_wallet(**self.body(("address", "revision", "label")))
@@ -348,6 +350,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def public_runs_api(self, path, method):
         store = self.server.store
+        if path == API + "/public-runs/shared-replay":
+            if method != "POST" or urlsplit(self.path).query:
+                raise RequestError(405, "Replay saved entries with a selection and a shared budget.")
+            from .shared_replay import replay
+            data = self.body(("runIds", "capital"))
+            with store.connection(write=False) as db:
+                return replay(db, data["runIds"], data["capital"])
+        period_export = re.fullmatch(API + r"/public-runs/([0-9a-f]{32})/week/export", path)
+        if period_export:
+            if method != "POST" or urlsplit(self.path).query:
+                raise RequestError(405, "Use Export this period in the seven-day report.")
+            from .run_week import export_week
+            selection = self.body(("revision", "through"))
+            with store.connection(write=False) as db:
+                return export_week(db, period_export[1], **selection)
         recheck = re.fullmatch(API + r"/public-runs/([0-9a-f]{32})/decisions/([1-9][0-9]{0,17})/recheck", path)
         if recheck:
             if method != "POST" or urlsplit(self.path).query:
@@ -380,7 +397,7 @@ class Handler(BaseHTTPRequestHandler):
                 receipt = {"status": "unavailable", "reason": str(exc), "wallet": wallet, "exitScope": scope}
             with store.connection() as db:
                 return public_shadow.record_sale(db, run_id, revision, token, limit, receipt)
-        match = re.fullmatch(API + r"/public-runs(?:/([0-9a-f]{32})(?:/(sample|pause|resume|stop|enable-exits|background-on|background-off|change-cap|deposit|valuation|export|week))?)?", path)
+        match = re.fullmatch(API + r"/public-runs(?:/([0-9a-f]{32})(?:/(sample|pause|resume|stop|enable-exits|background-on|background-off|change-cap|deposit|withdraw|valuation|export|week))?)?", path)
         if not match:
             raise RequestError(404, "Unknown public shadow run.")
         run_id, action = match.groups()
@@ -431,10 +448,11 @@ class Handler(BaseHTTPRequestHandler):
             revision = self.body(("revision",))["revision"]
             with store.connection() as db:
                 return background.configure(db, run_id, revision, action == "background-on")
-        if method == "POST" and action == "deposit":
+        if method == "POST" and action in ("deposit", "withdraw"):
             body = self.body(("revision", "amount"))
             with store.connection() as db:
-                return public_shadow.deposit(db, run_id, body["revision"], body["amount"])
+                transfer = public_shadow.deposit if action == "deposit" else public_shadow.withdraw
+                return transfer(db, run_id, body["revision"], body["amount"])
         if method == "POST" and action == "change-cap":
             body = self.body(("revision", "cap"))
             with store.connection() as db:
