@@ -911,10 +911,13 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
         page.get_by_label("Leader wallet").fill(WALLET)
         page.get_by_label("Run name").fill("Weekend research")
         page.get_by_label("Starting cash").fill("25")
-        page.get_by_role("button", name="Create shadow run").click()
-        expect(page.get_by_role("heading", name="Weekend research")).to_be_visible()
+        # Keep the complete controlled sequence inside the returning operator's
+        # seven-day window, including after restarting the packaged server.
+        start = int(time.time()) - 86400
+        with patch.object(public_shadow, "timestamp", return_value=datetime.fromtimestamp(start - 5, UTC).isoformat(timespec="milliseconds")):
+            page.get_by_role("button", name="Create shadow run").click()
+            expect(page.get_by_role("heading", name="Weekend research")).to_be_visible()
         route = page.url
-        start = int(time.time()) + 1
         receipt = observed_buy(WALLET, "10.00", start=start)
         unavailable = dict(wallet=WALLET, researchBudget="10.00", status="unavailable", reason="Public endpoint unreachable or denied.")
         # Advance a controlled clock past the delayed book. Every browser action
