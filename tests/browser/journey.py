@@ -1057,6 +1057,22 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
                     release.set()
             assert page.request.get(origin + "/api/v1/public-runs/" + second).json()["revision"] == 2
             provider.assert_called_once()
+        page.get_by_text("Replay buys with one shared budget", exact=True).click()
+        page.get_by_role("checkbox", name=re.compile("^Public wallet")).check()
+        page.get_by_role("checkbox", name=re.compile("^Weekend research")).check()
+        page.get_by_label("Shared starting cash").fill("10")
+        page.get_by_role("button", name="Replay selected buys").click()
+        pooled = page.get_by_role("region", name="Shared budget result")
+        expect(pooled.get_by_text("0.14256 pUSD cash left")).to_be_visible()
+        expect(pooled).to_contain_text("1 modeled sale and 5 quiet windows")
+        for width in (390, 1380):
+            page.set_viewport_size({"width": width, "height": 900})
+            check_width(page)
+        page.get_by_label("Shared starting cash").fill("1")
+        expect(pooled).to_have_count(0)
+        page.get_by_role("button", name="Replay selected buys").click()
+        expect(pooled.get_by_text("1 pUSD cash left")).to_be_visible()
+        page.get_by_text("Replay buys with one shared budget", exact=True).click()
         page.get_by_role("link", name=re.compile(r"^Public wallet")).click()
         expect(page.get_by_role("heading", name="Public wallet", exact=True)).to_be_visible()
         now = int(time.time()) + 1

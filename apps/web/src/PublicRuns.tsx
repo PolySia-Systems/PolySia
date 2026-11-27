@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ArrowLeft, ArrowRight, Download, Pause, Play, Plus, ScanLine, Square } from 'lucide-react'
 import { api, errorMessage, validBuyBudget } from './api'
+import { SharedReplay } from './SharedReplay'
 import './public-runs.css'
 
 interface Summary {
@@ -150,6 +151,7 @@ function Library() {
       <div><span>{labels[run.status]}</span><small>{run.cash} pUSD cash · {run.openCost} pUSD open cost</small><small>{run.entries} {run.entries === 1 ? 'BUY' : 'BUYs'} · {run.exits} {run.exits === 1 ? 'SELL' : 'SELLs'}</small></div>
       <ArrowRight size={16} aria-hidden="true"/></a>)}</div>
     {list?.nextCursor && <button className="btn" disabled={busy} onClick={() => load(list.nextCursor!)}>Older runs</button>}
+    {list && list.runs.length > 1 && <SharedReplay runs={list.runs} />}
   </section>
 }
 

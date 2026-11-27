@@ -51,6 +51,8 @@ To try a public wallet, open **Public rankings** and choose a period. Use **Next
 
 ## Updates and help
 
+In **Saved public runs**, choose **Replay buys with one shared budget** once you have two or more runs. Select the runs, enter one simulated starting balance and replay their recorded buys together. Each purchase uses the remaining cash and displayed shares. The replay leaves positions open and shows the modeled cost for each run.
+
 Use **Buy check at this budget** in Public rankings to filter wallets you have browsed or shortlisted in the current period. An observation at another budget cannot establish a match. The run overview shows the last seven days of cash movements, decisions and outstanding exposure.
 
 In a public run, **Add simulated cash** records a contribution separately from gains and fees. Adding cash preserves a pause. **Decision history → Recheck public activity** lets you revisit a quiet BUY window if the provider indexed trades later. A recheck keeps the original decision and portfolio balances intact.

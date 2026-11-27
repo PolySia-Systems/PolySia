@@ -348,6 +348,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def public_runs_api(self, path, method):
         store = self.server.store
+        if path == API + "/public-runs/shared-replay":
+            if method != "POST" or urlsplit(self.path).query:
+                raise RequestError(405, "Replay saved entries with a selection and a shared budget.")
+            from .shared_replay import replay
+            data = self.body(("runIds", "capital"))
+            with store.connection(write=False) as db:
+                return replay(db, data["runIds"], data["capital"])
         recheck = re.fullmatch(API + r"/public-runs/([0-9a-f]{32})/decisions/([1-9][0-9]{0,17})/recheck", path)
         if recheck:
             if method != "POST" or urlsplit(self.path).query:

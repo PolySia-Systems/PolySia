@@ -101,7 +101,7 @@ def _book_issue(sample, terms, side):
     return None
 
 
-def _estimate(sample, budget, terms):
+def _estimate(sample, budget, terms, consumed=None):
     issue = _book_issue(sample, terms, "BUY")
     if issue:
         return issue
@@ -111,6 +111,7 @@ def _estimate(sample, budget, terms):
     cap = Fraction(sample["event"]["price"]) * SCALE + PRICE_ALLOWANCE
     remaining = _micros(budget)
     total_shares = gross = fees = 0
+    fills = {}
     previous = 0
     for level in book["bestAsks"]:
         price = _micros(level["price"])
@@ -122,7 +123,10 @@ def _estimate(sample, budget, terms):
         # Gross cost plus the stepped fee is monotone in whole shares. Find
         # the largest displayed quantity whose rounded total fits the budget.
         quantity = 0
-        upper = min(remaining // price, _micros(level["shares"]) // SCALE)
+        available = _micros(level["shares"]) // SCALE
+        if consumed is not None:
+            available = max(0, available - consumed.get(price, 0))
+        upper = min(remaining // price, available)
         while quantity < upper:
             trial = (quantity + upper + 1) // 2
             if trial * price + _level_fee(trial, price, rate) <= remaining:
@@ -134,6 +138,8 @@ def _estimate(sample, budget, terms):
         fees += fee
         remaining -= quantity * price + fee
         total_shares += quantity
+        if consumed is not None and quantity:
+            fills[price] = quantity
     if total_shares * SCALE < _micros(book["minimumOrderShares"]):
         return {"status": "skipped", "reason": "The displayed asks within the price and budget limits could not cover the minimum size."}
     spread_pct = None
@@ -141,6 +147,9 @@ def _estimate(sample, budget, terms):
         ask_price = _micros(book["bestAsks"][0]["price"])
         hundredths = ((ask_price - _micros(bid["price"])) * 10_000 + ask_price // 2) // ask_price
         spread_pct = f"{hundredths // 100}.{hundredths % 100:02d}"
+    if consumed is not None:
+        for price, quantity in fills.items():
+            consumed[price] = consumed.get(price, 0) + quantity
     return {"status": "estimated", "shares": str(total_shares), "gross": _units(gross),
             "spreadPercentOfAsk": spread_pct,
             "feeEstimate": _units(fees), "unspent": _units(remaining),
