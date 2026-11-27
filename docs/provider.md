@@ -1,5 +1,7 @@
 # Provider evidence
 
+On 2026-11-27 UTC, a prospective comparison selected two wallets with recent ordinary BUY activity before opening six two-second windows per wallet at a 5 pUSD simulated budget. The 24 activity reads across these 12 windows found no eligible BUY. Twelve later reads of the same windows returned complete pages and showed purchases in two windows, one per wallet. No immediate fill, executable price or follower return was established. The reference used the same indexed provider. Decision history can recheck the original UTC bounds on demand while preserving the contemporaneous result.
+
 Public adapter evidence through 2026-11-27. All public reads identify PolySia and its project URL. The adapter uses HTTPS GETs for Polymarket data and a fixed pair of Polygon JSON-RPC reads for budgeted observations. Each request has a bounded response size and socket timeout. The clients use public endpoints with fixed origins. A study can request a scheduled second observation of the same interval.
 
 | Capability | Verified scope |

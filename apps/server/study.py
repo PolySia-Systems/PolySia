@@ -48,6 +48,26 @@ def _initially_empty(receipt):
     return coverage.get("complete") is True and coverage.get("ordinaryBuyRows") == 0
 
 
+def review_waiting_window(store, run_id, revision):
+    """Recheck one retained quiet window without revising the decision made then."""
+    with store.connection(write=False) as db:
+        row = db.execute("""SELECT r.wallet,d.kind,d.receipt FROM public_decisions d
+            JOIN public_runs r ON r.id=d.run_id WHERE r.id=? AND d.revision=?""", (run_id, revision)).fetchone()
+    if row is None:
+        raise KeyError("The saved observation could not be found.")
+    receipt = json.loads(row["receipt"]) if row["receipt"] else {}
+    if (row["kind"] != "waiting" or receipt.get("wallet") != row["wallet"] or "exitScope" in receipt
+            or not receipt.get("researchBudget") or type(receipt.get("windowStartSeconds")) is not int
+            or receipt.get("windowEndSeconds") != receipt["windowStartSeconds"] + 1):
+        raise ValueError("Choose a saved two-second BUY window with no observed purchase.")
+    later = _recheck_activity(row["wallet"], receipt)
+    count = len(later["visibleBuys"]) if "visibleBuys" in later else None
+    return {"runId": run_id, "revision": revision, "source": ACTIVITY,
+            "start": receipt["windowStartSeconds"], "end": receipt["windowEndSeconds"],
+            "checkedMs": later.get("activityReceivedMs", time.time_ns() // 1_000_000),
+            "visibleBuys": count, "complete": later.get("activityCoverage", {}).get("complete", False)}
+
+
 def _retry_summary(receipts):
     reads = [receipt.get("activityReads", []) for receipt in receipts]
     followups = [window[1] for window in reads if len(window) == 2]

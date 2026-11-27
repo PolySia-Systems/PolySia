@@ -61,12 +61,13 @@ def portfolio_value(basis):
         arithmetic.prec = 110
         marked = sum(priced, Decimal(0))
         equity = Decimal(basis["cash"]) + marked
-        capital = Decimal(basis["capital"])
+        deposited = basis.get("deposits", "0")
+        funded = basis.get("fundedCapital", basis["capital"])
+        capital = Decimal(funded)
         net = equity - capital
-        # The shadow ledger is funded once at creation. Holding that cash has zero
-        # modeled yield, costs or later flows over the same interval.
-        benchmark = {"strategy": "hold starting cash", "from": basis["createdAt"], "throughMs": checked,
-                     "endValue": basis["capital"], "assumedYield": "0", "additionalFlows": "0",
+        benchmark = {"strategy": "hold starting cash" if deposited == "0" else "hold all contributed cash",
+                     "from": basis["createdAt"], "throughMs": checked,
+                     "endValue": funded, "assumedYield": "0", "additionalFlows": deposited,
                      "netReturnPct": None, "unpricedValueNeededToMatchCash": None}
         if complete:
             pct = (net * 100 / capital).quantize(Decimal("0.0001"))
