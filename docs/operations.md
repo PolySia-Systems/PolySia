@@ -31,6 +31,33 @@ Use a fresh, private install prefix for the first HTTPS deployment. The prefix s
 
 After setup, open the printed HTTPS address and sign in with the configured owner email. The application and connector use a private Unix socket, and the origin validates the Access signature, issuer, application audience, expiry and owner. Rerun from the same OS user and prefix to recover an interruption. The installer records its own resource IDs and keeps the connector credential under `remote/` in that prefix. To take the site offline, run `systemctl --user disable --now polysia-tunnel.service`. Inspect services with `systemctl --user status polysia-origin.service polysia-tunnel.service`. The owner-login email and test resources must belong to the authorized deployment. The local installation works offline with no Cloudflare configuration. All modes are single-owner and simulated.
 
+### Recover an HTTPS site
+
+Use the same hostname, owner email and absolute install prefix. To update on the original machine, back up the database and rerun the HTTPS installer. A matching running release can pass its checks without restarting. If you replace your **management API token**, enter the new token at the next installer prompt. The connector uses a separate credential.
+
+For a replacement host or a restored snapshot, schedule one transfer at a time. Use the transfer command even if the snapshot contains the journal. Clones can share a machine ID. Keep the old host offline, or disable its tunnel and stop its origin before the final database backup. Run service commands in the dedicated user's systemd session:
+
+```sh
+systemctl --user disable --now polysia-tunnel.service polysia-origin.service
+"$HOME/.local/share/polysia/current/polysia" backup --to ./final-backup.sqlite3
+```
+
+Copy the backup privately to the new host. The dedicated service user needs read access to the file and its parent directories. In the Cloudflare dashboard, open the intended account and copy the tunnel UUID for this hostname. On the new host run the verified recovery-capable bundle:
+
+```sh
+read -r -p "Cloudflare tunnel UUID: " tunnel_id
+sudo /usr/bin/python3 -I polysia.pyz --prepare-cloudflare-host \
+  --recover-tunnel "$tunnel_id" --workspace-backup /absolute/path/to/final-backup.sqlite3
+```
+
+If the destination already has the saved workspace, omit the backup option. The installer verifies that database before reconnecting. If the original workspace was lost and you accept losing its history, replace the backup option with `--empty-workspace`. Cloudflare retains routing and identity settings. It cannot restore saved runs. On a prepared host the same options work with `--cloudflare`.
+
+The installer checks the selected tunnel, its protected socket route, the proxied DNS target and the single-owner Access application and policy. It requires the previous connectors to be disconnected, rotates the tunnel credential and starts the replacement. A stopped host with the old credential cannot reconnect. Keep the management token with the operator. If setup stops after rotation, rerun recovery on the intended destination. If the workspace was already restored, omit the backup option. To return to the former host, stop the replacement, transfer the latest verified database and use the same recovery procedure there.
+
+If inventory is missing, the hostname has another policy, or the socket route differs, inspect the named resource in Cloudflare. Preserve existing resources while resolving the conflict. Changing hostname, account, owner or install path requires a separately planned move. After success, sign in as the owner, check a saved run and confirm its status and remaining shares. A private browser window without an owner session should show the Access login challenge.
+
+To retire the site, stop and disable both services. Keep the workspace backup and Cloudflare resources for later recovery. For permanent removal, verify the account, hostname and IDs in the deployment journal before removing its DNS record, Access app with its policy, and disconnected tunnel in the dashboard. Keep shared identity providers and unrelated resources.
+
 ## Develop and verify
 
 ```sh

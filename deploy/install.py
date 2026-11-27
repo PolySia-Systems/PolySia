@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -179,7 +180,16 @@ def main():
         "Ubuntu 26.04 amd64, root: prepare a dedicated polysia-service user, Ubuntu JWT packages, "
         "pinned cloudflared and boot persistence, then continue owner-only deployment as that user."))
     parser.add_argument("--port", type=int, help="Local port for --start or --service (default 8765).")
+    parser.add_argument("--recover-tunnel", type=uuid.UUID, metavar="UUID",
+                        help="Transfer the selected PolySia tunnel to this host and rotate its connector token.")
+    workspace = parser.add_mutually_exclusive_group()
+    workspace.add_argument("--workspace-backup", type=Path, metavar="FILE", help="Restore a verified workspace during transfer.")
+    workspace.add_argument("--empty-workspace", action="store_true", help="Accept a fresh workspace after losing the original.")
     args = parser.parse_args()
+    if args.recover_tunnel and not (args.cloudflare or args.prepare_cloudflare_host):
+        parser.error("--recover-tunnel requires an HTTPS deployment mode.")
+    if (args.workspace_backup or args.empty_workspace) and not args.recover_tunnel:
+        parser.error("Workspace recovery options require --recover-tunnel.")
     os.umask(0o077)
     if args.start and args.json:
         parser.error("--json is available for install-only or --service.")
@@ -195,7 +205,8 @@ def main():
     try:
         if args.prepare_cloudflare_host:
             from prepare_host import prepare
-            prepare(Path(sys.argv[0]).resolve(strict=True))
+            prepare(Path(sys.argv[0]).resolve(strict=True), args.recover_tunnel,
+                    args.workspace_backup, args.empty_workspace)
             return
         prefix = args.prefix.resolve()
         archive = Path(sys.argv[0])
@@ -212,7 +223,9 @@ def main():
                     raise ValueError("This prefix already contains an installation. Choose a fresh prefix "
                                      "for owner-only HTTPS and keep the existing workspace in its original prefix.")
                 from cloudflare_setup import setup
-                setup(archive=archive, prefix=prefix, install=install)
+                setup(archive=archive, prefix=prefix, install=install,
+                      recovery_id=str(args.recover_tunnel) if args.recover_tunnel else None,
+                      backup=args.workspace_backup, empty_workspace=args.empty_workspace)
                 return
             if remote.exists():
                 raise ValueError("This prefix is reserved for owner-only HTTPS. Rerun with --cloudflare "

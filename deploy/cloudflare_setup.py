@@ -1,7 +1,9 @@
 """Provision one owner-protected Cloudflare hostname for an installed PolySia workspace."""
+import base64
 import email.utils
 import fnmatch
 import getpass
+import hashlib
 import http.client
 import json
 import os
@@ -127,9 +129,14 @@ def write_private(path, text):
         staged.unlink(missing_ok=True)
 
 
+class UnsafeAccess(ValueError):
+    """The provider returned an explicit configuration that breaks owner-only routing."""
+
+
 class Journal:
-    def __init__(self, path, host, owner):
+    def __init__(self, path, host, owner, *, deferred=False):
         self.path = path
+        self.deferred = deferred
         if path.exists():
             self.state = json.loads(path.read_bytes())
             if self.state["host"] != host or self.state["owner"] != owner:
@@ -139,6 +146,8 @@ class Journal:
             self.save()
 
     def save(self):
+        if self.deferred:
+            return
         write_private(self.path, json.dumps(self.state, indent=2) + "\n")
 
     def ensure(self, api, key, path, candidates, ours, body):
@@ -170,13 +179,13 @@ def applies(row, host):
 def verify_app(app, host, otp, marker):
     if (app.get("type") != "self_hosted" or app.get("name") != marker or access_names(app) != {host}
             or app.get("allowed_idps") != [otp] or not re.fullmatch(r"[0-9a-f]{64}", app.get("aud") or "")):
-        raise ValueError("The Access application's hostname, owner sign-in method or audience has drifted.")
+        raise UnsafeAccess("The Access application's hostname, owner sign-in method or audience has drifted.")
 
 
 def verify_policy(policy, owner, marker):
     if (policy.get("name") != marker or policy.get("decision") != "allow" or
             policy.get("include") != [{"email": {"email": owner}}] or policy.get("exclude") or policy.get("require")):
-        raise ValueError("The Access policy must allow only the configured owner's email.")
+        raise UnsafeAccess("The Access policy must allow only the configured owner's email.")
 
 
 def discover_zone(api, host):
@@ -199,13 +208,15 @@ def login_team(host):
         try:
             conn.request("GET", path)
             response = conn.getresponse()
+            if 200 <= response.status < 300:
+                raise UnsafeAccess("Cloudflare allowed an anonymous request. Inspect the Access application.")
             target = urlsplit(response.getheader("Location") or "")
             match = re.fullmatch(r"([a-z0-9-]+)\.cloudflareaccess\.com", target.netloc)
             if (response.status not in (302, 303, 307) or target.scheme != "https" or not match
                     or target.path.rstrip("/") != "/cdn-cgi/access/login/" + host):
                 raise ValueError("Waiting for the Cloudflare Access login challenge.")
             if team and team != match.group(1):
-                raise ValueError("The application and API login teams disagree.")
+                raise UnsafeAccess("The application and API login teams disagree.")
             team = match.group(1)
         finally:
             conn.close()
@@ -217,6 +228,8 @@ def wait_for(operation, seconds):
     while True:
         try:
             return operation()
+        except UnsafeAccess:
+            raise
         except (ValueError, OSError, http.client.HTTPException):
             if time.monotonic() >= end:
                 raise
@@ -240,7 +253,7 @@ def configure_ingress(api, cfg_url, host, sock, team, aud, already_configured):
         result = api.request("GET", cfg_url, missing=True)["result"] or {}
         config = result.get("config") or {}
         if config.get("originRequest") or (config.get("warp-routing") or {}).get("enabled"):
-            raise ValueError("Conflicting global tunnel configuration.")
+            raise UnsafeAccess("Conflicting global tunnel configuration.")
         entries = config.get("ingress") or []
         return [{k: v for k, v in rule.items() if not (k == "originRequest" and v == {})} for rule in entries]
 
@@ -248,7 +261,7 @@ def configure_ingress(api, cfg_url, host, sock, team, aud, already_configured):
     if team and prior == expected:
         return
     if already_configured or prior not in ([], [{"service": "http_status:404"}]):
-        raise ValueError("Unexpected tunnel configuration. Inspect it before retrying.")
+        raise UnsafeAccess("Unexpected tunnel configuration. Inspect it before retrying.")
     if team:
         api.request("PUT", cfg_url, {"config": {"ingress": expected}})
         if rules() != expected:
@@ -278,7 +291,7 @@ def unit_text(description, argv, marker):
 
 def unit_state(name):
     data = subprocess.run(["systemctl", "--user", "show", name, "--all", "-p", "LoadState",
-                           "-p", "FragmentPath", "-p", "DropInPaths", "-p", "ActiveState", "-p", "UnitFileState"],
+                           "-p", "FragmentPath", "-p", "DropInPaths", "-p", "ActiveState", "-p", "InvocationID", "-p", "UnitFileState"],
                           capture_output=True, text=True, timeout=10)
     state = dict(line.split("=", 1) for line in data.stdout.splitlines() if "=" in line)
     if data.returncode not in (0, 4) or not state.get("LoadState"):
@@ -311,7 +324,75 @@ def ensure_unit(path, definition, create):
             os.link(staged, path)
 
 
-def setup(*, archive, prefix, install):
+def select_recovery(api, base, tunnel_id, journal):
+    endpoint = api.request("GET", base + "/cfd_tunnel/" + tunnel_id)["result"]
+    marker = endpoint.get("name") or ""
+    remote_config = endpoint.get("config_src") == "cloudflare" if "config_src" in endpoint else endpoint.get("remote_config") is True
+    if (resource_id(endpoint) != tunnel_id or not remote_config
+            or endpoint.get("deleted_at") or not re.fullmatch(r"polysia-[a-f0-9]{32}", marker)):
+        raise ValueError("Select the active PolySia-managed tunnel ID from the Cloudflare dashboard.")
+    if any(key in journal.state for key in ("app", "tunnel", "policy", "dns")) and (
+            journal.state["marker"] != marker or journal.state.get("tunnel", tunnel_id) != tunnel_id):
+        raise ValueError("This prefix belongs to another deployment. Use the matching prefix.")
+    return marker
+
+
+def valid_token(value):
+    return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_=+./-]{20,8192}", value)
+
+
+def transfer_token(api, tunnel_url, name):
+    disconnected(api, tunnel_url)
+    secret = base64.b64encode(os.urandom(32)).decode("ascii")
+    updated = api.request("PATCH", tunnel_url, {"name": name, "tunnel_secret": secret})["result"]
+    if resource_id(updated) != tunnel_url.rsplit("/", 1)[1]:
+        raise ValueError("Cloudflare did not confirm the selected tunnel. Retry recovery.")
+    disconnected(api, tunnel_url)
+    if updated.get("token"):
+        return updated["token"]
+    # Some API versions return only tunnel metadata. Bind the fetched credential
+    # to this rotation before handing it to the connector.
+    token = api.request("GET", tunnel_url + "/token")["result"]
+    try:
+        payload = json.loads(base64.b64decode(token, validate=True))
+        if payload["s"] == secret and payload["t"] == updated["id"]:
+            return token
+    except (TypeError, ValueError, KeyError):
+        pass
+    raise ValueError("Cloudflare did not return this transfer's credential. Check for another transfer and retry.")
+
+
+def check_origin(sock, host):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+        probe.settimeout(3)
+        probe.connect(str(sock))
+        probe.sendall(f"GET /api/v1/health HTTP/1.0\r\nHost: {host}\r\n\r\n".encode("ascii"))
+        with probe.makefile("rb") as stream:
+            if not re.match(rb"HTTP/1\.[01] 403 ", stream.readline(512)):
+                raise ValueError("Private origin did not reject anonymous health access.")
+
+
+def service_invocations(*units):
+    ids = []
+    for unit in units:
+        state = unit_state(unit.name)
+        invocation = state.get("InvocationID") or ""
+        if (state.get("ActiveState") != "active" or state.get("UnitFileState") != "enabled"
+                or not re.fullmatch("[a-f0-9]{32}", invocation)):
+            return []
+        ids.append(invocation)
+    return ids
+
+
+def healthy_connector(api, tunnel_url):
+    clients = api.request("GET", tunnel_url + "/connections")["result"]
+    if (api.request("GET", tunnel_url)["result"].get("status") != "healthy"
+            or not isinstance(clients, list) or len(clients) != 1):
+        raise ValueError("Expected one healthy connector. Inspect the tunnel in Cloudflare.")
+    return resource_id(clients[0])
+
+
+def deployment_connector():
     if sys.platform != "linux" or os.getuid() == 0:
         raise ValueError("Run deployment as the dedicated, non-root Linux service user.")
     try:
@@ -330,6 +411,11 @@ def setup(*, archive, prefix, install):
         raise ValueError("Install the authenticated cloudflared package first, then retry.")
     if "--token-file" not in command(connector, "tunnel", "run", "--help"):
         raise ValueError("The installed cloudflared must support tunnel run --token-file.")
+    return connector
+
+
+def setup(*, archive, prefix, install, recovery_id=None, backup=None, empty_workspace=False):
+    connector = deployment_connector()
     remote = prefix / "remote"
     remote.mkdir(mode=0o700, exist_ok=True)
     if (remote.is_symlink() or remote.stat().st_uid != os.getuid() or stat.S_IMODE(remote.stat().st_mode) != 0o700):
@@ -341,17 +427,7 @@ def setup(*, archive, prefix, install):
     previous = json.loads(path.read_bytes()) if path.exists() else {}
     host = field("POLYSIA_HOSTNAME", "Application hostname (polysia.example.com)", hostname, previous.get("host"))
     owner = field("POLYSIA_OWNER_EMAIL", "Owner email (owner@example.com)", owner_email, previous.get("owner"))
-    j = Journal(path, host, owner)
-    name = j.state["marker"]
-    units = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "systemd/user"
-    origin = units / "polysia-origin.service"
-    tunnel = units / "polysia-tunnel.service"
-    origin_text = unit_text("PolySia protected workspace", [sys.executable, "-I", prefix / "current/polysia",
-                            "--origin-socket", sock, "--public-host", host, "--owner-email", owner], name)
-    tunnel_text = unit_text("PolySia authenticated tunnel", [connector, "tunnel", "--no-autoupdate", "run",
-                            "--token-file", remote / "connector.token"], name)
-    ensure_unit(origin, origin_text, False)
-    ensure_unit(tunnel, tunnel_text, False)
+    j = Journal(path, host, owner, deferred=bool(recovery_id))
     token = (getpass.getpass("Cloudflare management API token (hidden): ") if sys.stdin.isatty()
              else sys.stdin.readline(1025).strip())
     if not token or not token.isascii() or not all(32 < ord(c) < 127 for c in token) or len(token) > 1024:
@@ -363,21 +439,128 @@ def setup(*, archive, prefix, install):
             raise ValueError("The active Cloudflare account or zone has changed.")
         j.state[key] = actual
     j.save()
+    base = "/accounts/" + account
+    if j.state.get("recovery") and j.state["recovery"] != recovery_id:
+        raise ValueError("A transfer is incomplete. Rerun with the original --recover-tunnel ID.")
+    database = prefix / "data/workspace.sqlite3"
+    machine = hashlib.sha256(Path("/etc/machine-id").read_bytes() + j.state["host"].encode()).hexdigest()
+    if not recovery_id and j.state.get("machine", machine) != machine:
+        raise ValueError("This journal came from another host. Use --recover-tunnel with its tunnel ID.")
+    if recovery_id:
+        name = select_recovery(api, base, recovery_id, j)
+        if backup and database.exists():
+            raise ValueError("A workspace already exists. Inspect it and retry without --workspace-backup.")
+        if not database.exists() and not (empty_workspace or backup):
+            raise ValueError("Supply --workspace-backup FILE or explicitly choose --empty-workspace.")
+        if backup and not backup.is_file():
+            raise ValueError("The service user must be able to read the workspace backup.")
+        j.state.update(marker=name, recovery=recovery_id)
+    name = j.state["marker"]
+    units = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "systemd/user"
+    origin = units / "polysia-origin.service"
+    tunnel = units / "polysia-tunnel.service"
+    origin_text = unit_text("PolySia protected workspace", [sys.executable, "-I", prefix / "current/polysia",
+                            "--origin-socket", sock, "--public-host", host, "--owner-email", owner], name)
+    tunnel_text = unit_text("PolySia authenticated tunnel", [connector, "tunnel", "--no-autoupdate", "run",
+                            "--token-file", remote / "connector.token"], name)
+    ensure_unit(origin, origin_text, False)
+    ensure_unit(tunnel, tunnel_text, False)
+    if (not recovery_id and j.state.get("configured") and (origin.exists() or j.state.get("machine"))
+            and (not database.is_file() or not database.stat().st_size)):
+        raise ValueError("The saved workspace is missing or empty. Inspect the data directory and use --recover-tunnel.")
+    try:
+        tunnel_url, app, team = provision(api, base, zone, host, owner, j, sock, recovery_id)
+    except UnsafeAccess:
+        if tunnel.exists() and previous.get("configured") and previous["marker"] == name:
+            command("systemctl", "--user", "disable", "--now", tunnel.name)
+        raise
+    j.deferred = False
+    j.save()
+    access = json.dumps({"team": team, "audience": app["aud"]}) + "\n"
+    if not recovery_id:
+        credential = api.request("GET", tunnel_url + "/token")["result"]
+        if not valid_token(credential):
+            raise ValueError("The connector credential is unavailable.")
+        local_token = remote / "connector.token"
+        if previous.get("configured") and local_token.is_file() and local_token.read_text() != credential:
+            raise ValueError("The tunnel credential has changed. Confirm the active host and use --recover-tunnel.")
+    installed = install(archive, prefix)
+    if not recovery_id and previous.get("artifact") == installed["artifactSha256"]:
+        invocations = service_invocations(origin, tunnel)
+        token_file = remote / "connector.token"
+        access_file = remote / "access.json"
+        if (invocations and invocations == previous.get("invocations")
+                and token_file.is_file() and token_file.read_text() == credential
+                and access_file.is_file() and access_file.read_text() == access
+                and healthy_connector(api, tunnel_url) == previous.get("connector")):
+            check_origin(sock, host)
+            print(f"PolySia is already running at https://{host}. No restart was needed.")
+            return
+    if recovery_id and (database.exists() or backup):
+        database.parent.mkdir(mode=0o700, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=remote) as directory:
+            source = backup or database
+            target = database if backup else Path(directory) / "verified.sqlite3"
+            result = subprocess.run([sys.executable, "-I", installed["launcher"], "restore",
+                                     "--from", source, "--to", target])
+            if result.returncode:
+                raise ValueError("Workspace verification failed. Inspect the saved data before retrying.")
+    write_private(remote / "access.json", access)
     if tunnel.exists():
         command("systemctl", "--user", "disable", "--now", tunnel.name)
-    base = "/accounts/" + account
+    wait_for(lambda: disconnected(api, tunnel_url), 30)
+    if recovery_id:
+        credential = transfer_token(api, tunnel_url, name)
+    if not valid_token(credential):
+        raise ValueError("The connector credential is unavailable.")
+    write_private(remote / "connector.token", credential)
+    ensure_unit(origin, origin_text, True)
+    ensure_unit(tunnel, tunnel_text, True)
+    command("systemctl", "--user", "daemon-reload")
+    command("systemctl", "--user", "restart", origin.name)
+    wait_for(lambda: check_origin(sock, host), 12)
+    try:
+        command("systemctl", "--user", "start", tunnel.name)
+        client = wait_for(lambda: healthy_connector(api, tunnel_url), 45)
+        if login_team(host) != team:
+            raise ValueError("The protected hostname changed its Access team.")
+        command("systemctl", "--user", "enable", origin.name, tunnel.name)
+    except BaseException:
+        command("systemctl", "--user", "stop", tunnel.name)
+        raise
+    j.state.pop("recovery", None)
+    j.state.update(machine=machine, artifact=installed["artifactSha256"], connector=client,
+                   invocations=service_invocations(origin, tunnel))
+    j.save()
+    print(f"PolySia is ready for owner sign-in at https://{host}.\n"
+          f"Installed artifact {installed['artifactSha256'][:12]}. Anonymous browser and API access require sign-in.\n"
+          "To withdraw access, run systemctl --user disable --now polysia-tunnel.service.")
+
+
+def provision(api, base, zone, host, owner, j, sock, recovery_id):
+    name = j.state["marker"]
     apps, tunnels, dns = base + "/access/apps", base + "/cfd_tunnel", "/zones/" + zone + "/dns_records"
     records = api.rows(dns, name=host)
     relevant = [a for a in api.rows(apps) if applies(a, host) or a.get("name") == name]
     candidates = api.rows(tunnels, name=name, is_deleted="false")
+    if j.state.get("configured") and not any(resource_id(a) == j.state.get("app") for a in relevant):
+        raise UnsafeAccess("The recorded Access application is missing. Inspect its hostname and owner policy.")
     if records and (len(records) != 1 or records[0].get("comment") != name):
-        raise ValueError("DNS already contains a record at this hostname. Choose an unused name.")
+        raise ValueError("DNS already contains a record at this hostname. See Recover an HTTPS site "
+                         "in the operations guide for --recover-tunnel, or choose an unused hostname.")
     if any(a.get("name") != name for a in relevant):
-        raise ValueError("Another Access application covers this hostname. Choose an unused name.")
+        raise UnsafeAccess("Another Access application covers this hostname. Choose an unused name.")
     providers = [row for row in api.rows(base + "/access/identity_providers") if row.get("type") == "onetimepin"]
     if len(providers) != 1:
         raise ValueError("An existing One-time PIN identity provider is required for owner login.")
     otp = resource_id(providers[0])
+
+    if recovery_id:
+        if (len(relevant) != 1 or len(records) != 1 or len(candidates) != 1
+                or resource_id(candidates[0]) != recovery_id):
+            raise ValueError("Recovery requires the existing Access app, DNS record and selected tunnel.")
+        # Pin the inventory before reuse. A missing item must never fall through to creation.
+        j.state["tunnel"] = recovery_id
 
     print("Configuring the owner-only Access application…", flush=True)
     app = j.ensure(api, "app", apps, relevant, lambda a: a.get("name") == name,
@@ -387,70 +570,45 @@ def setup(*, archive, prefix, install):
     app = api.request("GET", app_url)["result"]
     verify_app(app, host, otp, name)
     policies = app_url + "/policies"
-    j.ensure(api, "policy", policies, api.rows(policies), lambda p: p.get("name") == name,
+    existing_policies = api.rows(policies)
+    if j.state.get("configured") and (len(existing_policies) != 1 or existing_policies[0].get("id") != j.state.get("policy")):
+        raise UnsafeAccess("The set of policies for the protected application changed.")
+    if recovery_id and len(existing_policies) != 1:
+        raise ValueError("Recovery requires one existing owner policy.")
+    j.ensure(api, "policy", policies, existing_policies, lambda p: p.get("name") == name,
              {"name": name, "precedence": 1, "decision": "allow", "include": [{"email": {"email": owner}}],
               "require": [], "exclude": []})
     policy_list = api.rows(policies)
     if len(policy_list) != 1 or resource_id(policy_list[0]) != j.state["policy"]:
-        raise ValueError("Expected exactly one verified owner policy.")
+        raise UnsafeAccess("Expected exactly one verified owner policy.")
     verify_policy(api.request("GET", policies + "/" + j.state["policy"])["result"], owner, name)
     endpoint = j.ensure(api, "tunnel", tunnels, candidates, lambda t: t.get("name") == name,
                         {"name": name, "config_src": "cloudflare"})
     tunnel_url = tunnels + "/" + resource_id(endpoint)
-    wait_for(lambda: disconnected(api, tunnel_url), 30)
     team = os.environ.get("POLYSIA_ACCESS_TEAM") or j.state.get("team")
     if team and (team != j.state.get("team", team) or not re.fullmatch("[a-z0-9-]{1,63}", team)):
         raise ValueError("Invalid or conflicting Cloudflare Access team name.")
     cfg_url = tunnel_url + "/configurations"
-    configure_ingress(api, cfg_url, host, sock, team, app["aud"], j.state.get("configured"))
+
+    if not (recovery_id or j.state.get("configured")):
+        disconnected(api, tunnel_url)
+    if not recovery_id:
+        configure_ingress(api, cfg_url, host, sock, team, app["aud"], j.state.get("configured"))
     target = resource_id(endpoint) + ".cfargotunnel.com"
     dns_body = {"type": "CNAME", "name": host, "content": target, "proxied": True, "ttl": 1, "comment": name}
     record = j.ensure(api, "dns", dns, records, lambda r: r.get("comment") == name, dns_body)
     record = api.request("GET", dns + "/" + resource_id(record))["result"]
     if any(record.get(k) != dns_body[k] for k in ("type", "name", "content", "proxied", "comment")):
-        raise ValueError("The deployment DNS record has drifted. The tunnel remains disconnected.")
+        raise ValueError("The deployment DNS record has drifted. Inspect the record before retrying.")
 
     print("Checking anonymous browser and API access before starting the connector…", flush=True)
     observed = wait_for(lambda: login_team(host), 90)
     if team and team != observed:
-        raise ValueError("The observed Cloudflare Access team differs from the expected team.")
+        raise UnsafeAccess("The observed Cloudflare Access team differs from the expected team.")
     team = observed
     j.state["team"] = team
     j.save()
-    configure_ingress(api, cfg_url, host, sock, team, app["aud"], j.state.get("configured"))
+    configure_ingress(api, cfg_url, host, sock, team, app["aud"], recovery_id or j.state.get("configured"))
     j.state["configured"] = True
     j.save()
-    write_private(remote / "access.json", json.dumps({"team": team, "audience": app["aud"]}) + "\n")
-    credential = api.request("GET", tunnel_url + "/token")["result"]
-    if not isinstance(credential, str) or not re.fullmatch(r"[A-Za-z0-9_=+./-]{20,8192}", credential):
-        raise ValueError("The connector credential is unavailable.")
-    write_private(remote / "connector.token", credential)
-    installed = install(archive, prefix)
-    ensure_unit(origin, origin_text, True)
-    ensure_unit(tunnel, tunnel_text, True)
-    command("systemctl", "--user", "daemon-reload")
-    command("systemctl", "--user", "restart", origin.name)
-    def check_origin():
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
-            probe.settimeout(3)
-            probe.connect(str(sock))
-            probe.sendall(f"GET /api/v1/health HTTP/1.0\r\nHost: {host}\r\n\r\n".encode("ascii"))
-            with probe.makefile("rb") as stream:
-                if not re.match(rb"HTTP/1\.[01] 403 ", stream.readline(512)):
-                    raise ValueError("Private origin did not reject anonymous health access.")
-    wait_for(check_origin, 12)
-    try:
-        command("systemctl", "--user", "start", tunnel.name)
-        def check_tunnel():
-            if api.request("GET", tunnel_url)["result"].get("status") != "healthy":
-                raise ValueError("Waiting for a healthy connector. Check the tunnel service and outbound connectivity.")
-        wait_for(check_tunnel, 45)
-        if login_team(host) != team:
-            raise ValueError("The protected hostname changed its Access team.")
-        command("systemctl", "--user", "enable", origin.name, tunnel.name)
-    except BaseException:
-        command("systemctl", "--user", "stop", tunnel.name)
-        raise
-    print(f"PolySia is ready for owner sign-in at https://{host}.\n"
-          f"Installed artifact {installed['artifactSha256'][:12]}. Anonymous browser and API access require sign-in.\n"
-          "To withdraw access, run systemctl --user disable --now polysia-tunnel.service.")
+    return tunnel_url, app, team
