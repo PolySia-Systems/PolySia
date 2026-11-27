@@ -2,13 +2,31 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from apps.server import public_marks, public_shadow as paper
 from apps.server.archive import copy_workspace
 from apps.server.store import Conflict, Workspace
+from apps.server.run_week import summary
 
 
 class SimulatedDepositTests(unittest.TestCase):
+    def test_clock_correction_preserves_pause_and_flags_old_out_of_order_history(self):
+        with TemporaryDirectory() as directory, Workspace(Path(directory) / 'original.db').connection() as db:
+            key = 'e' * 32
+            with patch.object(paper, 'timestamp', return_value='2026-10-20T01:00:00Z'):
+                paper.create(db, key, '0x' + 'ab' * 20, 'History', '20', '5')
+            with patch.object(paper, 'timestamp', return_value='2026-10-19T01:00:00Z'):
+                paused = paper.control(db, key, 1, 'pause')
+            self.assertEqual(paused['createdAt'], paused['updatedAt'])
+            paper.verify_archive(db)
+            db.execute("UPDATE public_decisions SET recorded='2026-10-18T01:00:00Z'")
+            with self.assertRaisesRegex(ValueError, 'clock moved backwards'):
+                summary(db, key)
+            db.execute("UPDATE public_runs SET created='2026-10-10'")
+            with self.assertRaisesRegex(ValueError, 'UTC offset'):
+                paper.verify_archive(db)
+
     def test_pause_duplicate_and_cash_benchmark_survive_restore(self):
         key = 'd' * 32
         with TemporaryDirectory() as directory:

@@ -37,6 +37,19 @@ def _run(db, run_id):
     return row
 
 
+def _journal_time(value):
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        raise ValueError("Portfolio timestamps require a UTC offset.")
+    return parsed
+
+
+def _recorded_time(previous, observed):
+    # Keep revision order when the system clock steps backwards. The observation
+    # retains its original provider times and uses the real clock for validation.
+    return previous if _journal_time(previous) > _journal_time(observed) else observed
+
+
 EXIT_MODEL = {"model": "displayed-bids-v1", "sizing": "operator limit capped by observed leader sale and owned shares",
               "maxPriceDecrease": "0.03", "costMethod": "pooled cost, floor to micro-pUSD"}
 ENABLE_REASON = "Enabled operator-capped SELL windows for this run."
@@ -250,7 +263,7 @@ def control(db, run_id, revision, action):
         status, reason = row["status"], ENABLE_REASON
     else:
         status, reason = _check_control(row["status"], action), CONTROL_REASONS[action]
-    now = timestamp()
+    now = _recorded_time(row["updated"], timestamp())
     db.execute("""INSERT INTO public_decisions(run_id,revision,recorded,kind,reason,shares,gross,fee)
                   VALUES(?,?,?,?,?,0,0,0)""", (run_id, revision + 1, now, action, reason))
     db.execute("UPDATE public_runs SET revision=revision+1, status=?, updated=? WHERE id=?", (status, now, run_id))
@@ -291,7 +304,7 @@ def deposit(db, run_id, revision, amount):
     if row["status"] == "stopped":
         raise Conflict("This portfolio has stopped.")
     micros, reason = _deposit_terms(amount, row["capital"] + _totals(db, run_id)[-1])
-    now = timestamp()
+    now = _recorded_time(row["updated"], timestamp())
     receipt = {"amount": units(micros), "amountMicros": micros}
     db.execute("""INSERT INTO public_decisions(run_id,revision,recorded,kind,reason,shares,gross,fee,receipt)
                   VALUES(?,?,?,'deposit',?,0,0,0,?)""", (run_id, revision + 1, now, reason, json.dumps(receipt)))
@@ -306,7 +319,7 @@ def change_cap(db, run_id, revision, cap):
         raise Conflict("This portfolio has stopped.")
     amount, reason = _cap_change(row["entry_cap"], cap, row["capital"])
     if amount != row["entry_cap"]:
-        now = timestamp()
+        now = _recorded_time(row["updated"], timestamp())
         change = {"previousCap": units(row["entry_cap"]), "nextCap": units(amount)}
         db.execute("""INSERT INTO public_decisions(run_id,revision,recorded,kind,reason,shares,gross,fee,receipt)
                       VALUES(?,?,?,'change-cap',?,0,0,0,?)""",
@@ -559,6 +572,7 @@ def record_sale(db, run_id, revision, token, limit, receipt):
 
 
 def _save(db, run_id, revision, now, kind, reason, amounts, receipt, released):
+    now = _recorded_time(_run(db, run_id)["updated"], now)
     db.execute("INSERT INTO public_decisions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                (run_id, revision + 1, now, kind, reason, *amounts, json.dumps(receipt, allow_nan=False), released))
     db.execute("UPDATE public_runs SET revision=revision+1, updated=? WHERE id=?", (now, run_id))
@@ -590,7 +604,7 @@ def verify_archive(db, version=WORKSPACE_VERSION):
                 or active_cap > run["capital"]
                 or policy != _policy(_next_budget(active_cap, active_cap), exit_enabled, check_sales, cumulative)):
             raise ValueError("Invalid public shadow policy.")
-        datetime.fromisoformat(last)
+        _journal_time(last)
         used = set()
         holdings = {}
         background_enabled = False
@@ -599,7 +613,7 @@ def verify_archive(db, version=WORKSPACE_VERSION):
         for item in db.execute("SELECT * FROM public_decisions WHERE run_id=? ORDER BY revision", (run["id"],)):
             revision += 1
             kind, last = item["kind"], item["recorded"]
-            datetime.fromisoformat(last)
+            _journal_time(last)
             if item["revision"] != revision or not isinstance(item["reason"], str):
                 raise ValueError("Invalid public shadow journal sequence.")
             released = 0

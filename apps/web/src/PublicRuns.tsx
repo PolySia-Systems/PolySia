@@ -486,7 +486,7 @@ function Detail({id}: {id: string}) {
           <form className="stack paper-form" onSubmit={e => { e.preventDefault(); void act('deposit') }}>
             <label className="field">Simulated deposit (pUSD)<input required type="number" min="1" step=".01"
               max={1000 - Number(run.fundedCapital)} value={depositAmount} onChange={e => setDepositAmount(e.target.value)}/></label>
-            <p>Only this portfolio receives the simulated funds. Deposits appear separately from trading results.</p>
+            <p>This adds to the funds this strategy can spend on future simulated purchases. Its per-entry cap and pause setting stay the same. Deposits appear separately from trading results.</p>
             <button className="btn" disabled={!!busy || !depositAmount}>Record simulated deposit</button>
           </form>
         </details>}

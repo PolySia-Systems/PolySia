@@ -8,6 +8,15 @@ from .public_shadow import _run, _signed
 
 def summary(db, run_id, *, now=None):
     run = _run(db, run_id)
+    # Older journals could have a valid revision sequence across a clock
+    # correction. Preserve the ledger and decline to ascribe it to a UTC week.
+    skew = db.execute("""SELECT 1 FROM (
+        SELECT julianday(recorded) AS current_time_jd,
+               lag(julianday(recorded), 1, julianday(?)) OVER (ORDER BY revision) AS previous_time_jd
+        FROM public_decisions WHERE run_id=?) WHERE current_time_jd < previous_time_jd LIMIT 1""",
+        (run["created"], run_id)).fetchone()
+    if skew:
+        raise ValueError("Weekly totals are unavailable because the recorded clock moved backwards. The decision journal is available.")
     through = now or datetime.now(UTC)
     through = through.replace(microsecond=through.microsecond // 1000 * 1000)
     start = through - timedelta(days=7)
