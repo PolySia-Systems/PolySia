@@ -1,5 +1,6 @@
 """Controlled contracts for resumable deployment and owner-only ingress."""
 import base64
+import hashlib
 import io
 import json
 import os
@@ -10,7 +11,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from deploy.cloudflare_setup import (
-    Journal, UnsafeAccess, setup, login_team, healthy_connector, provision, select_recovery, transfer_token, applies, check_local_service, configure_ingress, disconnected, hostname, owner_email, verify_app, verify_policy,
+    LEGACY_SOCKET, SERVICE_SOCKET, discover_tunnel, Journal, UnsafeAccess, setup, login_team, healthy_connector, provision, select_recovery, transfer_token, applies, check_local_service, configure_ingress, disconnected, hostname, owner_email, verify_app, verify_policy,
 )
 
 
@@ -270,19 +271,62 @@ class RecoveryTests(unittest.TestCase):
             substitute("check_origin")
             substitute("service_invocations", return_value=["a" * 32, "b" * 32])
             substitute("command", side_effect=service)
-            substitute("sys.stdin", new=io.StringIO("test-management\n" * 5))
+            substitute("sys.stdin", new=io.StringIO("test-management\n" * 7))
             stack.enter_context(patch.dict(os.environ, {"POLYSIA_HOSTNAME": self.host, "POLYSIA_OWNER_EMAIL": self.owner,
                                                         "XDG_CONFIG_HOME": str(prefix / "config")}))
-            installed = Mock(return_value={"artifactSha256": "a" * 64})
+            archive = prefix / "test.pyz"
+            archive.write_bytes(b"release")
+            installed = Mock(return_value={"artifactSha256": hashlib.sha256(archive.read_bytes()).hexdigest()})
             with self.assertRaisesRegex(ValueError, "--empty-workspace"):
-                setup(prefix=prefix, archive=None, install=installed, recovery_id=self.tunnel)
-            setup(prefix=prefix, archive=None, install=installed, recovery_id=self.tunnel, empty_workspace=True)
+                setup(prefix=prefix, archive=archive, install=installed, recovery_id="auto")
+            active = True
+            with self.assertRaisesRegex(ValueError, "active connector"):
+                setup(prefix=prefix, archive=archive, install=installed, recovery_id="auto", empty_workspace=True)
+            installed.assert_not_called()
+            self.assertFalse((prefix / "remote/deployment.json").exists())
+            active = False
+            setup(prefix=prefix, archive=archive, install=installed, recovery_id="auto", empty_workspace=True)
             self.assertTrue(active)
             self.assertEqual(len(rotations), 1)
             calls.clear()
-            setup(prefix=prefix, archive=None, install=installed)
+            setup(prefix=prefix, archive=archive, install=installed, recovery_id="auto", empty_workspace=True)
+            setup(prefix=prefix, archive=archive, install=installed)
             self.api.rows.side_effect = OSError("read failed")
             with self.assertRaises(OSError):
-                setup(prefix=prefix, archive=None, install=installed)
+                setup(prefix=prefix, archive=archive, install=installed)
             self.assertEqual(calls, [])
             self.assertTrue(active)
+
+    def test_discovery_rejects_missing_ambiguous_or_shared_dns(self):
+        for records, aliases in (([], []), ([self.record, self.record], []),
+                                ([{**self.record, "proxied": False}], []),
+                                ([{**self.record, "content": "other.example.com"}], []),
+                                ([self.record], [self.record, {**self.record, "id": self.app}])):
+            with self.subTest(records=len(records), aliases=len(aliases)):
+                self.api.rows.side_effect = [records, aliases]
+                with self.assertRaises(ValueError):
+                    discover_tunnel(self.api, "z", self.host)
+                self.api.request.assert_not_called()
+
+    def test_legacy_socket_migration_is_deferred_verified_and_idempotent(self):
+        api = ConfigAPI()
+        args = (api, "/config", self.host)
+        configure_ingress(*args, LEGACY_SOCKET, "team", self.audience, False)
+        self.assertTrue(configure_ingress(*args, SERVICE_SOCKET, "team", self.audience, True, allow_legacy=True))
+        with patch("deploy.cloudflare_setup.disconnected", side_effect=ValueError("active")):
+            with self.assertRaisesRegex(ValueError, "active"):
+                configure_ingress(*args, SERVICE_SOCKET, "team", self.audience, True, transfer_url="/tunnel")
+        self.assertEqual(api.writes, 1)
+        with patch("deploy.cloudflare_setup.disconnected") as check:
+            for _ in range(2):
+                configure_ingress(*args, SERVICE_SOCKET, "team", self.audience, True, transfer_url="/tunnel")
+            check.assert_called_once_with(api, "/tunnel")
+        self.assertEqual(api.writes, 2)
+        self.assertEqual(api.ingress[0]["service"], "unix:" + SERVICE_SOCKET)
+        protected = api.ingress[0].copy()
+        for change in ({"service": "unix:/other/origin.sock"}, {"hostname": "another.example.com"},
+                       {"originRequest": {}}, {"path": "/other"}):
+            api.ingress[0] = {**protected, "service": "unix:" + LEGACY_SOCKET, **change}
+            with self.assertRaises(UnsafeAccess):
+                configure_ingress(*args, SERVICE_SOCKET, "team", self.audience, True, allow_legacy=True)
+        self.assertEqual(api.writes, 2)
