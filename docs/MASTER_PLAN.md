@@ -2113,6 +2113,8 @@ CRITICAL ACCEPTANCE SCENARIOS
 Use these as behavioral anchors. Implement the smallest tests that establish the stated behavior. Cross-references to evidence may replace repeated prose in future versions.
 
 A01. Clean install
+For a distributed release, begin at the repository page with ordinary reader access. Obtain the tested bytes through its published instructions, verify their identity, and reach the first understood result (A03). Include how to recover, update, and get help. Record clean-host execution and observed first-time user completion separately under section 5.5.
+
 On a fresh certified host, the single installer reaches a usable application and reports remaining user steps. A second run preserves data and resumes safely.
 An uninvited visitor cannot claim the initialized instance, overwrite the owner, or retrieve stored credentials through setup.
 
