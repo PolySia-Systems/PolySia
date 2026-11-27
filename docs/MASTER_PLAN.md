@@ -577,7 +577,7 @@ Provide clear search and filtering; add a command palette only if it improves re
 
 Target WCAG 2.2 AA for the critical flows, with keyboard navigation, visible focus, useful labels, readable contrast, non-color status signals, and accessible error handling. Test actual components rather than assuming a library guarantees compliance. [S19]
 
-Make layout responsive for desktop and mobile browsers. Externalize user-facing text, formats, time zones, and currency units. Keep right-to-left layout feasible. Record launch languages during the first UI milestone; the owner's Persian-language task understanding should be tested if Persian is included.
+Make layout responsive for desktop and mobile browsers. Externalize user-facing text, formats, time zones, and currency units. English is the sole supported language for all PolySia-maintained content until the owner explicitly changes this decision. Use plain English, familiar technical terms, and copy-ready commands. Test whether a first-time reader with limited English can complete the task using the published instructions. Preserve the original form of external records, user input, identifiers, and standard notation.
 
 5.5 User validation
 
@@ -603,7 +603,7 @@ Record the task, initial conditions, observed or predicted obstacle, requirement
 
 At the first UI milestone, implement a small reference covering the core journey and its important loading, empty, error, and partial states. Include desktop/mobile examples and light/dark themes as they become supported. Use realistic, non-sensitive sample content. This is a working reference, not a separate design-platform project.
 
-Inspect the rendered result for visual hierarchy, typography, spacing, density, alignment, coherence, responsive composition, and comprehension of account/mode/financial state. Check that important actions are easy to discover and that long names, translations, large values, and errors do not break the layout. Revise obvious visual defects before calling the journey complete.
+Inspect the rendered result for visual hierarchy, typography, spacing, density, alignment, coherence, responsive composition, and comprehension of account/mode/financial state. Check that important actions are easy to discover and that long names, instructions, large values, and errors do not break the layout. Revise obvious visual defects before calling the journey complete.
 
 Functional tests and accessibility checks do not by themselves demonstrate aesthetic quality. Evaluate appearance against the accepted reference and the stated user outcomes. Reference screenshots may evolve, but regenerating a snapshot alone does not establish that the new design is better or acceptable.
 
@@ -810,7 +810,7 @@ Implement only settings and scopes needed by the active slice using ordinary typ
 
 Change classes:
 
-Personal preferences: supported theme selection, language, time zone, density, and notification choices affect that user's presentation.
+Personal preferences: supported theme selection, time zone, density, and notification choices affect that user's presentation.
 
 Copy-policy values: implemented sizing modes, amounts, allocation, signal age, price tolerance, and supported exit-policy choices use authorized account/strategy settings and a consequence preview.
 
@@ -2113,6 +2113,8 @@ CRITICAL ACCEPTANCE SCENARIOS
 Use these as behavioral anchors. Implement the smallest tests that establish the stated behavior. Cross-references to evidence may replace repeated prose in future versions.
 
 A01. Clean install
+For a distributed release, begin at the repository page with ordinary reader access. Obtain the tested bytes through its published instructions, verify their identity, and reach the first understood result (A03). Include how to recover, update, and get help. Record clean-host execution and observed first-time user completion separately under section 5.5.
+
 On a fresh certified host, the single installer reaches a usable application and reports remaining user steps. A second run preserves data and resumes safely.
 An uninvited visitor cannot claim the initialized instance, overwrite the owner, or retrieve stored credentials through setup.
 

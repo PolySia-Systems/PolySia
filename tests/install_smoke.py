@@ -1,15 +1,19 @@
 """Exercise the offline distributable, with an optional upgrade from a saved prior artifact."""
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import select
 import shutil
+import signal
 import socket
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from html.parser import HTMLParser
 from pathlib import Path
@@ -245,12 +249,57 @@ def verify_upgrade(previous):
               "settings and revisions. Restore retained recorded fills and the new public shadow run.")
 
 
+def verify_readme(bundle):
+    """Exercise the user-facing release instructions with no prior installation."""
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    install = readme.split("## Install on Linux", 1)[1].split("\n## ", 1)[0]
+    command = re.search(r"```sh\n(.+?)\n```", install, re.S).group(1)
+    tag = re.search(r"https://github\.com/PolySia-Systems/PolySia/releases/download/v([\d.]+)/polysia\.pyz", install).group(1)
+    digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
+    assert digest in command, "The README checksum does not match the release bundle"
+    with tempfile.TemporaryDirectory(prefix="polysia-readme-") as directory:
+        cwd = Path(directory)
+        env = {"HOME": str(cwd), "PATH": os.environ["PATH"]}
+        artifact = cwd / "polysia.pyz"
+        artifact.write_text("open('executed', 'w').close()")
+        rejected = subprocess.run(["sh", "-c", command], cwd=cwd, env=env, capture_output=True, timeout=10)
+        assert rejected.returncode and not (cwd / "executed").exists(), "Changed download was accepted"
+
+        shutil.copyfile(bundle, artifact)
+        with (cwd / "output.log").open("w") as output:
+            server = subprocess.Popen(["sh", "-c", command], cwd=cwd, env=env, stdout=output,
+                                      stderr=output, start_new_session=True)
+            try:
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline:
+                    log = (cwd / "output.log").read_text()
+                    assert server.poll() is None, log
+                    started = re.search(r"PolySia is running at (http://127\.0\.0\.1:\d+)", log)
+                    if started:
+                        break
+                    time.sleep(0.1)
+                else:
+                    raise RuntimeError("README startup timed out: " + log)
+                health = json.loads(request(started.group(1), "/api/v1/health"))
+                assert health["status"] == "ok" and health["version"] == tag, health
+                assert health["artifactSha256"] == digest, health
+            finally:
+                if server.poll() is None:
+                    os.killpg(server.pid, signal.SIGTERM)
+                server.wait(timeout=5)
+        print(f"README rejected a changed download and started verified PolySia {tag} ({digest}).")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--upgrade-from", type=Path, metavar="PREVIOUS.pyz",
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--release-bundle", type=Path, help="Check the README against these release bytes.")
+    mode.add_argument("--upgrade-from", type=Path, metavar="PREVIOUS.pyz",
                         help="Exercise an upgrade from this prior offline bundle.")
-    previous = parser.parse_args().upgrade_from
-    if previous is None:
-        verify()
+    args = parser.parse_args()
+    if args.release_bundle:
+        verify_readme(args.release_bundle)
+    elif args.upgrade_from:
+        verify_upgrade(args.upgrade_from)
     else:
-        verify_upgrade(previous)
+        verify()
