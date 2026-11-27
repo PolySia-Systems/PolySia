@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from apps.server import public_shadow as paper
+from apps.server.archive import copy_workspace
 from apps.server.run_week import summary
 from apps.server.store import Workspace
 from test_public_shadow import ID, WALLET, observed_buy, observed_sell
@@ -58,6 +59,20 @@ class ReturningUserTests(unittest.TestCase):
         self.assertEqual((report["openingCash"], report["funding"], report["closingCash"]), ("0", "25", "25"))
         self.assertEqual((report["observations"], report["counts"], report["netResult"]), (1, {"waiting": 1}, "0"))
         self.assertEqual(report["latestObservation"]["reason"], "No qualifying visible BUY.")
+
+    def test_restored_iso_basic_and_submillisecond_boundaries(self):
+        self.at(START - timedelta(days=1), paper.create, WALLET, "Imported history", "10", "2")
+        with self.store.connection() as db:
+            for revision, time_text in enumerate(("20260702T115959.999999+0000", "20260702T130000+0100",
+                                                   "20260709T120000.000001+0000"), 1):
+                with patch.object(paper, "timestamp", return_value=time_text):
+                    paper.deposit(db, ID, revision, "5")
+        restored = self.store.path.with_name("restored.db")
+        copy_workspace(self.store.path, restored)
+        with Workspace(restored).connection(write=False) as db:
+            week = summary(db, ID, now=END)
+            self.assertEqual((week["openingCash"], week["funding"], week["closingCash"]), ("15", "5", "20"))
+            self.assertEqual(paper.report(db, ID)["cash"], "25")
 
     def test_position_from_before_period_sold_inside_period(self):
         self.at(START - timedelta(days=3), paper.create, WALLET, "Inherited position", "25", "10")

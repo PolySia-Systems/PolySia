@@ -3,72 +3,65 @@
 from datetime import UTC, datetime, timedelta
 
 from .provider import units_from_micros
-from .public_shadow import _run, _signed
+from .public_shadow import _journal_time, _run, _signed
+
+
+OBSERVATIONS = {"entry", "exit", "skipped", "duplicate", "waiting", "incomplete", "unavailable"}
 
 
 def summary(db, run_id, *, now=None):
     run = _run(db, run_id)
-    # Older journals could have a valid revision sequence across a clock
-    # correction. Preserve the ledger and decline to ascribe it to a UTC week.
-    skew = db.execute("""SELECT 1 FROM (
-        SELECT julianday(recorded) AS current_time_jd,
-               lag(julianday(recorded), 1, julianday(?)) OVER (ORDER BY revision) AS previous_time_jd
-        FROM public_decisions WHERE run_id=?) WHERE current_time_jd < previous_time_jd LIMIT 1""",
-        (run["created"], run_id)).fetchone()
-    if skew:
-        raise ValueError("Weekly totals are unavailable because the recorded clock moved backwards. The decision journal is available.")
     through = now or datetime.now(UTC)
-    through = through.replace(microsecond=through.microsecond // 1000 * 1000)
     start = through - timedelta(days=7)
-    bounds = (start.isoformat(timespec="milliseconds"), through.isoformat(timespec="milliseconds"))
-    created = datetime.fromisoformat(run["created"])
-    opening = run["capital"] if created < start else 0
-    funding = run["capital"] if start <= created <= through else 0
-    # Group by temporal boundary and kind. Use integer units throughout. Positive
-    # total shares is only used to detect whether a boundary needs asset prices.
-    rows = db.execute("""SELECT julianday(recorded) >= julianday(?) AS in_week, kind,
-                         count(*) AS n, sum(gross) AS gross, sum(fee) AS fees,
-                         sum(shares) AS shares, sum(released_cost) AS released,
-                         sum(CASE WHEN kind='deposit' THEN json_extract(receipt,'$.amountMicros') ELSE 0 END) AS funding
-                         FROM public_decisions WHERE run_id=? AND julianday(recorded) <= julianday(?)
-                         GROUP BY in_week,kind""", (bounds[0], run_id, bounds[1]))
-    counts = {}
+    previous = _journal_time(run["created"])
+    opening = run["capital"] if previous < start else 0
+    funding = run["capital"] if start <= previous <= through else 0
     buys = sales = fees = realized = 0
     shares_before = shares_at_end = 0
+    counts = {}
+    last = None
+    # Restore and reporting use the same timestamp parser. Walk in revision
+    # order so a clock correction or sub-millisecond boundary is visible.
+    rows = db.execute("""SELECT recorded,kind,gross,fee,shares,released_cost,reason,
+                         CASE WHEN kind='deposit' THEN json_extract(receipt,'$.amountMicros') END AS deposit
+                         FROM public_decisions WHERE run_id=? ORDER BY revision""", (run_id,))
     for row in rows:
+        recorded = _journal_time(row["recorded"])
+        if recorded < previous:
+            raise ValueError("Weekly totals are unavailable because the recorded clock moved backwards. The decision journal is available.")
+        previous = recorded
+        if recorded > through:
+            continue
         kind = row["kind"]
+        in_week = recorded >= start
         if kind == "deposit":
-            if row["in_week"]:
-                funding += row["funding"]
+            if in_week:
+                funding += row["deposit"]
             else:
-                opening += row["funding"]
-        if kind in ("entry", "exit"):
+                opening += row["deposit"]
+        elif kind in ("entry", "exit"):
             direction = 1 if kind == "entry" else -1
             shares_at_end += direction * row["shares"]
-            if row["in_week"]:
-                fees += row["fees"]
+            if in_week:
+                fees += row["fee"]
                 if kind == "entry":
                     buys += row["gross"]
                 else:
                     sales += row["gross"]
-                    realized += row["gross"] - row["fees"] - row["released"]
+                    realized += row["gross"] - row["fee"] - row["released_cost"]
             else:
-                opening -= direction * row["gross"] + row["fees"]
+                opening -= direction * row["gross"] + row["fee"]
                 shares_before += direction * row["shares"]
-        if row["in_week"]:
-            counts[kind] = row["n"]
+        if in_week:
+            counts[kind] = counts.get(kind, 0) + 1
+            if kind in OBSERVATIONS:
+                last = {key: row[key] for key in ("kind", "reason", "recorded")}
 
-    last = db.execute("""SELECT kind,reason,recorded FROM public_decisions WHERE run_id=?
-                         AND kind IN ('entry','exit','skipped','duplicate','waiting','incomplete','unavailable')
-                         AND julianday(recorded) BETWEEN julianday(?) AND julianday(?)
-                         ORDER BY revision DESC LIMIT 1""", (run_id, *bounds)).fetchone()
-    observation_kinds = ("entry", "exit", "skipped", "duplicate", "waiting", "incomplete", "unavailable")
     cash_change = sales - buys - fees
     closing = opening + funding + cash_change
-    return {"runId": run_id, "revision": run["revision"], "from": bounds[0], "through": bounds[1],
+    return {"runId": run_id, "revision": run["revision"], "from": start.isoformat(), "through": through.isoformat(),
             "asset": "pUSD", "openingCash": units_from_micros(opening), "funding": units_from_micros(funding),
             "purchases": units_from_micros(buys), "sales": units_from_micros(sales), "fees": units_from_micros(fees),
             "closingCash": units_from_micros(closing), "realizedOnSales": _signed(realized),
             "netResult": _signed(cash_change) if not shares_before and not shares_at_end else None,
-            "observations": sum(counts.get(kind, 0) for kind in observation_kinds),
-            "counts": counts, "latestObservation": dict(last) if last else None}
+            "observations": sum(counts.get(kind, 0) for kind in OBSERVATIONS), "counts": counts, "latestObservation": last}
