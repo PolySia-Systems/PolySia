@@ -18,7 +18,12 @@ def request(endpoint, method, path, headers, body=None):
         sock.connect(str(endpoint))
         conn = HTTPConnection("localhost")
         conn.sock = sock
-        conn.request(method, path, body=body, headers=headers)
+        try:
+            conn.request(method, path, body=body, headers=headers)
+        except BrokenPipeError:
+            # The origin can send its full denial and close before the client
+            # finishes writing the body. Still require the actual HTTP response.
+            pass
         res = conn.getresponse()
         return res.status, json.loads(res.read())
 

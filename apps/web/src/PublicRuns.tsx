@@ -54,6 +54,8 @@ interface Holding {
   realized: string
 }
 interface Portfolio extends Summary {
+  fundedCapital: string
+  deposits: string
   backgroundEnabled: boolean
   exitsEnabled: boolean
   activeExitPolicy: {maxPriceDecrease: string; costMethod: string} | null
@@ -66,6 +68,7 @@ interface Portfolio extends Summary {
 const when = (value: string | number) => new Date(value).toLocaleString('en-GB', { timeZone: 'UTC' }) + ' UTC'
 const labels: Record<string, string> = {
   'change-cap': 'BUY cap changed',
+  deposit: 'Simulated cash added',
   running: 'Running', paused: 'Paused', stopped: 'Stopped', entry: 'Modeled BUY', duplicate: 'Already modeled',
   'background-on': 'Background sampling enabled', 'background-off': 'Background sampling disabled',
   waiting: 'No BUY observed', incomplete: 'Evidence incomplete', skipped: 'Entry skipped',
@@ -223,7 +226,7 @@ interface Valuation {
   grossPurchases: string
   grossSales: string
   modeledFees: string
-  cashBenchmark: { from: string; endValue: string; netReturnPct: string | null; unpricedValueNeededToMatchCash: string | null }
+  cashBenchmark: { from: string; endValue: string; additionalFlows: string; netReturnPct: string | null; unpricedValueNeededToMatchCash: string | null }
   marks: (Mark & {tokenId: string; market: string | null; outcome: string | null})[]
 }
 function PortfolioValue({run}: {run: Portfolio}) {
@@ -251,17 +254,17 @@ function PortfolioValue({run}: {run: Portfolio}) {
         <p>{value.total ? value.priced + ' of ' + value.total + (value.total === 1 ? ' open position priced.' : ' open positions priced.') + (value.priced > 0 ? ' Midpoint value is ' + value.pricedValue + ' pUSD before exit fees.' : '') :
           'All value is held in simulated cash.'} Checked {when(value.checkedMs)}.</p>
         {value.total > value.checked && <p>This check covered {value.checked} holdings. Other holdings have no price in this snapshot.</p>}
-        <p><strong>Compared with holding cash</strong> · Keeping the starting cash since {when(value.cashBenchmark.from)}
+        <p><strong>Compared with holding cash</strong> · Keeping {value.cashBenchmark.additionalFlows === '0' ? 'the starting cash' : 'all contributed cash'} since {when(value.cashBenchmark.from)}
           {' '}would leave {value.cashBenchmark.endValue} pUSD at zero yield.
-          {value.cashBenchmark.netReturnPct !== null && <> The simulated return on starting cash is {value.cashBenchmark.netReturnPct}%.</>}
-          {value.cashBenchmark.unpricedValueNeededToMatchCash === '0' && <> Cash and priced shares already cover the starting amount. Total return is unknown.</>}
+          {value.cashBenchmark.netReturnPct !== null && <> The simulated return on {value.cashBenchmark.additionalFlows === '0' ? 'starting cash' : 'total contributions'} is {value.cashBenchmark.netReturnPct}%.</>}
+          {value.cashBenchmark.unpricedValueNeededToMatchCash === '0' && <> Cash and priced shares already cover the cash benchmark. Total return is unknown.</>}
           {value.cashBenchmark.unpricedValueNeededToMatchCash != null && value.cashBenchmark.unpricedValueNeededToMatchCash !== '0' && <>
             {' '}The unpriced holdings would need a combined value of {value.cashBenchmark.unpricedValueNeededToMatchCash} pUSD to match it. Total return is unknown.</>}
         </p>
       </>}
     </div>
     {value && <details className="paper-evidence"><summary>Valuation evidence</summary>
-      <p>Cash reconciliation in pUSD · {value.capital} starting cash − {value.grossPurchases} purchases
+      <p>Cash reconciliation in pUSD · {value.capital} starting cash + {value.cashBenchmark.additionalFlows} added cash − {value.grossPurchases} purchases
         {' '}+ {value.grossSales} sales − {value.modeledFees} modeled fees = {value.cash} remaining cash.</p>
       {value.marks.map(m => <div key={m.tokenId}><b>{m.market ?? 'Outcome token ' + m.tokenId} · {m.outcome}</b>
         <p>{m.value == null ? m.reason : m.value + ' pUSD at a midpoint of ' + m.midpoint + ' pUSD per share.'}
@@ -282,6 +285,88 @@ function exposureSummary(run: Portfolio) {
   return run.positions.length + ' simulated positions remain open with a total purchase cost of ' + run.openCost + ' pUSD.'
 }
 
+interface WeekSummary {
+  runId: string
+  revision: number
+  from: string
+  through: string
+  openingCash: string
+  funding: string
+  purchases: string
+  sales: string
+  fees: string
+  closingCash: string
+  realizedOnSales: string
+  netResult: string | null
+  observations: number
+  counts: Record<string, number>
+  latestObservation: {kind: string; reason: string; recorded: string} | null
+}
+
+function WeekOverview({run, refreshRun}: {run: Portfolio; refreshRun: () => void}) {
+  const [report, setReport] = useState<WeekSummary | null>(null)
+  const [error, setError] = useState('')
+  const [attempt, setAttempt] = useState(0)
+  useEffect(() => {
+    let active = true
+    setError('')
+    setReport(null)
+    api<WeekSummary>('public-runs/' + run.id + '/week').then(result => {
+      if (result.runId !== run.id) throw new Error('The report identified a different run.')
+      if (active) setReport(result)
+    }).catch(cause => { if (active) setError(errorMessage(cause)) })
+    return () => { active = false }
+  }, [run.id, run.revision, attempt])
+  const stale = report && report.revision !== run.revision
+  return <section className="panel workspace-panel" aria-label="Last seven days">
+    <div className="panel-head"><h2>Last seven days</h2>
+      <button className="btn" onClick={() => { refreshRun(); setAttempt(a => a + 1) }}>Refresh report</button>
+    </div>
+    {error ? <p role="alert">{error}</p> : stale ? <p role="status">This run changed. Refresh the report to see its latest decisions.</p> :
+      report ? <>
+        <p className="workspace-note">{when(report.from)} through {when(report.through)} · Simulated pUSD</p>
+        <dl className="paper-metrics">
+          <div><dt>Net result in period</dt><dd>{report.netResult ?? 'Unknown'}</dd></div>
+          <div><dt>Realized on sales in period</dt><dd>{report.realizedOnSales}</dd></div>
+          <div><dt>Fees in period</dt><dd>{report.fees}</dd></div>
+        </dl>
+        {report.netResult === null && <p className="workspace-note">An open position needs a price at the start or end of this period. The journal has no price for that boundary.</p>}
+        <p>Opening cash {report.openingCash} · Funding added {report.funding} · Purchases {report.purchases} · Gross sales {report.sales} · Closing cash {report.closingCash}</p>
+        <p>{report.observations} recorded windows · {report.counts.entry ?? 0} buys · {report.counts.exit ?? 0} sales · {report.counts.skipped ?? 0} skipped · {report.counts.waiting ?? 0} quiet · {(report.counts.incomplete ?? 0) + (report.counts.unavailable ?? 0)} with missing evidence · {report.counts.duplicate ?? 0} repeats.</p>
+        <p>{run.status === 'stopped' ? 'Sampling has stopped.' : run.status === 'paused' ? 'New entries are paused. Resume to check new purchases.' :
+          !run.nextBudget ? 'The remaining cash is below the minimum for a BUY window.' : run.backgroundEnabled ? 'Background BUY sampling is enabled.' : 'Manual sampling is active. Choose a window to check for a purchase.'}
+          {' '}{run.positions.length} open {run.positions.length === 1 ? 'position' : 'positions'} currently, with a recorded cost of {run.openCost} pUSD.</p>
+        {run.positions.length > 0 && <details className="paper-evidence"><summary>Remaining positions</summary>
+          <ul>{run.positions.map(p => <li key={p.conditionId + '/' + p.tokenId}>
+            {p.market ?? p.conditionId} · {p.outcome ?? p.tokenId} · {p.shares} shares
+          </li>)}</ul></details>}
+        {report.latestObservation && <p className="workspace-note">Latest window at {when(report.latestObservation.recorded)} · {report.latestObservation.reason}</p>}
+      </> : <p role="status">Reading the last seven days…</p>}
+  </section>
+}
+
+function WindowRecheck({route, revision}: {route: string; revision: number}) {
+  const [status, setStatus] = useState('')
+  const [busy, setBusy] = useState(false)
+  async function check() {
+    setBusy(true)
+    try {
+      const result = await api<{visibleBuys: number | null; complete: boolean; checkedMs: number}>(
+        route + '/decisions/' + revision + '/recheck', 'POST', {})
+      let message = 'The activity recheck was unavailable.'
+      if (result.visibleBuys !== null) {
+        message = result.visibleBuys
+          ? 'The provider now shows ' + (result.complete ? '' : 'at least ') + result.visibleBuys + ' BUY row(s) in this earlier window. The original decision and cash are preserved.'
+          : result.complete ? 'The provider still shows no ordinary BUY in this window.' : 'The returned page is incomplete. Activity in this window remains unknown.'
+      }
+      setStatus(message + ' Checked ' + when(result.checkedMs))
+    } catch (cause) { setStatus(errorMessage(cause)) }
+    finally { setBusy(false) }
+  }
+  return <div><button className="text-link" onClick={check} disabled={busy}>{busy ? 'Checking…' : 'Recheck public activity'}</button>
+    <p role="status">{status}</p></div>
+}
+
 function Detail({id}: {id: string}) {
   const [run, setRun] = useState<Portfolio | null>(null)
   const [busy, setBusy] = useState('')
@@ -289,6 +374,7 @@ function Detail({id}: {id: string}) {
   const [confirmStop, setConfirmStop] = useState(false)
   const [windows, setWindows] = useState(1)
   const [newCap, setNewCap] = useState('')
+  const [depositAmount, setDepositAmount] = useState('')
   const [progress, setProgress] = useState('')
   const [saleFeedback, setSaleFeedback] = useState('')
   const [tradesOnly, setTradesOnly] = useState(false)
@@ -339,12 +425,19 @@ function Detail({id}: {id: string}) {
       for (let i = 1; i <= count; i++) {
         if (action === 'sample') setProgress('Observing window ' + i + ' of ' + count + '…')
         const endpoint = sale ? route + '/positions/' + sale.token + '/observe-sell' : route + '/' + action
-        const body = sale ? {revision, maxShares: sale.limit} : action === 'change-cap' ? {revision, cap: newCap} : {revision}
+        let body: {revision: number; maxShares?: string; cap?: string; amount?: string} = {revision}
+        if (sale) body.maxShares = sale.limit
+        if (action === 'change-cap') body.cap = newCap
+        if (action === 'deposit') body.amount = depositAmount
         const fresh = await api<Portfolio>(endpoint, 'POST', body)
         if (ticket !== latestAction.current) return
         const displayed = tradesOnly ? await api<Portfolio>(historyRoute(true)) : fresh
         if (ticket !== latestAction.current) return
         setRun(displayed)
+        if (action === 'deposit') {
+          setDepositAmount('')
+          setProgress('Simulated deposit recorded. Available cash is ' + fresh.cash + ' pUSD.')
+        }
         if (action === 'change-cap') {
           setNewCap('')
           setProgress('Future BUY cap saved at ' + fresh.entryCap + ' pUSD.')
@@ -389,6 +482,14 @@ function Detail({id}: {id: string}) {
           <div><dt>Realized result</dt><dd>{run.realized} <small>pUSD</small></dd></div>
         </dl>
         <p className="workspace-note">Started with {run.capital} pUSD · {run.entryCap} pUSD per entry · {when(run.createdAt)}</p>
+        {run.status !== 'stopped' && Number(run.fundedCapital) <= 999 && <details className="paper-evidence"><summary>Add simulated cash</summary>
+          <form className="stack paper-form" onSubmit={e => { e.preventDefault(); void act('deposit') }}>
+            <label className="field">Simulated deposit (pUSD)<input required type="number" min="1" step=".01"
+              max={1000 - Number(run.fundedCapital)} value={depositAmount} onChange={e => setDepositAmount(e.target.value)}/></label>
+            <p>This adds to the funds this strategy can spend on future simulated purchases. Its per-entry cap and pause setting stay the same. Deposits appear separately from trading results.</p>
+            <button className="btn" disabled={!!busy || !depositAmount}>Record simulated deposit</button>
+          </form>
+        </details>}
         {run.status !== 'stopped' && <details className="paper-evidence"><summary>Change future BUY cap</summary>
           <form className="stack paper-form" onSubmit={e => { e.preventDefault(); void act('change-cap') }}>
             <label className="field">New per-entry cap (pUSD)
@@ -419,6 +520,7 @@ function Detail({id}: {id: string}) {
         <p>While PolySia is running, it checks short BUY windows with your simulated budget, even after you close the browser. Checks are spaced at least 15 seconds apart. Activity between windows can be missed.</p>
         {run.backgroundEnabled && <button className="text-link" disabled={!!busy} onClick={() => load()}>Refresh decisions</button>}
       </section>}
+      <WeekOverview run={run} refreshRun={() => void load()}/>
       <div className="paper-workbench">
       <section className="panel workspace-panel">
         <h2>{run.status === 'stopped' ? 'Run closed to observations' : run.status === 'paused' ? 'New entries paused' : 'Observe a BUY window'}</h2>
@@ -485,6 +587,8 @@ function Detail({id}: {id: string}) {
               d.observation?.side === 'SELL' && d.kind === 'waiting' ? 'No matching SELL observed' :
               d.observation?.side === 'SELL' && d.kind === 'skipped' ? 'Sale skipped' : labels[d.kind] ?? d.kind}</b><small className="muted">{when(d.at)}</small></div>
           <p>{d.reason}</p>{d.kind === 'entry' && <p>{d.market && <>{d.market} · </>}{d.outcome && <>{d.outcome} · </>}{d.shares} shares · {d.gross} pUSD + {d.fee} pUSD fee</p>}
+          {d.kind === 'waiting' && d.observation?.side === 'BUY' && d.observation.windowStartSeconds != null &&
+            <WindowRecheck route={route} revision={d.revision}/>}
           {d.kind === 'exit' && <p>{d.market && <>{d.market} · </>}{d.outcome && <>{d.outcome} · </>}{d.shares} of {d.targetShares} targeted shares sold · {d.proceeds} pUSD after fees · {d.realized} pUSD realized</p>}
           {d.observation && <details className="paper-evidence"><summary>Observation details</summary>
             <dl>{d.observation.side === 'SELL' ? <div><dt>Share limit</dt><dd>{d.observation.maxShares} shares</dd></div> :

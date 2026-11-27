@@ -301,7 +301,8 @@ class PublicPortfolioTests(unittest.TestCase):
         with self.store.connection() as db:
             with patch.object(paper, "timestamp", return_value=bought):
                 paper.record(db, ID, 1, observed_buy(WALLET, "10.00", start=start))
-            paper.control(db, ID, 2, "pause")
+            with patch.object(paper, "timestamp", return_value=datetime.fromtimestamp(start + 7, UTC).isoformat()):
+                paper.control(db, ID, 2, "pause")
             wallet, scope, _ = paper.sale_terms(db, ID, 3, "734", "11")
             receipt = observed_sell(wallet, scope, start=start + 10)
             with patch.object(paper, "timestamp", return_value=datetime.fromtimestamp(start + 16, UTC).isoformat()):
@@ -310,13 +311,16 @@ class PublicPortfolioTests(unittest.TestCase):
             self.assertEqual(first["positions"][0]["shares"], "11")
             self.assertEqual(first["positions"][0]["realized"], first["realized"])
             self.assertEqual(first["decisions"][0]["releasedCost"], "4.150501")
-            duplicate = paper.record_sale(db, ID, 4, "734", "11", receipt)
+            with patch.object(paper, "timestamp", return_value=datetime.fromtimestamp(start + 17, UTC).isoformat()):
+                duplicate = paper.record_sale(db, ID, 4, "734", "11", receipt)
             self.assertEqual((duplicate["decisions"][0]["kind"], duplicate["cash"]), ("duplicate", first["cash"]))
             with self.assertRaises(ValueError):
                 paper.sale_terms(db, ID, 5, "734", "12")
-            earlier = paper.record_sale(db, ID, 5, "734", "11", observed_sell(wallet, scope, order="0a", start=start + 10))
+            with patch.object(paper, "timestamp", return_value=datetime.fromtimestamp(start + 18, UTC).isoformat()):
+                earlier = paper.record_sale(db, ID, 5, "734", "11", observed_sell(wallet, scope, order="0a", start=start + 10))
             self.assertEqual((earlier["decisions"][0]["kind"], earlier["cash"]), ("incomplete", first["cash"]))
-            filled = paper.record_sale(db, ID, 6, "734", "11", observed_sell(wallet, scope, order="09", depth="25", start=start + 20))
+            with patch.object(paper, "timestamp", return_value=datetime.fromtimestamp(start + 26, UTC).isoformat()):
+                filled = paper.record_sale(db, ID, 6, "734", "11", observed_sell(wallet, scope, order="09", depth="25", start=start + 20))
             self.assertEqual((filled["openCost"], filled["positions"], filled["exits"]), ("0", [], 2))
             closed, = filled["closedPositions"]
             self.assertEqual((closed["soldShares"], closed["releasedCost"], closed["saleProceeds"], closed["realized"]),

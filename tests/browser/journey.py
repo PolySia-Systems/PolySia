@@ -505,6 +505,7 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
         expect(comparison.get_by_text(expected, exact=True)).to_be_visible()
         expect(comparison.get_by_text("19,348.35", exact=True)).to_be_visible()
         if compare_case == "shared":
+            expect(comparison.get_by_text("1 of 1 shown", exact=True)).to_have_count(2)
             expect(comparison.get_by_text("Fixture opening day?", exact=True)).to_have_count(1)
             expect(comparison.get_by_text("Fixture Lumen · Yes", exact=True)).to_be_visible()
             expect(comparison.get_by_text("Fixture Stone · No, Yes", exact=True)).to_be_visible()
@@ -651,6 +652,12 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     button.click()
     expect(page.get_by_role("heading", name="Budget check skipped")).to_be_visible()
     expect(page.get_by_text("10,555 ms", exact=False)).to_be_visible()
+    check_filter = page.get_by_label("Buy check at this budget")
+    page.get_by_role("button", name="Back to rankings", exact=True).click()
+    check_filter.select_option("skipped")
+    expect(lumen).to_be_visible()
+    expect(page.get_by_role("button", name="Inspect Fixture Stone", exact=True)).to_have_count(0)
+    lumen.click()
     button.click()
     expect(page.get_by_role("heading", name="Displayed capacity estimated")).to_be_visible()
     expect(page.get_by_text("0.02 pUSD per share", exact=True)).to_be_visible()
@@ -667,6 +674,23 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     expect(page.get_by_text("2240 ms after detection", exact=True)).to_be_visible()
     expect(page.get_by_text("0.03 per share", exact=True)).to_be_visible()
     assert not samples
+    page.get_by_role("button", name="Back to rankings", exact=True).click()
+    reads_before_filtering = list(profile_reads)
+    check_filter.select_option("estimated")
+    expect(lumen).to_be_visible()
+    board_budget.fill("5")
+    expect(lumen).to_have_count(0)
+    check_filter.select_option("unchecked")
+    expect(lumen).to_be_visible()
+    board_budget.fill("12.5")
+    expect(lumen).to_have_count(0)
+    check_filter.select_option("estimated")
+    expect(lumen).to_be_visible()
+    check_width(page)
+    capture(page, output, "public-budget-filter-mobile")
+    assert profile_reads == reads_before_filtering
+    board_budget.fill("12.50")
+    lumen.click()
 
     # The second public read covers the original interval. Export every actual
     # read even when a follow-up fails or yields an incomplete page.
@@ -746,10 +770,14 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     expect(reads).to_have_count(0)
     expect(page.get_by_role("link", name="Download observation")).to_have_count(0)
     page.get_by_role("button", name="Back to rankings", exact=True).click()
+    check_filter.select_option("inconclusive")
+    expect(lumen).to_be_visible()
+    check_filter.select_option("all")
     first_pick.check()
     second_pick.check()
     compare.click()
     expect(comparison.get_by_text("Buy check · 12.50 pUSD", exact=True)).to_be_visible()
+    expect(comparison.get_by_text("Observation timed out. Try another window.", exact=True)).to_be_visible()
     comparison.get_by_role("button", name="Open profile for Fixture Lumen").click()
     expect(page.get_by_label("Budget per buy (pUSD)")).to_have_value("12.50")
     page.get_by_role("button", name="Back to comparison").click()
@@ -883,10 +911,13 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
         page.get_by_label("Leader wallet").fill(WALLET)
         page.get_by_label("Run name").fill("Weekend research")
         page.get_by_label("Starting cash").fill("25")
-        page.get_by_role("button", name="Create shadow run").click()
-        expect(page.get_by_role("heading", name="Weekend research")).to_be_visible()
+        # Keep the complete controlled sequence inside the returning operator's
+        # seven-day window, including after restarting the packaged server.
+        start = int(time.time()) - 86400
+        with patch.object(public_shadow, "timestamp", return_value=datetime.fromtimestamp(start - 5, UTC).isoformat(timespec="milliseconds")):
+            page.get_by_role("button", name="Create shadow run").click()
+            expect(page.get_by_role("heading", name="Weekend research")).to_be_visible()
         route = page.url
-        start = int(time.time()) + 1
         receipt = observed_buy(WALLET, "10.00", start=start)
         unavailable = dict(wallet=WALLET, researchBudget="10.00", status="unavailable", reason="Public endpoint unreachable or denied.")
         # Advance a controlled clock past the delayed book. Every browser action
@@ -1086,6 +1117,12 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
             expect(linked).to_be_visible()
             linked.click()
             expect(page.get_by_role("status").filter(has_text=remaining)).to_be_visible()
+            week = page.get_by_role("region", name="Last seven days")
+            expect(week.get_by_text("Net result in period", exact=True)).to_be_visible()
+            expect(week.get_by_text("Unknown", exact=True)).to_be_visible()
+            expect(week.get_by_text("Sampling has stopped.", exact=False)).to_be_visible()
+            week.get_by_text("Remaining positions", exact=True).click()
+            expect(week.get_by_role("listitem").first).to_contain_text("shares")
             print("Installed restart after reinstall preserved the stopped portfolio, partial exit and complete export.")
         finally:
             page.close()

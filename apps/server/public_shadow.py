@@ -37,6 +37,19 @@ def _run(db, run_id):
     return row
 
 
+def _journal_time(value):
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        raise ValueError("Portfolio timestamps require a UTC offset.")
+    return parsed
+
+
+def _recorded_time(previous, observed):
+    # Keep revision order when the system clock steps backwards. The observation
+    # retains its original provider times and uses the real clock for validation.
+    return previous if _journal_time(previous) > _journal_time(observed) else observed
+
+
 EXIT_MODEL = {"model": "displayed-bids-v1", "sizing": "operator limit capped by observed leader sale and owned shares",
               "maxPriceDecrease": "0.03", "costMethod": "pooled cost, floor to micro-pUSD"}
 ENABLE_REASON = "Enabled operator-capped SELL windows for this run."
@@ -79,7 +92,8 @@ def _totals(db, run_id):
                          coalesce(sum(fee),0), count(CASE WHEN kind='entry' THEN 1 END),
                          coalesce(sum(CASE WHEN kind='exit' THEN gross END),0),
                          coalesce(sum(CASE WHEN kind='exit' THEN gross-fee-released_cost END),0),
-                         count(CASE WHEN kind='exit' THEN 1 END)
+                         count(CASE WHEN kind='exit' THEN 1 END),
+                         coalesce(sum(CASE WHEN kind='deposit' THEN json_extract(receipt,'$.amountMicros') END),0)
                          FROM public_decisions WHERE run_id=?""", (run_id,)).fetchone()
 
 
@@ -98,13 +112,14 @@ def _next_budget(cash, cap):
     return f"{cents // 100}.{cents % 100:02d}" if cents >= 100 else None
 
 
-def _summary(row, gross, fee, entries, sales, realized, exits):
-    cash = row["capital"] - gross - fee + sales
+def _summary(row, gross, fee, entries, sales, realized, exits, deposits):
+    funded = row["capital"] + deposits
+    cash = funded - gross - fee + sales
     return {"id": row["id"], "name": row["name"], "wallet": row["wallet"], "mode": MODE,
             "model": MODEL, "asset": "pUSD", "status": row["status"], "revision": row["revision"],
             "createdAt": row["created"], "updatedAt": row["updated"], "capital": units(row["capital"]),
             "entryCap": units(row["entry_cap"]), "cash": units(cash), "gross": units(gross), "fees": units(fee),
-            "openCost": units(row["capital"] + realized - cash),
+            "fundedCapital": units(funded), "deposits": units(deposits), "openCost": units(funded + realized - cash),
             "entries": entries, "sales": units(sales), "realized": _signed(realized), "exits": exits, "nextBudget": _next_budget(cash, row["entry_cap"])}
 
 
@@ -248,7 +263,7 @@ def control(db, run_id, revision, action):
         status, reason = row["status"], ENABLE_REASON
     else:
         status, reason = _check_control(row["status"], action), CONTROL_REASONS[action]
-    now = timestamp()
+    now = _recorded_time(row["updated"], timestamp())
     db.execute("""INSERT INTO public_decisions(run_id,revision,recorded,kind,reason,shares,gross,fee)
                   VALUES(?,?,?,?,?,0,0,0)""", (run_id, revision + 1, now, action, reason))
     db.execute("UPDATE public_runs SET revision=revision+1, status=?, updated=? WHERE id=?", (status, now, run_id))
@@ -262,8 +277,8 @@ def sampling_terms(db, run_id, revision):
     _check_revision(row, revision)
     if row["status"] != "running":
         raise Conflict("Only a running public shadow portfolio can sample a BUY.")
-    gross, fee, _, sales, _, _ = _totals(db, run_id)
-    budget = _next_budget(row["capital"] - gross - fee + sales, row["entry_cap"])
+    gross, fee, _, sales, _, _, deposits = _totals(db, run_id)
+    budget = _next_budget(row["capital"] + deposits - gross - fee + sales, row["entry_cap"])
     if not budget:
         raise Conflict("Less than 1 pUSD of simulated cash remains. Review the open positions.")
     return row["wallet"], budget, json.loads(row["policy"]).get("checkSalesBeforeEntry", False)
@@ -276,6 +291,27 @@ def _cap_change(previous, cap, capital):
     return amount, f"Changed future simulated BUY cap from {units(previous)} to {units(amount)} pUSD."
 
 
+def _deposit_terms(amount, funded):
+    micros = _budget(amount)
+    if funded + micros > 1_000_000_000:
+        raise ValueError("Total simulated funding must stay within 1,000 pUSD.")
+    return micros, f"Added {units(micros)} pUSD of simulated cash."
+
+
+def deposit(db, run_id, revision, amount):
+    row = _run(db, run_id)
+    _check_revision(row, revision)
+    if row["status"] == "stopped":
+        raise Conflict("This portfolio has stopped.")
+    micros, reason = _deposit_terms(amount, row["capital"] + _totals(db, run_id)[-1])
+    now = _recorded_time(row["updated"], timestamp())
+    receipt = {"amount": units(micros), "amountMicros": micros}
+    db.execute("""INSERT INTO public_decisions(run_id,revision,recorded,kind,reason,shares,gross,fee,receipt)
+                  VALUES(?,?,?,'deposit',?,0,0,0,?)""", (run_id, revision + 1, now, reason, json.dumps(receipt)))
+    db.execute("UPDATE public_runs SET revision=revision+1, updated=? WHERE id=?", (now, run_id))
+    return report(db, run_id)
+
+
 def change_cap(db, run_id, revision, cap):
     row = _run(db, run_id)
     _check_revision(row, revision)
@@ -283,7 +319,7 @@ def change_cap(db, run_id, revision, cap):
         raise Conflict("This portfolio has stopped.")
     amount, reason = _cap_change(row["entry_cap"], cap, row["capital"])
     if amount != row["entry_cap"]:
-        now = timestamp()
+        now = _recorded_time(row["updated"], timestamp())
         change = {"previousCap": units(row["entry_cap"]), "nextCap": units(amount)}
         db.execute("""INSERT INTO public_decisions(run_id,revision,recorded,kind,reason,shares,gross,fee,receipt)
                       VALUES(?,?,?,'change-cap',?,0,0,0,?)""",
@@ -536,6 +572,7 @@ def record_sale(db, run_id, revision, token, limit, receipt):
 
 
 def _save(db, run_id, revision, now, kind, reason, amounts, receipt, released):
+    now = _recorded_time(_run(db, run_id)["updated"], now)
     db.execute("INSERT INTO public_decisions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                (run_id, revision + 1, now, kind, reason, *amounts, json.dumps(receipt, allow_nan=False), released))
     db.execute("UPDATE public_runs SET revision=revision+1, updated=? WHERE id=?", (now, run_id))
@@ -557,6 +594,7 @@ def verify_archive(db, version=WORKSPACE_VERSION):
                 or run["capital"] % 10_000 or run["entry_cap"] % 10_000):
             raise ValueError("Invalid public shadow configuration.")
         cash, status, revision, last = run["capital"], "running", 1, run["created"]
+        funded = run["capital"]
         policy = json.loads(run["policy"])
         exit_enabled = policy.get("exitModel") is not None
         check_sales = policy.get("checkSalesBeforeEntry") is True
@@ -566,7 +604,7 @@ def verify_archive(db, version=WORKSPACE_VERSION):
                 or active_cap > run["capital"]
                 or policy != _policy(_next_budget(active_cap, active_cap), exit_enabled, check_sales, cumulative)):
             raise ValueError("Invalid public shadow policy.")
-        datetime.fromisoformat(last)
+        _journal_time(last)
         used = set()
         holdings = {}
         background_enabled = False
@@ -575,11 +613,20 @@ def verify_archive(db, version=WORKSPACE_VERSION):
         for item in db.execute("SELECT * FROM public_decisions WHERE run_id=? ORDER BY revision", (run["id"],)):
             revision += 1
             kind, last = item["kind"], item["recorded"]
-            datetime.fromisoformat(last)
+            _journal_time(last)
             if item["revision"] != revision or not isinstance(item["reason"], str):
                 raise ValueError("Invalid public shadow journal sequence.")
             released = 0
-            if kind == "change-cap":
+            if kind == "deposit":
+                transfer = json.loads(item["receipt"])
+                micros, reason = _deposit_terms(transfer["amount"], funded)
+                if (version < 7 or status == "stopped" or type(transfer.get("amountMicros")) is not int
+                        or transfer != {"amount": units(micros), "amountMicros": micros}):
+                    raise ValueError("Invalid simulated deposit.")
+                funded += micros
+                cash += micros
+                expected = NO_ENTRY
+            elif kind == "change-cap":
                 change = json.loads(item["receipt"])
                 amount, reason = _cap_change(active_cap, change["nextCap"], run["capital"])
                 if (version < 6 or status == "stopped" or amount == active_cap

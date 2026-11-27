@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, ChevronLeft, ChevronRight, RefreshCw, Search, X } from 'lucide-react'
-import { api, type Account, errorMessage } from './api'
+import { api, type Account, errorMessage, validBuyBudget } from './api'
 import { PositionSnapshot, WalletValue } from './Workspace'
 import { PublicObservation, type BudgetTest, type WalletCheck } from './PublicObservation'
 import { PublicHistory } from './PublicHistory'
@@ -36,6 +36,14 @@ function profitLabel(raw: string) {
 }
 const utc = (stamp: string) => new Date(stamp).toLocaleString('en-GB', { timeZone: 'UTC' }) + ' UTC'
 type PickedTrader = PublicTrader & { rankedAt: string }
+const evidenceLabels = {
+  all: 'All wallets on this page',
+  estimated: 'Modeled buy observed',
+  skipped: 'Buy skipped by the model',
+  inconclusive: 'Inconclusive check',
+  unchecked: 'No check at this budget',
+}
+type EvidenceFilter = keyof typeof evidenceLabels
 
 const shortlistKey = (period: Period) => 'polysia:public-shortlist:v1:' + period
 const periodKey = 'polysia:rankings-period:v1'
@@ -163,6 +171,7 @@ function PublicComparison({
           const read = reads[trader.address]
           const account = read && 'account' in read ? read.account : null
           const check = checks[trader.address]
+          const markets = trader.address === left.address ? leftMarkets : rightMarkets
           return (
             <article key={trader.address} className="compare-card public-compare-card">
               <h3>{trader.name}</h3>
@@ -193,11 +202,14 @@ function PublicComparison({
                         : 'Unavailable'}
                   </dd>
                 </div>
+                {shared && markets && markets.size > 0 && <div>
+                  <dt>Shared open markets</dt><dd>{shared.length} of {markets.size} shown</dd>
+                </div>}
               </dl>
               <div className="wallet-check-summary">
                 <strong>{check ? 'Buy check · ' + check.budget + ' pUSD' : 'Buy check'}</strong>
                 <p>{check ? check.result : 'Open this wallet to test a simulated buy.'}</p>
-                {check && <small>Window ended {new Date(check.windowEnd * 1000).toISOString().replace('T', ' ').slice(0, 19)} UTC</small>}
+                {check?.windowEnd != null && <small>Window ended {utc(new Date(check.windowEnd * 1000).toISOString())}</small>}
               </div>
               <p className="workspace-note muted">
                 {account?.observedAt
@@ -324,7 +336,9 @@ function Profile({
 export function PublicRankings() {
   const [period, setPeriod] = useState<Period>(visitPeriod)
   const [budget, setBudget] = useState('10')
-  const [checks, setChecks] = useState<Record<string, WalletCheck>>({})
+  const [checksByBudget, setChecksByBudget] = useState<Record<string, Record<string, WalletCheck>>>({})
+  const [filter, setFilter] = useState<EvidenceFilter>('all')
+  const checks = validBuyBudget(budget) ? checksByBudget[Number(budget).toFixed(2)] ?? {} : {}
   const [query, setQuery] = useState('')
   const [selected, select] = useState<string | null>(null)
   const [picks, setPicks] = useState<PickedTrader[]>(() => readShortlist(period))
@@ -390,11 +404,28 @@ export function PublicRankings() {
       setStorageIssue(true)
     }
   }
-  const matching = (board?.leaders ?? []).filter((trader) =>
-    (trader.name + ' ' + trader.address).toLowerCase().includes(query.trim().toLowerCase()),
+  // Snapshots only. Filtering never requests a new page, profile or observation.
+  const filtering = filter !== 'all'
+  const candidates = useMemo(() => {
+    if (!filtering) return (board?.leaders ?? []).map(row => ({...row, rankedAt: board!.observedAt!}))
+    const visited = new Map(picks.map(pick => [pick.address, pick]))
+    for (const page of pages) {
+      if (page.period !== period || page.status !== 'available' || !page.observedAt) continue
+      for (const row of page.leaders) {
+        const saved = visited.get(row.address)
+        if (!saved || Date.parse(saved.rankedAt) <= Date.parse(page.observedAt)) {
+          visited.set(row.address, {...row, rankedAt: page.observedAt})
+        }
+      }
+    }
+    return [...visited.values()].sort((a, b) => a.rank - b.rank)
+  }, [filtering, period, pages, picks, board])
+  const matching = candidates.filter(row =>
+    (row.name + ' ' + row.address).toLowerCase().includes(query.trim().toLowerCase()) &&
+    (!filtering || (validBuyBudget(budget) && (checks[row.address]?.outcome ?? 'unchecked') === filter)),
   )
   const pastedAddress = /^0x[0-9a-f]{40}$/i.test(query.trim()) ? query.trim().toLowerCase() : null
-  const ranked = board?.leaders.find((item) => item.address === selected)
+  const ranked = candidates.find(item => item.address === selected)
   const picked = picks.find((item) => item.address === selected)
   const trader = ranked ?? picked
   function openProfile(address: string, trigger: HTMLElement | null, fromComparison = false) {
@@ -456,7 +487,7 @@ export function PublicRankings() {
                 setQuery(e.target.value)
               }}
               type="search"
-              placeholder="Search this page or paste a wallet"
+              placeholder={filtering ? 'Search filtered wallets or paste an address' : 'Search this page or paste a wallet'}
             />
           </label>
           {pastedAddress && (
@@ -522,6 +553,11 @@ export function PublicRankings() {
                 </button>
               </div>
             </div>
+            <label className="evidence-filter">Buy check at this budget
+              <select value={filter} onChange={event => setFilter(event.target.value as EvidenceFilter)}>
+                {Object.entries(evidenceLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+              </select>
+            </label>
             {picks.length > 0 && <section className="public-shortlist" aria-label="Saved comparison shortlist">
               <h3>{periods[period]} shortlist</h3>
               <ul>{picks.map(pick => <li key={pick.address}>
@@ -537,8 +573,11 @@ export function PublicRankings() {
             {storageIssue && <p role="status" className="notice">Browser storage is unavailable. Reloading may lose these changes.</p>}
           </>
         )}
-        {board?.status === 'available' && (
+        {(board?.status === 'available' || (filtering && picks.length > 0)) && (
           <>
+            {filtering && <p className="workspace-note" role="status">{validBuyBudget(budget)
+              ? `${matching.length} of ${candidates.length} browsed or shortlisted wallets match. Results use each wallet’s latest check at ${budget} pUSD in this visit.`
+              : 'Enter a budget from 1 to 1,000 pUSD in whole cents to filter checks.'}</p>}
             {matching.length ? (
               <div className="public-list" ref={list}>
                 <table>
@@ -570,7 +609,7 @@ export function PublicRankings() {
                               setComparing(false)
                               updatePicks(
                                 e.target.checked
-                                  ? [...picks, {...row, rankedAt: board.observedAt!}]
+                                  ? [...picks, row]
                                   : picks.filter((pick) => pick.address !== row.address),
                               )
                             }}
@@ -593,6 +632,7 @@ export function PublicRankings() {
                             <small>
                               {row.address.slice(0, 8)}…{row.address.slice(-5)}
                             </small>
+                            {filtering && checks[row.address]?.windowEnd != null && <small>Checked {utc(new Date(checks[row.address].windowEnd! * 1000).toISOString())}</small>}
                           </button>
                         </td>
                         <td title={row.pnl} className={Number(row.pnl) < 0 ? 'negative' : 'positive'}>
@@ -608,12 +648,14 @@ export function PublicRankings() {
               <p className="notice">
                 {pastedAddress
                   ? 'This address is outside the rankings shown.'
-                  : board.leaders.length
+                  : filtering
+                    ? 'Choose another check result or open a wallet to test one window.'
+                    : board?.leaders.length
                     ? 'No matching traders on this page. Paste a full wallet address to inspect its positions.'
                     : 'Polymarket returned an empty page.'}
               </p>
             )}
-            <div className="board-pages">
+            {board?.status === 'available' && !filtering && <div className="board-pages">
               <span role="status">Page {index + 1} · {board.leaders.length} wallets</span>
               <div>
                 <button className="btn" disabled={!index || paging} onClick={() => showPage(index - 1)}>
@@ -623,12 +665,12 @@ export function PublicRankings() {
                   {paging ? 'Loading…' : 'Next page'} <ChevronRight size={15} aria-hidden="true" />
                 </button>
               </div>
-            </div>
+            </div>}
             {pageError && <p className="error" role="alert">{pageError} You can retry Next page.</p>}
             <details className="rank-basis"><summary>How rankings are calculated</summary>
               <p>{period === 'all' ? 'All time uses realized profit and loss.' : 'Polymarket measures the change in portfolio value after deposits and withdrawals.'}
                 {' '}Includes combo trades. Copying has its own prices and fees. Coverage is limited to this Polymarket board.
-                {' '}Page read {utc(board.observedAt!)}. Ranks can change between reads.</p>
+                {board?.observedAt && <> Page read {utc(board.observedAt)}.</>} Ranks can change between reads.</p>
             </details>
           </>
         )}
@@ -651,8 +693,11 @@ export function PublicRankings() {
           address={selected}
           period={period}
           trader={trader}
-          rankedAt={ranked ? board?.observedAt ?? undefined : picked?.rankedAt}
-          budgetTest={{budget, setBudget, saveCheck: (wallet, result) => setChecks(old => ({...old, [wallet]: result}))}}
+          rankedAt={ranked?.rankedAt ?? picked?.rankedAt}
+          budgetTest={{budget, setBudget, saveCheck: (wallet, result) => {
+            const key = Number(result.budget).toFixed(2)
+            setChecksByBudget(old => ({...old, [key]: {...old[key], [wallet]: result}}))
+          }}}
           close={() => {
             select(null)
             if (returnToComparison.current) setComparing(true)

@@ -85,8 +85,9 @@ function clock(ms: number) {
 }
 
 export interface WalletCheck {
+  outcome: 'estimated' | 'skipped' | 'inconclusive'
   budget: string
-  windowEnd: number
+  windowEnd: number | null
   result: string
 }
 
@@ -118,14 +119,24 @@ export function PublicObservation({ address, name, budget, setBudget, saveCheck 
         throw new Error('The observation used a different budget.')
       }
       if (checkedBudget !== undefined) {
+        if (!Number.isSafeInteger(result.windowEndSeconds) || result.windowEndSeconds <= 0 ||
+            !Number.isFinite(new Date(result.windowEndSeconds * 1000).getTime())) {
+          throw new Error('The observation has no valid window end time.')
+        }
         const capacity = result.capacity
         const summary = capacity?.status === 'estimated' ? capacity.shares + ' shares at the displayed prices'
           : capacity ? capacity.reason : result.reason
-        saveCheck(address, {budget: checkedBudget, windowEnd: result.windowEndSeconds, result: summary})
+        const outcome = capacity?.status === 'estimated' || capacity?.status === 'skipped' ? capacity.status : 'inconclusive'
+        saveCheck(address, {budget: checkedBudget, windowEnd: result.windowEndSeconds, result: summary, outcome})
+      } else {
+        saveCheck(address, {budget, outcome: 'inconclusive', windowEnd: null,
+          result: 'The observation did not confirm the budget used.'})
       }
       setReceipt(result)
     } catch (cause) {
-      setError(errorMessage(cause))
+      const message = errorMessage(cause)
+      setError(message)
+      saveCheck(address, {budget, outcome: 'inconclusive', windowEnd: null, result: message})
     } finally {
       setBusy(false)
     }

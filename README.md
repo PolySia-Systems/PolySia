@@ -51,6 +51,10 @@ To try a public wallet, open **Public rankings** and choose a period. Use **Next
 
 ## Updates and help
 
+Use **Buy check at this budget** in Public rankings to filter wallets you have browsed or shortlisted in the current period. An observation at another budget cannot establish a match. The run overview shows the last seven days of cash movements, decisions and outstanding exposure.
+
+In a public run, **Add simulated cash** records a contribution separately from gains and fees. Adding cash preserves a pause. **Decision history → Recheck public activity** lets you revisit a quiet BUY window if the provider indexed trades later. A recheck keeps the original decision and portfolio balances intact.
+
 Public rankings remembers your two selected wallets for each ranking period in this browser. If the provider is unavailable, you can reopen the saved comparison and check its retrieval dates.
 
 To revise a portfolio budget, open its run and choose **Change future BUY cap**. Enter an amount from 1 pUSD up to the run's starting capital. Each future BUY is also limited by remaining cash. The decision history records the previous and new limits. To return to a previous limit, enter that amount again. Changing the cap keeps a paused run paused.

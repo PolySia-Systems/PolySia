@@ -348,6 +348,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def public_runs_api(self, path, method):
         store = self.server.store
+        recheck = re.fullmatch(API + r"/public-runs/([0-9a-f]{32})/decisions/([1-9][0-9]{0,17})/recheck", path)
+        if recheck:
+            if method != "POST" or urlsplit(self.path).query:
+                raise RequestError(405, "Use the recheck action on a saved quiet window.")
+            self.body(())
+            from .study import review_waiting_window
+            return review_waiting_window(store, recheck[1], int(recheck[2]))
         position = re.fullmatch(API + r"/public-runs/([0-9a-f]{32})/positions/([0-9]{1,78})/(mark|observe-sell)", path)
         if position:
             if method != "POST" or urlsplit(self.path).query:
@@ -373,7 +380,7 @@ class Handler(BaseHTTPRequestHandler):
                 receipt = {"status": "unavailable", "reason": str(exc), "wallet": wallet, "exitScope": scope}
             with store.connection() as db:
                 return public_shadow.record_sale(db, run_id, revision, token, limit, receipt)
-        match = re.fullmatch(API + r"/public-runs(?:/([0-9a-f]{32})(?:/(sample|pause|resume|stop|enable-exits|background-on|background-off|change-cap|valuation|export))?)?", path)
+        match = re.fullmatch(API + r"/public-runs(?:/([0-9a-f]{32})(?:/(sample|pause|resume|stop|enable-exits|background-on|background-off|change-cap|deposit|valuation|export|week))?)?", path)
         if not match:
             raise RequestError(404, "Unknown public shadow run.")
         run_id, action = match.groups()
@@ -394,6 +401,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not re.fullmatch(r"[1-9][0-9]{0,17}" if run_id else r"[0-9a-f]{32}", raw):
                     raise ValueError("Invalid public run cursor.")
                 before = int(raw) if run_id else raw
+        if method == "GET" and action == "week":
+            from .run_week import summary
+            with store.connection(write=False) as db:
+                return summary(db, run_id)
         if method == "GET" and action in (None, "export"):
             with store.connection(write=False) as db:
                 if run_id is None:
@@ -420,6 +431,10 @@ class Handler(BaseHTTPRequestHandler):
             revision = self.body(("revision",))["revision"]
             with store.connection() as db:
                 return background.configure(db, run_id, revision, action == "background-on")
+        if method == "POST" and action == "deposit":
+            body = self.body(("revision", "amount"))
+            with store.connection() as db:
+                return public_shadow.deposit(db, run_id, body["revision"], body["amount"])
         if method == "POST" and action == "change-cap":
             body = self.body(("revision", "cap"))
             with store.connection() as db:
