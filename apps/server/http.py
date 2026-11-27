@@ -379,19 +379,20 @@ class Handler(BaseHTTPRequestHandler):
             self.body(())
             from .study import review_waiting_window
             return review_waiting_window(store, recheck[1], int(recheck[2]))
-        position = re.fullmatch(API + r"/public-runs/([0-9a-f]{32})/positions/([0-9]{1,78})/(mark|observe-sell)", path)
+        position = re.fullmatch(API + r"/public-runs/([0-9a-f]{32})/positions/([0-9]{1,78})/(mark|resolution|observe-sell)", path)
         if position:
             if method != "POST" or urlsplit(self.path).query:
                 raise RequestError(405, "Use the position action with the displayed run revision.")
             run_id, token, action = position.groups()
-            if action == "mark":
+            if action in ("mark", "resolution"):
+                from . import public_resolution
                 revision = self.body(("revision",))["revision"]
                 with store.connection(write=False) as db:
                     basis = public_shadow.position_basis(db, run_id, token, revision)
-                mark = public_marks.read_mark(basis)
+                result = public_marks.read_mark(basis) if action == "mark" else public_resolution.read(basis)
                 with store.connection(write=False) as db:
                     public_shadow.require_revision(db, run_id, revision)
-                return mark
+                return result
             body = self.body(("revision", "maxShares"))
             revision, limit = body["revision"], body["maxShares"]
             with store.connection(write=False) as db:

@@ -959,7 +959,7 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
 
     sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(ROOT / "tests"))
-    from apps.server import public_marks, public_shadow
+    from apps.server import public_marks, public_resolution, public_shadow
     from apps.server.http import LocalServer
     from apps.server.store import Workspace
     from install_smoke import app
@@ -1019,6 +1019,17 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
             sample.click()
             expect(page.get_by_text("19 shares", exact=True)).to_be_visible()
             expect(page.locator("dd").filter(has_text="15.14256")).to_be_visible()
+            resolved = {"status": "resolved", "reason": "Final payout for the simulated shares, before any redemption costs.",
+                        "payout": "0", "numerator": "0", "denominator": "1", "unit": "USDC.e equivalent",
+                        "blockNumber": 98078743, "blockTime": "2026-11-27T23:53:13+00:00"}
+            public_run = route.rsplit("/", 1)[-1]
+            export_url = origin + "/api/v1/public-runs/" + public_run + "/export"
+            previous = page.request.get(export_url).json()
+            with patch.object(public_resolution, "read", return_value=resolved):
+                page.get_by_role("button", name="Check final payout").click()
+                expect(page.get_by_text("Resolved with zero payout.", exact=True)).to_be_visible()
+                expect(page.get_by_text("No cash has been credited.", exact=False)).to_be_visible()
+            assert page.request.get(export_url).json() == previous
             page.get_by_text("Observation details", exact=True).first.click()
             expect(page.get_by_text("Polygon exchange and source order", exact=True)).to_be_visible()
             mark_ms = int((recorded + timedelta(seconds=1)).timestamp() * 1000)

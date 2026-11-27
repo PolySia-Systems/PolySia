@@ -12,12 +12,12 @@ RPC = "https://polygon-bor-rpc.publicnode.com"
 PUSD = "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb"
 
 
-def _read(method, params):
-    batch = [{"jsonrpc": "2.0", "id": 1, "method": "eth_chainId", "params": []},
-             {"jsonrpc": "2.0", "id": 2, "method": method, "params": params}]
+def _read_many(calls):
+    batch = [{"jsonrpc": "2.0", "id": i, "method": method, "params": params}
+             for i, (method, params) in enumerate([("eth_chainId", []), *calls], 1)]
     reply = read_json_response(Request(RPC, data=json.dumps(batch).encode(),
                                        headers={"Content-Type": "application/json"}))
-    if not isinstance(reply, list) or len(reply) != 2:
+    if not isinstance(reply, list) or len(reply) != len(batch):
         raise ValueError("Invalid RPC batch")
     results = {}
     for item in reply:
@@ -25,9 +25,14 @@ def _read(method, params):
                 or type(item.get("id")) is not int or "error" in item or "result" not in item):
             raise ValueError("Invalid RPC response")
         results[item["id"]] = item["result"]
-    if results.keys() != {1, 2} or results[1] != "0x89":
+    if results.keys() != set(range(1, len(batch) + 1)) or results[1] != "0x89":
         raise ValueError("Unexpected chain or response ID")
-    return results[2]
+    return [results[i] for i in range(2, len(batch) + 1)]
+
+
+def _read(method, params):
+    value, = _read_many([(method, params)])
+    return value
 
 
 def transaction_receipt(tx):

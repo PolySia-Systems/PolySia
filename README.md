@@ -65,6 +65,8 @@ In a public run, **Add simulated cash** records a contribution separately from g
 
 While a run is active or paused, **Withdraw simulated cash** removes up to the free cash shown. Shares stay open. Future purchases are limited by the cash left and the saved per-entry cap. Withdrawing below 1 pUSD turns off background sampling. The weekly report and its export show withdrawals separately from trading results.
 
+Under **Open simulated positions**, choose **Check final payout** for an outcome. A supported Polygon condition can show a positive payout, a final zero, or an unresolved result. The check shows gross collateral for simulated shares. The journal and cash balance change only through a recorded portfolio action.
+
 Public rankings remembers your two selected wallets for each ranking period in this browser. If the provider is unavailable, you can reopen the saved comparison and check its retrieval dates.
 
 To revise a portfolio budget, open its run and choose **Change future BUY cap**. Enter an amount from 1 pUSD up to the run's starting capital. Each future BUY is also limited by remaining cash. The decision history records the previous and new limits. To return to a previous limit, enter that amount again. Changing the cap keeps a paused run paused.
