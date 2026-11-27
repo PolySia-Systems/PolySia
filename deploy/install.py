@@ -229,7 +229,10 @@ def main():
         else:
             prefix.mkdir(mode=0o700, parents=True, exist_ok=True)
         with (prefix / ".polysia-install.lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise ValueError("Another PolySia installation is running. Finish it before retrying.") from None
             remote = prefix / "remote"
             if args.cloudflare:
                 if not (remote / "deployment.json").is_file() and any(
@@ -260,6 +263,8 @@ def main():
             print("Starting your local workspace. Press Ctrl-C to stop.", file=sys.stderr, flush=True)
             env = {**os.environ, "POLYSIA_DB": str(prefix / "data/workspace.sqlite3")}
             os.execve(sys.executable, [sys.executable, "-I", str(launcher), "--port", str(port)], env)
+    except (EOFError, KeyboardInterrupt):
+        parser.exit(1, "\nSetup interrupted. Rerun the installer on this host to continue.\n")
     except (OSError, ValueError, http.client.HTTPException, subprocess.SubprocessError) as exc:
         parser.exit(1, f"Installation failed: {exc}\n")
     if args.json:
