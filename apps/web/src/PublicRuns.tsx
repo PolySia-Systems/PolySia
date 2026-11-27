@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ArrowLeft, ArrowRight, Download, Pause, Play, Plus, ScanLine, Square } from 'lucide-react'
-import { api, errorMessage, validBuyBudget } from './api'
+import { api, apiResponse, errorMessage, validBuyBudget } from './api'
 import { SharedReplay } from './SharedReplay'
 import './public-runs.css'
 
@@ -324,6 +324,31 @@ interface WeekSummary {
   latestObservation: {kind: string; reason: string; recorded: string} | null
 }
 
+function ExportWeek({report}: {report: WeekSummary}) {
+  const [busy, setBusy] = useState(false)
+  const [issue, setIssue] = useState('')
+  async function download() {
+    setBusy(true)
+    setIssue('')
+    try {
+      const response = await apiResponse('public-runs/' + report.runId + '/week/export', 'POST', {
+        through: report.through, revision: report.revision,
+      })
+      const url = URL.createObjectURL(await response.blob())
+      const link = document.createElement('a')
+      link.href = url
+      link.download = 'polysia-week-' + report.runId + '-' + report.through.slice(0, 10) + '-r' + report.revision + '.json'
+      link.click()
+      window.setTimeout(() => URL.revokeObjectURL(url), 0)
+    } catch (cause) { setIssue(errorMessage(cause)) }
+    finally { setBusy(false) }
+  }
+  return <div>
+    <button className="btn" disabled={busy} onClick={download}><Download size={15}/>{busy ? 'Preparing export…' : 'Export this period'}</button>
+    {issue && <p role="alert">{issue} Select Refresh report and try again.</p>}
+  </div>
+}
+
 function WeekOverview({run, refreshRun}: {run: Portfolio; refreshRun: () => void}) {
   const [report, setReport] = useState<WeekSummary | null>(null)
   const [error, setError] = useState('')
@@ -362,6 +387,7 @@ function WeekOverview({run, refreshRun}: {run: Portfolio; refreshRun: () => void
             {p.market ?? p.conditionId} · {p.outcome ?? p.tokenId} · {p.shares} shares
           </li>)}</ul></details>}
         {report.latestObservation && <p className="workspace-note">Latest window at {when(report.latestObservation.recorded)} · {report.latestObservation.reason}</p>}
+        <ExportWeek key={report.through} report={report}/>
       </> : <p role="status">Reading the last seven days…</p>}
   </section>
 }

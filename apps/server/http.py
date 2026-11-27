@@ -355,6 +355,14 @@ class Handler(BaseHTTPRequestHandler):
             data = self.body(("runIds", "capital"))
             with store.connection(write=False) as db:
                 return replay(db, data["runIds"], data["capital"])
+        period_export = re.fullmatch(API + r"/public-runs/([0-9a-f]{32})/week/export", path)
+        if period_export:
+            if method != "POST" or urlsplit(self.path).query:
+                raise RequestError(405, "Use Export this period in the seven-day report.")
+            from .run_week import export_week
+            selection = self.body(("revision", "through"))
+            with store.connection(write=False) as db:
+                return export_week(db, period_export[1], **selection)
         recheck = re.fullmatch(API + r"/public-runs/([0-9a-f]{32})/decisions/([1-9][0-9]{0,17})/recheck", path)
         if recheck:
             if method != "POST" or urlsplit(self.path).query:

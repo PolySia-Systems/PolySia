@@ -1153,6 +1153,15 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
             expect(week.get_by_text("Sampling has stopped.", exact=False)).to_be_visible()
             week.get_by_text("Remaining positions", exact=True).click()
             expect(week.get_by_role("listitem").first).to_contain_text("shares")
+            with page.expect_download() as period_file:
+                with page.expect_request(lambda r: r.url.endswith("/week/export")) as requested:
+                    week.get_by_role("button", name="Export this period").click()
+            fixed = json.loads(period_file.value.path().read_text())
+            assert fixed["period"]["through"] == requested.value.post_data_json["through"]
+            assert fixed["period"]["revision"] == exported["revision"]
+            assert fixed["period"]["closingCash"] == exported["cash"] and fixed["period"]["netResult"] is None
+            assert fixed["run"]["positions"] == exported["positions"]
+            assert [d["kind"] for d in fixed["decisions"]] == [d["kind"] for d in exported["decisions"]]
             print("Installed restart after reinstall preserved the stopped portfolio, partial exit and complete export.")
         finally:
             page.close()

@@ -55,6 +55,8 @@ In **Saved public runs**, choose **Replay buys with one shared budget** once you
 
 Use **Buy check at this budget** in Public rankings to filter wallets you have browsed or shortlisted in the current period. An observation at another budget cannot establish a match. The run overview shows the last seven days of cash movements, decisions and outstanding exposure.
 
+In **Last seven days**, choose **Export this period** to save the displayed interval, its cash totals, and the decisions behind them as JSON. If the run changed in the meantime, select **Refresh report** before exporting. **Export run** includes the complete journal and retained observation receipts.
+
 In a public run, **Add simulated cash** records a contribution separately from gains and fees. Adding cash preserves a pause. **Decision history → Recheck public activity** lets you revisit a quiet BUY window if the provider indexed trades later. A recheck keeps the original decision and portfolio balances intact.
 
 Public rankings remembers your two selected wallets for each ranking period in this browser. If the provider is unavailable, you can reopen the saved comparison and check its retrieval dates.

@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 from apps.server import public_shadow as paper
 from apps.server.archive import copy_workspace
-from apps.server.run_week import summary
-from apps.server.store import Workspace
+from apps.server.run_week import export_week, summary
+from apps.server.store import Conflict, Workspace
 from test_public_shadow import ID, WALLET, observed_buy, observed_sell
 
 
@@ -102,3 +102,40 @@ class ReturningUserTests(unittest.TestCase):
         self.assertEqual(report["funding"], "30")
         self.assertEqual(report["netResult"], final["realized"])
         self.assertEqual(report["fees"], final["fees"])
+
+    def test_export_reconciles_exact_interval_and_rejects_newer_state(self):
+        from decimal import Decimal
+        self.at(START - timedelta(days=1), paper.create, WALLET, "Audited week", "25", "10")
+        self.at(START - timedelta(microseconds=1000), paper.deposit, 1, "2")
+        self.at(START, paper.deposit, 2, "5")
+        purchase = END - timedelta(days=1)
+        self.at(purchase, paper.record, 3, observed_buy(WALLET, "10.00", start=int(purchase.timestamp()) - 6))
+        with self.store.connection(write=False) as db:
+            _, scope, _ = paper.sale_terms(db, ID, 4, "734", "19")
+        self.at(END, paper.record_sale, 4, "734", "19", observed_sell(WALLET, scope, start=int(END.timestamp()) - 6))
+        self.at(END, paper.change_cap, 5, "8")
+        self.at(END, paper.control, 6, "pause")
+        shown = self.week()
+        with self.store.connection(write=False) as db:
+            exported = export_week(db, ID, 7, shown["through"])
+        self.assertEqual(exported["period"], shown)
+        self.assertEqual(exported["run"]["wallet"], WALLET)
+        self.assertEqual(exported["run"]["status"], "paused")
+        self.assertEqual(exported["run"]["positions"][0]["shares"], "11")
+        decisions = exported["decisions"]
+        self.assertEqual([d["revision"] for d in decisions], [3, 4, 5, 6, 7])
+        deposit, buy, sale, cap, pause = decisions
+        self.assertEqual((deposit["funding"], cap["previousCap"], cap["nextCap"], pause["kind"]), ("5", "10", "8", "pause"))
+        self.assertEqual((buy["tokenId"], sale["tokenId"]), ("734", "734"))
+        self.assertEqual(sale["realizedOnSale"], shown["realizedOnSales"])
+        D = Decimal
+        self.assertEqual(D(shown["openingCash"]) + D(deposit["funding"]) - D(buy["gross"]) - D(buy["fee"])
+                         + D(sale["gross"]) - D(sale["fee"]), D(shown["closingCash"]))
+        self.assertIsNone(shown["netResult"])
+        self.at(END + timedelta(milliseconds=1), paper.deposit, 7, "1")
+        with self.store.connection(write=False) as db:
+            with self.assertRaises(Conflict):
+                export_week(db, ID, 7, shown["through"])
+            for invalid in (None, 42, "no date", "2026-11-28", "0001-01-01T00:00:00Z"):
+                with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                    export_week(db, ID, 8, invalid)
