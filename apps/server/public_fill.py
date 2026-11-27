@@ -1,16 +1,14 @@
 """Corroborate one ordinary Data API trade against its owner's Polygon exchange log."""
 
-import json
 import re
 import time
 from decimal import InvalidOperation
 from fractions import Fraction
 from http.client import HTTPException
-from urllib.request import Request
 
-from .provider import decimal_value, read_json_response, units_from_micros
+from . import polygon
+from .provider import decimal_value, units_from_micros
 
-RPC = "https://polygon-bor-rpc.publicnode.com"
 # Polygon CTF Exchange V2 deployments, keyed by address with their negative-risk flag.
 EXCHANGES = {"0xe111180000d2663c0091e4f400237545b87b996b": False,
              "0xe2222d279d744050d28e00520010520000310f59": True}
@@ -27,25 +25,6 @@ def _hex(value, pattern):
 
 def _quantity(value):
     return int(_hex(value, r"0x(?:0|[1-9a-fA-F][0-9a-fA-F]{0,63})"), 16)
-
-
-def _receipt(tx):
-    # Only these two reads can be sent. Scope and provider are fixed in code.
-    batch = [{"jsonrpc": "2.0", "id": 1, "method": "eth_chainId", "params": []},
-             {"jsonrpc": "2.0", "id": 2, "method": "eth_getTransactionReceipt", "params": [tx]}]
-    reply = read_json_response(Request(RPC, data=json.dumps(batch).encode(),
-                                       headers={"Content-Type": "application/json"}))
-    if not isinstance(reply, list) or len(reply) != 2:
-        raise ValueError("Invalid RPC batch")
-    results = {}
-    for item in reply:
-        if (not isinstance(item, dict) or item.get("jsonrpc") != "2.0"
-                or type(item.get("id")) is not int or "error" in item):
-            raise ValueError("Invalid RPC response")
-        results[item["id"]] = item["result"]
-    if results.keys() != {1, 2} or results[1] != "0x89":
-        raise ValueError("Unexpected chain or response ID")
-    return results[2]
 
 
 def _amount_match_basis(event, role, paid, shares, fee):
@@ -174,10 +153,10 @@ def _match(receipt, wallet, event):
 
 def identify_trade(wallet, event):
     try:
-        match = _match(_receipt(event["transactionHash"]), wallet, event)
+        match = _match(polygon.transaction_receipt(event["transactionHash"]), wallet, event)
     except (OSError, HTTPException, KeyError, ValueError, InvalidOperation, RecursionError):
         match = {"status": "unavailable", "reason": "The Polygon receipt was missing, unreachable or inconsistent."}
-    return dict(match, source=RPC, checkedMs=time.time_ns() // 1_000_000)
+    return dict(match, source=polygon.RPC, checkedMs=time.time_ns() // 1_000_000)
 
 
 def identify_buy(wallet, event):

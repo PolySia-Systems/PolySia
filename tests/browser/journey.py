@@ -184,6 +184,21 @@ def exercise(browser: Browser, origin: str, output: Path | None):
     expect(page.get_by_text("Current positions unknown", exact=True)).to_be_visible()
     expect(page.get_by_text("Public read only", exact=True)).to_be_visible()
     expect(page.get_by_role("link", name="Set up public shadow run")).to_have_attribute("href", "#/paper/new?wallet=0x" + "1" * 40)
+    page.get_by_label("Wallet name (optional)").fill("First wallet")
+    page.get_by_role("button", name="Save wallet", exact=True).click()
+    saved = page.get_by_role("combobox", name="Saved wallets")
+    expect(saved).to_have_value("0x" + "1" * 40)
+    cash = page.get_by_role("region", name="Cash balance")
+    cash_sample = {"address": "0x" + "1" * 40, "status": "available", "value": "0.000001", "unit": "pUSD",
+                   "checkedAt": "2026-11-25T12:00:00Z", "observedAt": "2026-11-25T12:00:00Z",
+                   "source": "Polygon", "message": "Open orders may reserve part of this balance."}
+    page.route("**/api/v1/public/traders/*/cash", lambda route: route.fulfill(json=cash_sample))
+    cash.get_by_role("button", name="Read cash balance").click()
+    expect(cash.get_by_text("0.000001 pUSD")).to_be_visible()
+    cash_sample.update(status="unavailable", value=None, observedAt=None, message="Could not verify the balance.")
+    cash.get_by_role("button", name="Refresh cash balance").click()
+    expect(cash.get_by_text("Balance unavailable")).to_be_visible()
+    expect(cash.get_by_text("0.000001 pUSD")).to_have_count(0)
     # An old wallet's slow value read must never appear in a replacement watch.
     delayed_value = []
     page.route("**/api/v1/public/traders/*/value", lambda route: delayed_value.append(route))
@@ -194,11 +209,27 @@ def exercise(browser: Browser, origin: str, output: Path | None):
     wallet.fill("0x" + "2" * 40)
     page.get_by_role("button", name="Replace watched address").click()
     expect(holdings.get_by_role("button", name="Load holdings value")).to_be_enabled()
+    expect(cash.get_by_role("button", name="Read cash balance")).to_be_enabled()
     delayed_value[0].fulfill(json={"address": "0x" + "1" * 40, "status": "available", "value": "987.1254",
                                    "unit": "USDC", "source": "Polymarket Data API v2", "message": "Old wallet.",
                                    "checkedAt": "2026-11-25T12:00:00Z", "observedAt": "2026-11-25T12:00:00Z"})
     expect(holdings.get_by_text("987.1254 USDC")).to_have_count(0)
     expect(page.get_by_text("Current positions unknown", exact=True)).to_be_visible()
+    page.get_by_label("Wallet name (optional)").fill("Second wallet")
+    page.get_by_role("button", name="Save wallet", exact=True).click()
+    expect(saved).to_have_value("0x" + "2" * 40)
+    page.reload()
+    expect(saved).to_have_value("0x" + "2" * 40)
+    saved.select_option("0x" + "1" * 40)
+    expect(wallet).to_have_value("0x" + "1" * 40)
+    expect(cash.get_by_role("button", name="Read cash balance")).to_be_enabled()
+    expect(cash.get_by_text("0.000001 pUSD")).to_have_count(0)
+    page.get_by_role("button", name="Remove from saved wallets", exact=True).click()
+    expect(saved.get_by_role("option", name="First wallet", exact=False)).to_have_count(0)
+    saved.select_option("0x" + "2" * 40)
+    expect(wallet).to_have_value("0x" + "2" * 40)
+    page.get_by_role("button", name="Remove from saved wallets", exact=True).click()
+    expect(saved).to_have_count(0)
     page.get_by_role("button", name="Remove watch", exact=True).click()
     expect(page.get_by_role("heading", name="Account scope")).to_be_visible()
     expect(holdings).to_have_count(0)
@@ -302,6 +333,8 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     delayed_period = None
     requested_periods = []
     fixture_state = "available"
+    cursor_reads = []
+    fail_next_page = True
 
     def ranking_payload(period, state):
         leaders = []
@@ -316,13 +349,23 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
             "checkedAt": stamp, "observedAt": stamp if state != "unavailable" else None,
             "source": "Polymarket Data API v2 · trader leaderboard",
             "message": "Fixture rankings unavailable" if state == "unavailable" else "Public ranking fixture",
-            "complete": state != "unavailable", "leaders": leaders,
+            "complete": state == "empty", "nextCursor": "next+/=" if state == "available" else None, "leaders": leaders,
         }
 
     def rankings(route: Route):
-        period = parse_qs(urlsplit(route.request.url).query).get("period", ["month"])[0]
+        query = parse_qs(urlsplit(route.request.url).query)
+        period = query.get("period", ["month"])[0]
         requested_periods.append(period)
-        if period == delayed_period:
+        if "cursor" in query:
+            cursor_reads.append(query["cursor"][0])
+            assert query["cursor"] == ["next+/="]
+            if fail_next_page:
+                route.fulfill(status=503, json={"error": "Next page temporarily unavailable."})
+            else:
+                more = ranking_payload(period, "available")
+                row = {**more["leaders"][1], "rank": 4, "name": "Fixture Dune", "address": "0x" + "64" * 20}
+                route.fulfill(json={**more, "leaders": [row], "complete": True, "nextCursor": None})
+        elif period == delayed_period:
             pending.append(route)
         else:
             route.fulfill(json=ranking_payload(period, fixture_state))
@@ -420,13 +463,30 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     expect(lumen).to_be_visible()
     search.fill("")
     expect(stone).to_be_visible()
-    first = page.get_by_label("Select Fixture Lumen for comparison")
-    second = page.get_by_label("Select Fixture Stone for comparison")
+    first_pick = page.get_by_label("Select Fixture Lumen for comparison")
+    second_pick = page.get_by_label("Select Fixture Stone for comparison")
     compare = page.get_by_role("button", name="Compare wallets")
     comparison = page.get_by_role("region", name="Public wallet comparison")
-    first.check()
+    first_pick.check()
+    next_rankings = page.get_by_role("button", name="Next page")
+    next_rankings.click()
+    expect(page.get_by_role("alert")).to_contain_text("Next page temporarily unavailable")
+    expect(first_pick).to_be_checked()
+    fail_next_page = False
+    next_rankings.click()
+    dune = page.get_by_label("Select Fixture Dune for comparison")
+    dune.check()
+    expect(next_rankings).to_be_disabled()
+    expect(compare).to_be_enabled()
+    page.get_by_role("button", name="Previous").click()
+    expect(first_pick).to_be_checked()
+    next_rankings.click()
+    expect(dune).to_be_checked()
+    dune.uncheck()
+    page.get_by_role("button", name="Previous").click()
+    assert cursor_reads == ["next+/=", "next+/="]
     expect(compare).to_be_disabled()
-    second.check()
+    second_pick.check()
     expect(compare).to_be_enabled()
     expect(page.get_by_label("Select Fixture Ash for comparison")).to_be_disabled()
     assert profile_reads == []
@@ -444,6 +504,8 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
         expect(comparison.get_by_text("19,348.35", exact=True)).to_be_visible()
         if compare_case == "shared":
             expect(comparison.get_by_text("Fixture opening day?", exact=True)).to_have_count(1)
+            expect(comparison.get_by_text("Fixture Lumen · Yes", exact=True)).to_be_visible()
+            expect(comparison.get_by_text("Fixture Stone · No, Yes", exact=True)).to_be_visible()
             capture(page, output, "public-wallet-comparison-desktop")
             page.set_viewport_size({"width": 390, "height": 844})
             check_width(page)
@@ -457,11 +519,14 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     assert profile_reads.count(wallet) == profile_reads.count(other) == 6
     compare.click()
     expect(comparison.get_by_text("Position service unavailable", exact=True)).to_be_visible()
+    comparison.get_by_role("button", name="Back to rankings").click()
     page.get_by_label("Ranking period").select_option("week")
     expect(comparison).to_have_count(0)
-    expect(first).not_to_be_checked()
+    expect(first_pick).not_to_be_checked()
     expect(compare).to_be_disabled()
     page.get_by_label("Ranking period").select_option("month")
+    board_budget = page.get_by_label("Simulated budget per buy")
+    board_budget.fill("140.50")
     lumen.click()
     expect(page.get_by_role("heading", name="Fixture Lumen", exact=True)).to_be_focused()
     setup_link = page.get_by_role("link", name="Set up public shadow run")
@@ -469,6 +534,8 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     setup.goto(origin + "/" + setup_link.get_attribute("href"))
     expect(setup.get_by_label("Run name")).to_have_value("Fixture Lumen")
     expect(setup.get_by_label("Leader wallet")).to_have_value(wallet)
+    expect(setup.get_by_label("Per-entry cap (pUSD)")).to_have_value("140.50")
+    expect(setup.get_by_label("Starting cash (pUSD)")).to_have_value("")
     setup.close()
     expect(page.get_by_text("Fixture opening day?", exact=True)).to_be_visible()
     capture(page, output, "public-profile-fixture")
@@ -505,13 +572,14 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     capture(page, output, "public-profile-mobile-fixture")
     page.get_by_role("button", name="Back to rankings", exact=True).click()
     expect(lumen).to_be_focused()
+    expect(board_budget).to_have_value("140.50")
     lumen.click()
     expect(page.get_by_role("heading", name="Fixture Lumen", exact=True)).to_be_focused()
     assert not observation_calls
-    page.get_by_label("Research budget (pUSD)").fill("12.50")
+    page.get_by_label("Budget per buy (pUSD)").fill("12.50")
     retry = page.get_by_role("checkbox", name="Check again if the first read is empty")
     expect(retry).not_to_be_checked()
-    page.get_by_role("button", name="Observe next BUY", exact=True).click()
+    page.get_by_role("button", name="Check next buy", exact=True).click()
     expect(page.get_by_role("heading", name="BUY and displayed book observed")).to_be_visible()
     timing = page.get_by_text("Window, timing and ask levels", exact=True)
     timing.click()
@@ -548,7 +616,7 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
                             "windowStartSeconds": 1795608000, "windowEndSeconds": 1795608004})
 
     page.route("**/api/v1/public/traders/*/observe", probe)
-    button = page.get_by_role("button", name="Observe next BUY")
+    button = page.get_by_role("button", name="Check next buy")
     button.click()
     expect(page.get_by_role("heading", name="No BUY observed in this window")).to_be_visible()
     button.click()
@@ -631,7 +699,7 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     assert json.loads(download.value.path().read_text()) == detected
     check_width(page)
     if output:
-        panel = page.locator("section.panel").filter(has=page.get_by_role("heading", name="Public BUY observation"))
+        panel = page.locator("section.panel").filter(has=page.get_by_role("heading", name="Test a buy with your budget"))
         panel.screenshot(path=output / "activity-reads-mobile.png")
         page.set_viewport_size({"width": 1240, "height": 900})
         panel.screenshot(path=output / "activity-reads-desktop.png")
@@ -660,6 +728,16 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     expect(page.get_by_role("alert")).to_have_text("Observation timed out. Try another window.")
     expect(reads).to_have_count(0)
     expect(page.get_by_role("link", name="Download observation")).to_have_count(0)
+    page.get_by_role("button", name="Back to rankings", exact=True).click()
+    first_pick.check()
+    second_pick.check()
+    compare.click()
+    expect(comparison.get_by_text("Buy check · 12.50 pUSD", exact=True)).to_be_visible()
+    comparison.get_by_role("button", name="Open profile for Fixture Lumen").click()
+    expect(page.get_by_label("Budget per buy (pUSD)")).to_have_value("12.50")
+    page.get_by_role("button", name="Back to comparison").click()
+    expect(comparison.get_by_role("heading", name="Wallet comparison")).to_be_focused()
+    comparison.get_by_role("button", name="Open profile for Fixture Lumen").click()
     page.get_by_role("link", name="Watch this address").click()
     expect(page.get_by_label("Public wallet address")).to_have_value(wallet)
     check_width(page)
@@ -938,6 +1016,13 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
             with page.expect_download() as download:
                 page.get_by_role("link", name="Export run").click()
             assert json.loads(download.value.path().read_text()) == exported
+            page.goto(reopened + "/#/status")
+            overview = page.get_by_role("region", name="Shadow portfolio overview")
+            expect(overview.get_by_text("Stopped with open simulated shares.", exact=False).first).to_be_visible()
+            linked = overview.locator('a[href="' + route[route.index("#"):] + '"]')
+            expect(linked).to_be_visible()
+            linked.click()
+            expect(page.get_by_role("status").filter(has_text=remaining)).to_be_visible()
             print("Installed restart after reinstall preserved the stopped portfolio, partial exit and complete export.")
         finally:
             page.close()
@@ -1019,7 +1104,7 @@ def public_artifact_smoke(browser: Browser, cwd: Path, output: Path | None):
         expect(retry).not_to_be_checked()
         retry.check()
         with page.expect_response("**/api/v1/public/traders/" + sample + "/observe", timeout=45000) as reply:
-            page.get_by_role("button", name="Observe next BUY").click()
+            page.get_by_role("button", name="Check next buy").click()
         receipt = reply.value.json()
         assert reply.value.ok and receipt["wallet"] == sample and receipt["researchBudget"] == "10.00"
         assert receipt["schemaVersion"] == 3 and receipt["retryAfterWindowMs"] == 3000
@@ -1037,7 +1122,7 @@ def public_artifact_smoke(browser: Browser, cwd: Path, output: Path | None):
         check_width(page)
         if output:
             output.mkdir(parents=True, exist_ok=True)
-            panel = page.locator("section.panel").filter(has=page.get_by_role("heading", name="Public BUY observation"))
+            panel = page.locator("section.panel").filter(has=page.get_by_role("heading", name="Test a buy with your budget"))
             panel.screenshot(path=output / "installed-observation-mobile.png")
         print(f"Installed observation exported its {receipt.get('capacity', {}).get('status', receipt['status'])} receipt.")
         assert page.request.get(origin + "/api/v1/workspace").json() == workspace

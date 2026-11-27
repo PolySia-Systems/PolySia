@@ -96,7 +96,7 @@ export function Discover({ leaders, saved, toggle, visible, limits }: DiscoveryP
         <a className="discovery-choice public-choice" href="#/rankings">
           <TrendingUp size={23} aria-hidden="true" />
           <h2>Research public wallets</h2>
-          <p>Read Polymarket rankings, compare open markets and inspect a trader’s history.</p>
+          <p>Browse traders, compare the markets they hold and test a buy with your budget.</p>
           <span>
             Explore public rankings <ArrowRight size={16} />
           </span>

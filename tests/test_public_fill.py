@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from apps.server import public_fill
+from apps.server import polygon, public_fill
 from apps.server import observe
 
 # Public Polygon receipt from the fourth observation in docs/provider.md.
@@ -16,7 +16,7 @@ EVENT = {"transactionHash": RECEIPT["transactionHash"], "price": "0.002", "share
 
 class ParticipantTests(unittest.TestCase):
     def identify(self, receipt, wallet=WALLET, event=EVENT):
-        with patch.object(public_fill, "_receipt", return_value=receipt):
+        with patch.object(polygon, "transaction_receipt", return_value=receipt):
             return public_fill.identify_buy(wallet, event)
 
     def test_real_receipt_counts_only_the_wallet_owned_order(self):
@@ -64,7 +64,7 @@ class ParticipantTests(unittest.TestCase):
         times = [(ms + n) * 1_000_000 for n in (2000, 2100, 2300, 2400, 4500, 4700)]
         with (patch.object(observe.time, "time", return_value=start - 1), patch.object(observe.time, "sleep"),
               patch.object(observe.time, "time_ns", side_effect=times),
-              patch.object(public_fill, "_receipt", return_value=fixture["receipt"]),
+              patch.object(polygon, "transaction_receipt", return_value=fixture["receipt"]),
               patch.object(observe.public_depth, "market_terms", return_value=terms),
               patch.object(observe, "read_public_json", side_effect=[activity, book]) as fetch):
             result = observe.observe(wallet, 2, exit_scope=scope)
@@ -169,12 +169,12 @@ class ParticipantTests(unittest.TestCase):
     def test_only_network_identity_and_receipt_are_requested(self):
         chain = {"id": 1, "jsonrpc": "2.0", "result": "0x89"}
         receipt = {"id": 2, "jsonrpc": "2.0", "result": RECEIPT}
-        with patch.object(public_fill, "read_json_response", return_value=[receipt, chain]) as read:
+        with patch.object(polygon, "read_json_response", return_value=[receipt, chain]) as read:
             self.assertEqual(public_fill.identify_buy(WALLET, EVENT)["status"], "matched")
         request = read.call_args.args[0]
-        self.assertEqual(request.full_url, public_fill.RPC)
+        self.assertEqual(request.full_url, polygon.RPC)
         self.assertEqual([(r["method"], r["params"]) for r in json.loads(request.data)],
                          [("eth_chainId", []), ("eth_getTransactionReceipt", [EVENT["transactionHash"]])])
         for reply in ([dict(chain, result="0x1"), receipt], [receipt, receipt], [chain], None):
-            with patch.object(public_fill, "read_json_response", return_value=reply):
+            with patch.object(polygon, "read_json_response", return_value=reply):
                 self.assertEqual(public_fill.identify_buy(WALLET, EVENT)["status"], "unavailable")

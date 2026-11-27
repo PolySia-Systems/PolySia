@@ -195,7 +195,7 @@ def verify_upgrade(previous):
             request(url, route + "/pause", {"revision": fill["revision"]}, "POST")
             legacy = None
             legacy_path = "/api/v1/public-runs/" + "30" * 16
-            if prior_version in ("0.3.0", "0.4.0", "0.5.0"):
+            if prior_version in ("0.3.0", "0.4.0", "0.5.0", "0.6.0"):
                 request(url, legacy_path, {"name": "Legacy rules", "wallet": "0x" + "bc" * 20, "capital": "15", "cap": "5"})
                 legacy = json.loads(request(url, legacy_path + "/pause", {"revision": 1}, "POST"))
             saved = json.loads(request(url, "/api/v1/workspace"))
@@ -222,13 +222,14 @@ def verify_upgrade(previous):
         with app(launcher, cwd, offline=True) as url:
             health = json.loads(request(url, "/api/v1/health"))
             assert health["artifactSha256"] == upgraded["artifactSha256"]
-            assert json.loads(request(url, "/api/v1/workspace")) == saved
+            assert json.loads(request(url, "/api/v1/workspace")) == {"savedWallets": [], **saved}
             stopped = json.loads(request(url, route + "/stop", {"revision": saved["run"]["revision"]}, "POST"))
             assert stopped["revision"] == saved["run"]["revision"] + 1
             assert stopped["quantity"] == saved["run"]["quantity"] and stopped["events"] == saved["run"]["events"]
             end_state = json.loads(request(url, "/api/v1/workspace"))
             if legacy:
                 prior = json.loads(request(url, legacy_path))
+                assert prior["backgroundEnabled"] is False
                 assert prior["policy"] == legacy["policy"] and prior["decisions"] == legacy["decisions"]
                 assert prior["cash"] == legacy["cash"]
                 if prior_version in ("0.3.0", "0.4.0"):
@@ -253,10 +254,10 @@ def verify_upgrade(previous):
             assert json.loads(request(url, public_route)) == public_end
             if legacy:
                 assert json.loads(request(url, legacy_path)) == changed
-        if previous_schema < 4:
+        if previous_schema < 5:
             old = subprocess.run([previous_launcher, "--port", "0"], cwd=cwd, capture_output=True, text=True,
                                  env={**env, "POLYSIA_DB": str(recovered)}, timeout=5)
-            assert old.returncode and "Unsupported workspace database version 4" in old.stderr, old.stderr
+            assert old.returncode and "Unsupported workspace database version 5" in old.stderr, old.stderr
             with app(launcher, cwd, recovered, offline=True) as url:
                 assert json.loads(request(url, public_route)) == public_end
         print(f"Upgrade {prior_version} to {health['version']} preserved a paused position, "

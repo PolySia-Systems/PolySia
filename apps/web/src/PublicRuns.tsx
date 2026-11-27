@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ArrowLeft, ArrowRight, Download, Pause, Play, Plus, ScanLine, Square } from 'lucide-react'
-import { api, errorMessage } from './api'
+import { api, errorMessage, validBuyBudget } from './api'
 import './public-runs.css'
 
 interface Summary {
@@ -34,6 +34,7 @@ interface Decision {
   market: string | null
   outcome: string | null
   sourceOrder: string | null
+  sourceFill?: string
   proceeds?: string
   targetShares?: string
   releasedCost?: string
@@ -53,9 +54,10 @@ interface Holding {
   realized: string
 }
 interface Portfolio extends Summary {
+  backgroundEnabled: boolean
   exitsEnabled: boolean
   activeExitPolicy: {maxPriceDecrease: string; costMethod: string} | null
-  policy: { checkSalesBeforeEntry?: boolean; delaySeconds: number; maxSignalAgeMs: number; maxPriceIncrease: string; maxLevels: number }
+  policy: { checkSalesBeforeEntry?: boolean; saleSizing?: string; delaySeconds: number; maxSignalAgeMs: number; maxPriceIncrease: string; maxLevels: number }
   decisions: Decision[]
   nextCursor: number | null
   positions: Holding[]
@@ -64,16 +66,19 @@ interface Portfolio extends Summary {
 const when = (value: string | number) => new Date(value).toLocaleString('en-GB', { timeZone: 'UTC' }) + ' UTC'
 const labels: Record<string, string> = {
   running: 'Running', paused: 'Paused', stopped: 'Stopped', entry: 'Modeled BUY', duplicate: 'Already modeled',
+  'background-on': 'Background sampling enabled', 'background-off': 'Background sampling disabled',
   waiting: 'No BUY observed', incomplete: 'Evidence incomplete', skipped: 'Entry skipped',
   unavailable: 'Observation unavailable', pause: 'Entries paused', resume: 'Entries resumed', stop: 'Run stopped', exit: 'Modeled SELL', 'enable-exits': 'SELL windows enabled',
 }
 
 function Setup() {
   const params = new URLSearchParams(location.hash.split('?')[1])
+  const carriedCap = params.get('cap')
+  const initialCap = validBuyBudget(carriedCap) ? carriedCap : '10'
   const [wallet, setWallet] = useState(params.get('wallet') ?? '')
   const [name, setName] = useState((params.get('name') || 'Public wallet').slice(0, 80))
-  const [capital, setCapital] = useState('100')
-  const [cap, setCap] = useState('10')
+  const [capital, setCapital] = useState(Number(initialCap) > 100 ? '' : '100')
+  const [cap, setCap] = useState(initialCap)
   const [id] = useState(() => crypto.randomUUID().replaceAll('-', ''))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -92,6 +97,7 @@ function Setup() {
     <section className="panel workspace-panel">
       <h2>Set up a public shadow run</h2>
       <p>Follow one public wallet with simulated pUSD. Choose when to observe a BUY. Once a position opens, you can watch for the leader to sell that same outcome.</p>
+      {validBuyBudget(carriedCap) && <p className="workspace-note">Your wallet preview used a cap of {carriedCap} pUSD per buy. Choose your total simulated cash below.</p>}
       <form className="stack paper-form" onSubmit={start}>
         <label className="field">Run name<input required maxLength={80} value={name} onChange={e => setName(e.target.value)} /></label>
         <label className="field">Leader wallet<input required pattern="0x[0-9a-fA-F]{40}" placeholder="0x…"
@@ -180,7 +186,7 @@ function PositionMark({route, revision, token}: {route: string; revision: number
   </div>
 }
 
-function PositionSale({shares, policy, busy, observe}: {shares: string; policy: NonNullable<Portfolio['activeExitPolicy']>; busy: boolean; observe: (limit: string) => void}) {
+function PositionSale({shares, policy, cumulative, busy, observe}: {shares: string; policy: NonNullable<Portfolio['activeExitPolicy']>; cumulative: boolean; busy: boolean; observe: (limit: string) => void}) {
   const [limit, setLimit] = useState('')
   return <details className="paper-sale">
     <summary>Follow a leader SELL</summary>
@@ -194,8 +200,9 @@ function PositionSale({shares, policy, busy, observe}: {shares: string; policy: 
           disabled={busy} onChange={e => setLimit(e.target.value)}/></label>
       <button className="btn" disabled={busy}><ScanLine size={15}/> Observe leader SELL</button>
     </form>
-    <small>The leader’s total inventory is unknown. A limit of {shares} allows this simulated position to close.
-      Later fills of an order already modeled in this run add no further shares.</small>
+    <small>The leader’s total inventory is unknown. {cumulative
+      ? 'The first share limit for a matched SELL order caps all its fills together. Smaller fills can add up to the minimum sale.'
+      : 'This run uses its original rules. Only the first modeled fill of each SELL order counts.'}</small>
   </details>
 }
 
@@ -371,6 +378,15 @@ function Detail({id}: {id: string}) {
         </details>
         <PortfolioValue key={run.revision} run={run}/>
       </section>
+      {run.status === 'running' && run.nextBudget && <section className="panel workspace-panel" aria-label="Background sampling">
+        <div className="panel-head"><h2>{run.backgroundEnabled ? 'Background sampling enabled' : 'Background sampling'}</h2>
+          <button className="btn" disabled={!!busy} onClick={() => act(run.backgroundEnabled ? 'background-off' : 'background-on')}>
+            {run.backgroundEnabled ? 'Disable background sampling' : 'Enable background sampling'}
+          </button>
+        </div>
+        <p>While PolySia is running, it checks short BUY windows with your simulated budget, even after you close the browser. Checks are spaced at least 15 seconds apart. Activity between windows can be missed.</p>
+        {run.backgroundEnabled && <button className="text-link" disabled={!!busy} onClick={() => load()}>Refresh decisions</button>}
+      </section>}
       <div className="paper-workbench">
       <section className="panel workspace-panel">
         <h2>{run.status === 'stopped' ? 'Run closed to observations' : run.status === 'paused' ? 'New entries paused' : 'Observe a BUY window'}</h2>
@@ -412,7 +428,7 @@ function Detail({id}: {id: string}) {
             <div><b>{p.shares} shares</b><small>{p.cost} pUSD cost including fees</small></div>
           </div>{p.soldShares !== '0' && <small>{p.soldShares} shares sold to date · {p.realized} pUSD realized</small>}
             <PositionMark key={run.revision} route={route} revision={run.revision} token={p.tokenId}/>
-            {run.activeExitPolicy && run.status !== 'stopped' && <PositionSale shares={p.shares} policy={run.activeExitPolicy} busy={!!busy}
+            {run.activeExitPolicy && run.status !== 'stopped' && <PositionSale shares={p.shares} policy={run.activeExitPolicy} cumulative={!!run.policy.saleSizing} busy={!!busy}
               observe={limit => act('sell', {token: p.tokenId, limit})}/>}
           </div>)}</div>}
         <p className="workspace-note">Open cost includes purchase fees. A midpoint check estimates the value of the remaining shares. Realized result includes sale fees and the purchase cost of shares sold.</p>
@@ -433,7 +449,8 @@ function Detail({id}: {id: string}) {
           <option value="all">All decisions</option><option value="trades">Modeled trades</option></select></label></div>
         {!run.decisions.length && <p>{tradesOnly ? 'No modeled purchases or sales in this run.' : 'Your first window will appear here, even if no trade is visible.'}</p>}
         <ol className="paper-journal">{run.decisions.map(d => <li key={d.revision}>
-          <div className="panel-head"><b>{d.observation?.side === 'SELL' && d.kind === 'waiting' ? 'No matching SELL observed' :
+          <div className="panel-head"><b>{d.observation?.side === 'SELL' && d.kind === 'duplicate' ? 'Sale already recorded' :
+              d.observation?.side === 'SELL' && d.kind === 'waiting' ? 'No matching SELL observed' :
               d.observation?.side === 'SELL' && d.kind === 'skipped' ? 'Sale skipped' : labels[d.kind] ?? d.kind}</b><small className="muted">{when(d.at)}</small></div>
           <p>{d.reason}</p>{d.kind === 'entry' && <p>{d.market && <>{d.market} · </>}{d.outcome && <>{d.outcome} · </>}{d.shares} shares · {d.gross} pUSD + {d.fee} pUSD fee</p>}
           {d.kind === 'exit' && <p>{d.market && <>{d.market} · </>}{d.outcome && <>{d.outcome} · </>}{d.shares} of {d.targetShares} targeted shares sold · {d.proceeds} pUSD after fees · {d.realized} pUSD realized</p>}
@@ -447,6 +464,7 @@ function Detail({id}: {id: string}) {
               {d.observation.eventTimeSeconds != null && <div><dt>Reported {d.observation.side}</dt><dd>{when(d.observation.eventTimeSeconds * 1000)}</dd></div>}
               {d.observation.bookReceivedMs != null && <div><dt>Book received</dt><dd>{when(d.observation.bookReceivedMs)}</dd></div>}
               {d.sourceOrder && <div><dt>Polygon exchange and source order</dt><dd><code>{d.sourceOrder}</code></dd></div>}
+              {d.sourceFill && <div><dt>Verified Polygon fill</dt><dd><code>{d.sourceFill}</code></dd></div>}
             </dl>
           </details>}
         </li>)}</ol>

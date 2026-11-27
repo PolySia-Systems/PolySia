@@ -149,7 +149,7 @@ function App() {
   const subtitle =
     (
       {
-        rankings: 'Inspect the traders and positions reported by Polymarket.',
+        rankings: 'Find a trader, compare wallets and try a simulated buy.',
         paper: 'Observe a public leader with simulated cash and keep a record of each decision.',
         discover: 'Explore public trading data or practice a copy with a simulated wallet.',
         runs: 'See how simulated decisions change your cash and open positions.',
