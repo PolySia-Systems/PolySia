@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
-import { Download, ScanLine } from 'lucide-react'
-import { api, errorMessage } from './api'
+import { ArrowRight, Download, ScanLine } from 'lucide-react'
+import { api, errorMessage, validBuyBudget } from './api'
 
 interface ActivityCoverage {
   rowsReturned: number
@@ -84,8 +84,19 @@ function clock(ms: number) {
   return new Date(ms).toISOString().slice(11, 23)
 }
 
-export function PublicObservation({ address }: { address: string }) {
-  const [budget, setBudget] = useState('10')
+export interface WalletCheck {
+  budget: string
+  windowEnd: number
+  result: string
+}
+
+export interface BudgetTest {
+  budget: string
+  setBudget: (value: string) => void
+  saveCheck: (address: string, check: WalletCheck) => void
+}
+
+export function PublicObservation({ address, name, budget, setBudget, saveCheck }: { address: string; name: string } & BudgetTest) {
   const [retryEmpty, setRetryEmpty] = useState(false)
   const [busy, setBusy] = useState(false)
   const [receipt, setReceipt] = useState<Receipt | null>(null)
@@ -102,6 +113,16 @@ export function PublicObservation({ address }: { address: string }) {
       const options = retryEmpty ? { budget, retryEmpty: true } : { budget }
       const result = await api<Receipt>('public/traders/' + address + '/observe', 'POST', options)
       if (result.wallet !== address) throw new Error('The observation identified a different wallet.')
+      const checkedBudget = result.researchBudget ?? result.capacity?.budget
+      if (checkedBudget !== undefined && Number(checkedBudget) !== Number(budget)) {
+        throw new Error('The observation used a different budget.')
+      }
+      if (checkedBudget !== undefined) {
+        const capacity = result.capacity
+        const summary = capacity?.status === 'estimated' ? capacity.shares + ' shares at the displayed prices'
+          : capacity ? capacity.reason : result.reason
+        saveCheck(address, {budget: checkedBudget, windowEnd: result.windowEndSeconds, result: summary})
+      }
       setReceipt(result)
     } catch (cause) {
       setError(errorMessage(cause))
@@ -114,19 +135,26 @@ export function PublicObservation({ address }: { address: string }) {
     <section className="panel workspace-panel">
       <header>
         <ScanLine aria-hidden="true" size={20} />
-        <h2>Public BUY observation</h2>
+        <h2>Test a buy with your budget</h2>
       </header>
       <p>
-        Look for BUYs this wallet makes in the next two seconds. If a BUY arrives in time, PolySia
-        checks its Polygon receipt and market fees, then samples the asks after two seconds plus
-        any reported taker delay.
+        Watch this wallet for two seconds. If it buys, check how many shares your simulated budget
+        could cover at the prices on offer, including estimated fees.
       </p>
       <form className="observation-form" onSubmit={observe}>
         <label className="field">
-          Research budget (pUSD)
+          Budget per buy (pUSD)
           <input type="number" inputMode="decimal" required min="1" max="1000" step=".01"
-            value={budget} disabled={busy} onChange={e => setBudget(e.target.value)} />
+            value={budget} disabled={busy} onChange={e => {
+              setBudget(e.target.value)
+              setReceipt(null)
+              setError('')
+            }} />
         </label>
+        <button className="btn primary" disabled={busy}>{busy ? 'Checking…' : 'Check next buy'}</button>
+        {validBuyBudget(budget) && <a className="text-link" href={'#/paper/new?' + new URLSearchParams({wallet: address, name, cap: budget})}>
+          Set up public shadow run <ArrowRight size={14} aria-hidden="true" />
+        </a>}
         <div className="observation-retry">
           <label>
             <input type="checkbox" checked={retryEmpty} disabled={busy}
@@ -134,11 +162,9 @@ export function PublicObservation({ address }: { address: string }) {
             Check again if the first read is empty
           </label>
           <small id="retry-window-timing" className="muted">
-            If the complete first page has no ordinary BUY, try the same window three seconds
-            after it closes while a timely book check is still possible.
+            Allow one more read of the same window after three seconds.
           </small>
         </div>
-        <button className="btn" disabled={busy}>Observe next BUY</button>
       </form>
       <p className="workspace-note" role="status">
         {busy ? 'Sampling this window and checking public evidence…' : 'Research only. No funds are used.'}

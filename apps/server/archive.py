@@ -11,7 +11,8 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from .provider import decimal_value, validate_address
-from .store import WORKSPACE_VERSION, add_public_exits, add_public_runs, create_schema_v1
+from .store import WORKSPACE_VERSION, add_public_exits, add_public_runs, add_saved_wallets, create_schema_v1, verify_saved_wallets
+from .background import add_table
 from .public_shadow import verify_archive
 
 
@@ -145,6 +146,9 @@ def _verify_schema(db, version):
             add_public_runs(reference)
         if version >= 3:
             add_public_exits(reference)
+        if version >= 5:
+            add_table(reference)
+            add_saved_wallets(reference)
         expected = reference.execute(catalog).fetchall()
     if db.execute(catalog).fetchmany(len(expected) + 1) != expected:
         raise ValueError("The database schema differs from the supported PolySia workspace schema.")
@@ -179,6 +183,13 @@ def copy_workspace(source: Path, destination: Path):
                 if any(type(revision) is not int or revision < 0 for revision in row[1:3]):
                     raise ValueError("The workspace revisions are invalid.")
                 _verify_records(writer, row[3])
+                if version >= 5:
+                    verify_saved_wallets(writer)
+                    for status, due, claim in writer.execute("""SELECT r.status,b.due,b.claim FROM background_runs b
+                            JOIN public_runs r ON r.id=b.run_id"""):
+                        if (status != "running" or type(due) is not int or due < 0 or
+                                (claim is not None and (not isinstance(claim, str) or not re.fullmatch("[a-f0-9]{32}", claim)))):
+                            raise ValueError("Invalid background sampling state.")
                 if version >= 2:
                     writer.row_factory = sqlite3.Row
                     try:

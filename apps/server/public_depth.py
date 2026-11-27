@@ -184,7 +184,10 @@ def sell_scope(condition, token, limit):
     return {"conditionId": condition, "tokenId": token, "maxShares": limit}
 
 
-def measure_sale(sample):
+MINIMUM_SALE_REASON = "The size limit or eligible bids could not cover the minimum sale."
+
+
+def measure_sale(sample, *, remaining_target=None):
     """Cap the reduction by the user's limit, the leader's sale and displayed bids."""
     terms, scope = sample["market"], sample["exitScope"]
     if terms["status"] != "available":
@@ -212,7 +215,7 @@ def measure_sale(sample):
         if not 0 < price <= 1 or str(source_shares) != sample["participant"]["sharesBaseUnits"]:
             raise ValueError("Unreconciled source trade")
         floor_price = Fraction(price) * SCALE - PRICE_ALLOWANCE
-        target = min(int(scope["maxShares"]), source_shares // SCALE)
+        target = min(int(scope["maxShares"]), source_shares // SCALE if remaining_target is None else remaining_target)
         remaining, gross, fees = target, 0, 0
         previous = SCALE + 1
         tick, rate = _micros(terms["priceTick"]), _micros(terms["takerRate"])
@@ -229,7 +232,7 @@ def measure_sale(sample):
             remaining -= filled
         quantity = target - remaining
         if not quantity or quantity * SCALE < _micros(terms["minimumOrderSize"]):
-            return {"status": "skipped", "reason": "The size limit or eligible bids could not cover the minimum sale."}
+            return {"status": "skipped", "reason": MINIMUM_SALE_REASON}
         if fees > gross:
             raise ValueError("Fees exceed the sale")
         return {"status": "estimated", "targetShares": str(target), "shares": str(quantity),

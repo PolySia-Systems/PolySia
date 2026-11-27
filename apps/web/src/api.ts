@@ -97,6 +97,7 @@ export interface Run {
   remaining_steps: number
 }
 export interface Workspace {
+  savedWallets: { address: string; label: string }[]
   accountRevision: number
   settings: SettingsRecord
   account: Account | null
@@ -126,3 +127,7 @@ export const signed = (value: number | string, digits = 0) =>
   (Number(value) > 0 ? '+' : '') + money(value, digits)
 export const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : 'The request could not be completed.'
+
+export function validBuyBudget(value: string | null): value is string {
+  return value !== null && /^\d+(?:\.\d{1,2})?$/.test(value) && Number(value) >= 1 && Number(value) <= 1000
+}

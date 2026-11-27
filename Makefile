@@ -36,6 +36,7 @@ $(BROWSER_TOOLS): tests/browser/requirements.txt
 
 browser-test: build $(BROWSER_TOOLS)
 	$(BROWSER_ENV)/bin/python tests/browser/journey.py $(BROWSER_ARGS)
+	$(BROWSER_ENV)/bin/python tests/browser/wallet_address_input.py dist/polysia.pyz
 
 provider-test: build $(BROWSER_TOOLS)
 	$(BROWSER_ENV)/bin/python tests/browser/journey.py --public-smoke $(BROWSER_ARGS)

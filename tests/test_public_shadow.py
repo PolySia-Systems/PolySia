@@ -53,6 +53,8 @@ def observed_sell(wallet, scope, *, start=None, order="08", depth="8", leader_sh
     data["event"].update(side="SELL", shares=leader_shares)
     data["participant"]["sharesBaseUnits"] = str(public_depth._micros(leader_shares))
     data["participant"]["collateralBaseUnits"] = str(public_depth._micros(leader_shares) // 2)
+    index = int(order, 16)
+    data["participant"].update(logIndex=index, fillId=f"137:{data['event']['transactionHash']}:{index}")
     bid = {"price": "0.48", "shares": depth}
     data["book"].update(bestBids=[bid], bestBid=bid)
     data["capacity"] = public_depth.measure_sale(data)
@@ -113,6 +115,53 @@ class PublicPortfolioTests(unittest.TestCase):
             for key in ("cash", "gross", "fees", "nextBudget", "positions", "entries", "realized"):
                 self.assertEqual(split[key], whole[key], key)
             paper.verify_archive(db)
+
+    def test_fragmented_sell_accumulates_exact_shares_and_preserves_the_first_cap(self):
+        from datetime import UTC, datetime
+        start = 1_700_000_000
+        def clock(seconds):
+            return patch.object(paper, "timestamp", return_value=datetime.fromtimestamp(seconds, UTC).isoformat())
+
+        cases = [("whole", ["10"], 9), ("split", ["5", "5"], 9),
+                 ("small", ["0.5"] * 20, 9), ("capped", ["5", "10"], 9),
+                 ("legacy", ["5", "5"], 14)]
+        results = {}
+        with self.store.connection() as db:
+            for number, (name, parts, expected) in enumerate(cases, 1):
+                run_id = f"{number:032x}"
+                with clock(start - 1):
+                    paper.create(db, run_id, WALLET, name, "25", "10")
+                if name == "legacy":
+                    db.execute("UPDATE public_runs SET policy=? WHERE id=?",
+                               (json.dumps(paper._policy("10.00", True, True)), run_id))
+                with clock(start + 6):
+                    report = paper.record(db, run_id, 1, observed_buy(WALLET, "10.00", start=start))
+                for index, size in enumerate(parts):
+                    # Later requests can never enlarge the first order-level limit.
+                    limit = min(19 if name == "capped" and index else 10, int(report["positions"][0]["shares"]))
+                    _, scope, _ = paper.sale_terms(db, run_id, report["revision"], "734", str(limit))
+                    receipt = observed_sell(WALLET, scope, start=start + 10, depth="100", leader_shares=size)
+                    tx = f"0x{index + 1:064x}" if name == "split" else receipt["event"]["transactionHash"]
+                    receipt["event"]["transactionHash"] = tx
+                    receipt["participant"].update(transactionHash=tx, logIndex=index, fillId=f"137:{tx}:{index}")
+                    with clock(start + 16 + index):
+                        report = paper.record_sale(db, run_id, report["revision"], "734", str(limit), receipt)
+                        # Retry after the first fragment, including a below-minimum fragment.
+                        if index == 0 and len(parts) > 1:
+                            again = paper.record_sale(db, run_id, report["revision"], "734", str(limit), receipt)
+                            self.assertEqual(again["cash"], report["cash"])
+                            self.assertEqual(again["decisions"][0]["kind"], "duplicate")
+                            report = again
+                self.assertEqual(int(report["positions"][0]["shares"]), expected, name)
+                if name == "legacy":
+                    self.assertEqual(report["decisions"][0]["kind"], "duplicate")
+                else:
+                    last = report["decisions"][0]
+                    self.assertEqual(last["sourceOrder"], receipt["participant"]["exchange"] + "/" + receipt["participant"]["orderHash"])
+                    results[name] = (report["cash"], report["openCost"], report["realized"], report["fees"])
+            self.assertEqual(len(set(results.values())), 1, results)
+            paper.verify_archive(db)
+        copy_workspace(self.store.path, self.root / "fragmented.db")
 
     def test_sale_during_pending_buy_and_incomplete_check_preserve_balances(self):
         self.create()

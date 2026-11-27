@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import {
   ArrowUpRight,
   Check,
@@ -45,21 +45,44 @@ export function Accounts({
 }: Props & { initialAddress?: string }) {
   const account = workspace.account
   const [address, setAddress] = useState(initialAddress ?? account?.address ?? '')
+  const [invalidAddress, setInvalidAddress] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [feedback, setFeedback] = useState('')
 
-  async function watch(event: FormEvent) {
-    event.preventDefault()
+  const saved = workspace.savedWallets.find((wallet) => wallet.address === account?.address)
+
+  async function watch(nextAddress: string) {
     setError('')
     setFeedback('')
     setBusy(true)
     try {
-      await api('account', 'POST', { address: address.trim(), revision: workspace.accountRevision })
+      await api('account', 'POST', { address: nextAddress.trim(), revision: workspace.accountRevision })
       await refresh()
+      setAddress(nextAddress.trim().toLowerCase())
+      setInvalidAddress(false)
       setFeedback('Read attempt complete.')
     } catch (e) {
       setError(errorText(e))
+      await refresh().catch(() => {})
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function updateSaved(label: string | null) {
+    if (!account) return
+    setBusy(true)
+    setError('')
+    setFeedback('')
+    const wallet = { address: account.address, revision: workspace.accountRevision }
+    try {
+      if (label === null) await api('account/saved', 'DELETE', wallet)
+      else await api('account/saved', 'PUT', { ...wallet, label })
+      await refresh()
+      setFeedback(label === null ? 'Removed from saved wallets.' : 'Wallet saved.')
+    } catch (cause) {
+      setError(errorText(cause))
       await refresh().catch(() => {})
     } finally {
       setBusy(false)
@@ -74,6 +97,7 @@ export function Accounts({
       await api('account', 'DELETE', { revision: workspace.accountRevision })
       await refresh()
       setAddress('')
+      setInvalidAddress(false)
       setFeedback('Watch removed. Your wallet and replay history are unaffected.')
     } catch (e) {
       setError(errorText(e))
@@ -91,10 +115,23 @@ export function Accounts({
           <h2>Watch a public account</h2>
         </header>
         <p>
-          Inspect published open positions using a Polymarket trading wallet address. No signature
-          is required.
+          Enter the public trading wallet address from your Polymarket profile to check cash and open positions.
         </p>
-        <form onSubmit={watch}>
+        {workspace.savedWallets.length > 0 && (
+          <label className="field saved-wallet-picker">
+            Saved wallets
+            <select value={saved?.address ?? ''} disabled={busy}
+              onChange={(event) => void watch(event.target.value)}>
+              <option disabled value="">Select a wallet</option>
+              {workspace.savedWallets.map((wallet) => (
+                <option key={wallet.address} value={wallet.address}>
+                  {wallet.label ? wallet.label + ' · ' : ''}{wallet.address}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <form onSubmit={(event) => { event.preventDefault(); void watch(address) }}>
           <label className="field" htmlFor="wallet-address">
             Public wallet address
           </label>
@@ -108,11 +145,16 @@ export function Accounts({
               autoComplete="off"
               required
               pattern="0x[0-9a-fA-F]{40}"
-              maxLength={42}
+              aria-invalid={invalidAddress || undefined}
+              aria-describedby={invalidAddress ? 'wallet-address-error' : undefined}
+              onInvalid={() => setInvalidAddress(true)}
               title="Enter 0x followed by 40 hexadecimal characters"
               value={address}
               disabled={busy}
-              onChange={(e) => setAddress(e.target.value)}
+              onChange={(e) => {
+                setAddress(e.target.value)
+                if (e.target.validity.valid) setInvalidAddress(false)
+              }}
             />
             <button className="btn primary" disabled={busy}>
               {busy
@@ -124,9 +166,11 @@ export function Accounts({
                     : 'Watch account'}
             </button>
           </div>
+          {invalidAddress && <p className="error" id="wallet-address-error" role="alert">
+            Use 0x followed by exactly 40 hexadecimal characters.
+          </p>}
           <p className="workspace-note">
-            Watching or refreshing sends this address to the Polymarket Data API. A new watch
-            replaces the previous address.
+            Watching or switching reads this address from Polymarket. Each wallet has its own cash and positions.
           </p>
         </form>
         {error && (
@@ -138,6 +182,7 @@ export function Accounts({
           {feedback}
         </span>
       </section>
+      {account && <WalletValue key={'cash-' + account.address} address={account.address} kind="cash" walletName={saved?.label} />}
       {account && (
         <PositionSnapshot account={account} heading="Position snapshot">
           <a className="btn" href={'#/paper/new?' + new URLSearchParams({wallet: account.address})}>
@@ -148,7 +193,26 @@ export function Accounts({
           </button>
         </PositionSnapshot>
       )}
-      {account && <HoldingsValue key={account.address} address={account.address} />}
+      {account && (
+        <section className="panel workspace-panel" aria-label="Save this wallet">
+          <h2>Save this wallet</h2>
+          <p className="workspace-note">Keep this public address for quick switching. Saved wallets have read-only access.</p>
+          <form key={account.address + '/' + (saved?.label ?? '')}
+            onSubmit={(event) => {
+              event.preventDefault()
+              void updateSaved(String(new FormData(event.currentTarget).get('label') ?? ''))
+            }}>
+            <label className="field" htmlFor="saved-wallet-name">Wallet name (optional)</label>
+            <div className="watch-input">
+              <input id="saved-wallet-name" name="label" defaultValue={saved?.label ?? ''} maxLength={64} disabled={busy} />
+              <button className="btn" disabled={busy}>{saved ? 'Update name' : 'Save wallet'}</button>
+              {saved && <button type="button" className="btn subtle" disabled={busy}
+                onClick={() => void updateSaved(null)}>Remove from saved wallets</button>}
+            </div>
+          </form>
+        </section>
+      )}
+      {account && <WalletValue key={account.address} address={account.address} kind="holdings" />}
       {!account && (
         <section className="panel workspace-panel">
           <header>
@@ -165,7 +229,7 @@ export function Accounts({
   )
 }
 
-interface HoldingsValueRead {
+interface WalletValueRead {
   address: string
   status: 'available' | 'unavailable'
   value: string | null
@@ -176,18 +240,24 @@ interface HoldingsValueRead {
   message: string
 }
 
-export function HoldingsValue({ address }: { address: string }) {
-  const [result, setResult] = useState<HoldingsValueRead | null>(null)
+export function WalletValue({ address, kind, walletName }: { address: string; kind: 'cash' | 'holdings'; walletName?: string }) {
+  const cash = kind === 'cash'
+  const title = cash ? 'Cash balance' : 'Holdings value'
+  const [result, setResult] = useState<WalletValueRead | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const loadLabel = cash ? 'Read cash balance' : 'Load holdings value'
+  const buttonLabel = result || error ? `Refresh ${title.toLowerCase()}` : loadLabel
+  const unavailable = cash ? 'Balance unavailable' : 'Value unavailable'
 
   async function load() {
     setBusy(true)
     setResult(null)
     setError('')
     try {
-      const read = await api<HoldingsValueRead>('public/traders/' + address + '/value')
-      if (read.address !== address) throw new Error('The holdings value identified a different wallet.')
+      const endpoint = cash ? 'cash' : 'value'
+      const read = await api<WalletValueRead>(`public/traders/${address}/${endpoint}`)
+      if (read.address !== address) throw new Error('The result identified a different wallet.')
       setResult(read)
     } catch (cause) {
       setError(errorText(cause))
@@ -197,20 +267,22 @@ export function HoldingsValue({ address }: { address: string }) {
   }
 
   return (
-    <section className="panel workspace-panel holdings-value" aria-label="Holdings value">
+    <section className="panel workspace-panel holdings-value" aria-label={title}>
       <div className="panel-head">
-        <h2>Holdings value</h2>
+        <h2>{title}</h2>
         <button className="btn" disabled={busy} onClick={load}>
-          {busy ? 'Reading value…' : result || error ? 'Refresh holdings value' : 'Load holdings value'}
+          {busy ? 'Reading…' : buttonLabel}
         </button>
       </div>
+      {cash && <p className="workspace-note">Polygon pUSD · {walletName && walletName + ' · '}
+        <code title={address}>{address.slice(0, 8)}…{address.slice(-6)}</code></p>}
       <div role="status">
         {result && (
           <>
             <strong className="holdings-amount">
               {result.status === 'available' && result.value !== null
                 ? `${result.value} ${result.unit ?? '(unit unavailable)'}`
-                : 'Value unavailable'}
+                : unavailable}
             </strong>
             <p>{result.message}</p>
             <p className="workspace-note">{result.source} · Checked {timestamp(result.checkedAt)}
@@ -418,6 +490,55 @@ export function Settings({ workspace, refresh }: Props) {
   )
 }
 
+interface OwnerOverview {
+  running: number
+  paused: number
+  stopped: number
+  background: number
+  checkedAt: string
+  more: boolean
+  issues: { id: string; name: string; updated: string; reason: string }[]
+}
+
+function PortfolioStatus() {
+  const [overview, setOverview] = useState<OwnerOverview | null>(null)
+  const [error, setError] = useState('')
+  const [attempt, setAttempt] = useState(0)
+  useEffect(() => {
+    let active = true
+    setOverview(null)
+    setError('')
+    api<OwnerOverview>('workspace/overview').then(result => {
+      if (active) setOverview(result)
+    }).catch(cause => {
+      if (active) setError(errorText(cause))
+    })
+    return () => { active = false }
+  }, [attempt])
+  return (
+    <section className="panel workspace-panel" aria-label="Shadow portfolio overview">
+      <header><Eye size={20} aria-hidden="true" /><h2>Shadow portfolio overview</h2></header>
+      {overview ? <>
+        <p>{overview.running} running · {overview.paused} paused · {overview.stopped} stopped</p>
+        <p>Background sampling enabled for {overview.background} {overview.background === 1 ? 'run' : 'runs'}.</p>
+        <h3>Needs review</h3>
+        {overview.issues.length ? <ul>{overview.issues.map(issue => (
+          <li key={issue.id}>
+            <a href={'#/paper/' + issue.id}>{issue.name}</a> · {issue.reason}
+            <span className="workspace-note"> · {timestamp(issue.updated)}</span>
+          </li>
+        ))}</ul> : <p>No current observation warnings or stopped runs with open shares.</p>}
+        {overview.more && <p>Showing the five most recent items.</p>}
+        <p className="workspace-note">Checked {timestamp(overview.checkedAt)}</p>
+      </> : error ? <p role="alert">{error}</p> : <p role="status">Reading saved runs…</p>}
+      <div className="watch-actions">
+        <a className="btn" href="#/paper">View all shadow runs</a>
+        <button className="btn subtle" onClick={() => setAttempt(value => value + 1)}>Refresh overview</button>
+      </div>
+    </section>
+  )
+}
+
 export function Status({ workspace }: Props) {
   const [health, setHealth] = useState<Health | null>(null)
   const [error, setError] = useState('')
@@ -439,6 +560,7 @@ export function Status({ workspace }: Props) {
   }, [attempt])
   return (
     <div className="workspace-page">
+      <PortfolioStatus />
       <section className="panel workspace-panel">
         <header>
           <Database size={20} aria-hidden="true" />

@@ -2,11 +2,12 @@
 
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
 from .provider import decimal_value, units_from_micros as units, validate_address
-from .public_depth import DELAY_SECONDS, budget_amount, capacity_policy, measure_depth, measure_sale, sell_scope
+from .public_depth import DELAY_SECONDS, MINIMUM_SALE_REASON, budget_amount, capacity_policy, measure_depth, measure_sale, sell_scope
 from .public_fill import EXCHANGES, verify_retained_amounts
 from .store import WORKSPACE_VERSION, Conflict, timestamp
 
@@ -39,14 +40,19 @@ def _run(db, run_id):
 EXIT_MODEL = {"model": "displayed-bids-v1", "sizing": "operator limit capped by observed leader sale and owned shares",
               "maxPriceDecrease": "0.03", "costMethod": "pooled cost, floor to micro-pUSD"}
 ENABLE_REASON = "Enabled operator-capped SELL windows for this run."
+BACKGROUND_REASONS = {"background-on": "Enabled background BUY sampling.",
+                      "background-off": "Disabled background BUY sampling."}
+CUMULATIVE_SELL = "cumulative verified fills capped by the first share limit per source order"
 
 
-def _policy(budget, exits=False, check_sales=False):
+def _policy(budget, exits=False, check_sales=False, cumulative=False):
     policy = {**capacity_policy(budget), "model": MODEL, "side": "BUY", "entryModel": "displayed whole shares",
             "windowSeconds": 2, "retryEmpty": True, "venueMinimumNotionalEnforced": False,
             "exitModel": EXIT_MODEL if exits else None, "markModel": "on-demand two-sided midpoint"}
     if check_sales:
         policy["checkSalesBeforeEntry"] = True
+    if cumulative:
+        policy["saleSizing"] = CUMULATIVE_SELL
     return policy
 
 
@@ -58,7 +64,7 @@ def create(db, run_id, wallet, name, capital, cap):
     if config[3] > config[2]:
         raise ValueError("The per-entry budget must fit within the starting cash.")
     now = timestamp()
-    policy = _policy(budget_amount(cap), exits=True, check_sales=True)
+    policy = _policy(budget_amount(cap), exits=True, check_sales=True, cumulative=True)
     db.execute("""INSERT INTO public_runs VALUES (?,?,?,?,?,?,?,?,'running',1)
                   ON CONFLICT(id) DO NOTHING""", (run_id, *config, json.dumps(policy), now, now))
     row = _run(db, run_id)
@@ -118,6 +124,7 @@ def report(db, run_id, *, export=False, before=None, trades=False):
     row = _run(db, run_id)
     result = _summary(row, *_totals(db, run_id))
     result["policy"] = json.loads(row["policy"])
+    result["backgroundEnabled"] = bool(db.execute("SELECT 1 FROM background_runs WHERE run_id=?", (run_id,)).fetchone())
     result["exitsEnabled"] = _enabled(db, row)
     result["activeExitPolicy"] = EXIT_MODEL if result["exitsEnabled"] else None
     result["positions"], result["closedPositions"] = [], []
@@ -138,7 +145,9 @@ def report(db, run_id, *, export=False, before=None, trades=False):
                  json_extract(receipt,'$.researchBudget') AS budget,
                  json_extract(receipt,'$.exitScope.maxShares') AS sale_limit,
                  json_extract(receipt,'$.exitScope.tokenId') AS sale_token,
-                 json_extract(receipt,'$.capacity.targetShares') AS target_shares"""
+                 coalesce(json_extract(receipt,'$.portfolioSale.targetShares'), json_extract(receipt,'$.capacity.targetShares')) AS target_shares,
+                 json_extract(receipt,'$.participant.orderHash') AS order_hash,
+                 json_extract(receipt,'$.participant.exchange') AS exchange"""
     next_cursor = None
     if export:
         rows = db.execute(f"SELECT {fields},receipt FROM public_decisions WHERE run_id=? ORDER BY revision", (run_id,))
@@ -157,6 +166,8 @@ def report(db, run_id, *, export=False, before=None, trades=False):
         if d["kind"] == "exit":
             decision.update(targetShares=d["target_shares"], releasedCost=units(d["released_cost"]), proceeds=units(d["gross"]-d["fee"]),
                             realized=_signed(d["gross"]-d["fee"]-d["released_cost"]))
+        if d["source_order"] and d["source_order"].startswith("137:"):
+            decision.update(sourceOrder=d["exchange"] + "/" + d["order_hash"], sourceFill=d["source_order"])
         if d["budget"] is not None or d["sale_limit"] is not None:
             decision["observation"] = {"windowStartSeconds": d["window_start"], "windowEndSeconds": d["window_end"],
                                        "eventTimeSeconds": d["event_time"], "bookReceivedMs": d["book_time"],
@@ -228,7 +239,9 @@ def valuation_basis(db, run_id, revision):
 def control(db, run_id, revision, action):
     row = _run(db, run_id)
     _check_revision(row, revision)
-    if action == "enable-exits":
+    if action in BACKGROUND_REASONS:
+        status, reason = row["status"], BACKGROUND_REASONS[action]
+    elif action == "enable-exits":
         if row["status"] == "stopped" or _enabled(db, row):
             raise Conflict("This run cannot enable another exit policy.")
         status, reason = row["status"], ENABLE_REASON
@@ -238,6 +251,8 @@ def control(db, run_id, revision, action):
     db.execute("""INSERT INTO public_decisions(run_id,revision,recorded,kind,reason,shares,gross,fee)
                   VALUES(?,?,?,?,?,0,0,0)""", (run_id, revision + 1, now, action, reason))
     db.execute("UPDATE public_runs SET revision=revision+1, status=?, updated=? WHERE id=?", (status, now, run_id))
+    if action in ("pause", "stop"):
+        db.execute("DELETE FROM background_runs WHERE run_id=?", (run_id,))
     return report(db, run_id)
 
 
@@ -382,25 +397,81 @@ def sale_terms(db, run_id, revision, token, limit):
     return row["wallet"], scope, basis
 
 
-def _sale_decision(run, scope, basis, receipt, recorded, seen):
+@dataclass
+class SaleOrder:
+    limit: int = 0
+    source_micros: int = 0
+    sold: int = 0
+    last_exit: str | None = None
+
+    def include(self, limit, source_micros, shares, recorded):
+        self.limit = self.limit or int(limit)
+        self.source_micros += int(source_micros)
+        self.sold += shares
+        if shares:
+            self.last_exit = recorded
+
+
+def _sale_progress(db, run_id, order):
+    exchange, order_hash = order.split("/")
+    progress = SaleOrder()
+    for row in db.execute("""SELECT json_extract(receipt,'$.exitScope.maxShares'),
+                             json_extract(receipt,'$.participant.sharesBaseUnits'), shares, recorded
+                             FROM public_decisions WHERE run_id=? AND source_order LIKE '137:%'
+                             AND json_extract(receipt,'$.participant.orderHash')=?
+                             AND json_extract(receipt,'$.participant.exchange')=? ORDER BY revision""",
+                          (run_id, order_hash, exchange)):
+        progress.include(*row)
+    return progress
+
+
+def _sale_decision(run, scope, basis, receipt, recorded, seen, order_history):
     verify_retained_amounts(receipt, "SELL")
     if receipt["wallet"] != run["wallet"] or receipt["exitScope"] != scope:
         raise ValueError("SELL receipt scope mismatch")
     quote = receipt.get("capacity", {})
     kind = quote.get("status", receipt["status"])
-    if kind != "estimated":
+    cumulative = json.loads(run["policy"]).get("saleSizing") == CUMULATIVE_SELL
+    below_minimum = kind == "skipped" and quote.get("reason") == MINIMUM_SALE_REASON
+    if kind != "estimated" and not (cumulative and below_minimum):
         reason = quote.get("reason") or receipt["reason"]
         if kind not in ("waiting", "incomplete", "unavailable", "skipped") or not isinstance(reason, str):
             raise ValueError("Unknown SELL observation outcome")
         return kind, reason, NO_ENTRY, 0
-    source = _source_order(receipt, "SELL")
+    order = _source_order(receipt, "SELL")
+    source = order
+    if cumulative:
+        participant = receipt["participant"]
+        index = participant["logIndex"]
+        source = f"137:{participant['transactionHash']}:{index}"
+        if type(index) is not int or not 0 <= index < 2**64 or participant["fillId"] != source:
+            raise ValueError("SELL fill identity mismatch")
     _check_window(run, receipt, recorded)
     if measure_sale(receipt) != quote:
         raise ValueError("Sale evidence did not reconcile with the position.")
     if seen(source):
-        return "duplicate", "This source order already has a modeled decision in this run.", NO_ENTRY, 0
-    if receipt["windowStartSeconds"] < datetime.fromisoformat(basis["lastChangeAt"]).timestamp():
+        reason = "This verified SELL fill was already recorded." if cumulative else "This source order already has a modeled decision in this run."
+        return "duplicate", reason, NO_ENTRY, 0
+    prior = order_history(order) if cumulative else None
+    boundary = basis["lastChangeAt"]
+    if prior and prior.last_exit == boundary:
+        boundary = basis["lastEntryAt"]
+    if receipt["windowStartSeconds"] < datetime.fromisoformat(boundary).timestamp():
         raise ValueError("The sale predates the current position.")
+    if cumulative:
+        observed = prior.source_micros + int(participant["sharesBaseUnits"])
+        authorized = min(prior.limit or int(scope["maxShares"]), observed // 1_000_000)
+        target = min(int(scope["maxShares"]), authorized - prior.sold)
+        if target < 0:
+            raise ValueError("Invalid cumulative SELL target")
+        quote = measure_sale(receipt, remaining_target=target)
+        receipt["portfolioSale"] = {"targetShares": str(target), "orderTargetShares": str(authorized),
+                                    "sourceShareMicros": str(observed), "soldBefore": str(prior.sold)}
+        if quote["status"] == "skipped":
+            reason = "The source order reached its original share limit." if prior.sold == (prior.limit or int(scope["maxShares"])) else quote["reason"]
+            return "skipped", reason, (source, *NO_ENTRY[1:]), 0
+        if quote["status"] != "estimated":
+            raise ValueError("Cumulative sale cannot be verified")
     count, held, cost = int(quote["shares"]), int(basis["shares"]), _money(basis["cost"])
     if not 0 < count <= int(scope["maxShares"]) <= held:
         raise ValueError("Sale exceeds its share limit")
@@ -408,7 +479,12 @@ def _sale_decision(run, scope, basis, receipt, recorded, seen):
     gross, fee = _money(quote["gross"]), _money(quote["feeEstimate"])
     amounts = (source, scope["conditionId"], scope["tokenId"], event.get("marketTitle"), event.get("outcomeLabel"),
                count, gross, fee)
-    return "exit", "Modeled a SELL against the delayed displayed bids.", amounts, cost * count // held
+    released = cost * count // held
+    if cumulative:
+        # Use the same pooled basis until the next purchase, so intermediate floors cancel.
+        base_shares, base_cost = basis["pool"]
+        released = base_cost * (base_shares - held + count) // base_shares - (base_cost - cost)
+    return "exit", "Modeled a SELL against the delayed displayed bids.", amounts, released
 
 
 def record_sale(db, run_id, revision, token, limit, receipt):
@@ -418,8 +494,16 @@ def record_sale(db, run_id, revision, token, limit, receipt):
     def seen(source):
         return db.execute("SELECT 1 FROM public_decisions WHERE run_id=? AND source_order=?", (run_id, source)).fetchone()
 
+    if isinstance(receipt, dict):
+        receipt = receipt.copy()
     try:
-        kind, reason, amounts, released = _sale_decision(_run(db, run_id), scope, basis, receipt, now, seen)
+        sold, released_since_buy = db.execute("""SELECT coalesce(sum(shares),0),coalesce(sum(released_cost),0)
+            FROM public_decisions WHERE run_id=? AND token_id=? AND kind='exit' AND revision >
+            (SELECT max(revision) FROM public_decisions WHERE run_id=? AND token_id=? AND kind='entry')""",
+            (run_id, token, run_id, token)).fetchone()
+        basis["pool"] = (int(basis["shares"]) + sold, _money(basis["cost"]) + released_since_buy)
+        kind, reason, amounts, released = _sale_decision(_run(db, run_id), scope, basis, receipt, now, seen,
+                                                          lambda order: _sale_progress(db, run_id, order))
     except (AttributeError, ArithmeticError, IndexError, KeyError, TypeError, ValueError):
         kind, reason, amounts, released = "incomplete", "The SELL observation could not be reconciled with this position.", NO_ENTRY, 0
         receipt = {"wallet": wallet, "exitScope": scope, "status": kind, "reason": reason}
@@ -430,7 +514,11 @@ def _save(db, run_id, revision, now, kind, reason, amounts, receipt, released):
     db.execute("INSERT INTO public_decisions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                (run_id, revision + 1, now, kind, reason, *amounts, json.dumps(receipt, allow_nan=False), released))
     db.execute("UPDATE public_runs SET revision=revision+1, updated=? WHERE id=?", (now, run_id))
-    return report(db, run_id)
+    state = report(db, run_id)
+    if state["backgroundEnabled"] and not state["nextBudget"]:
+        db.execute("DELETE FROM background_runs WHERE run_id=?", (run_id,))
+        state["backgroundEnabled"] = False
+    return state
 
 
 def verify_archive(db, version=WORKSPACE_VERSION):
@@ -447,12 +535,16 @@ def verify_archive(db, version=WORKSPACE_VERSION):
         policy = json.loads(run["policy"])
         exit_enabled = policy.get("exitModel") is not None
         check_sales = policy.get("checkSalesBeforeEntry") is True
-        if ((exit_enabled and version < 3) or (check_sales and not exit_enabled)
-                or policy != _policy(_next_budget(run["entry_cap"], run["entry_cap"]), exit_enabled, check_sales)):
+        cumulative = "saleSizing" in policy
+        if ((exit_enabled and version < 3) or (check_sales and not exit_enabled) or (cumulative and (not exit_enabled or version < 5))
+                or policy != _policy(_next_budget(run["entry_cap"], run["entry_cap"]), exit_enabled, check_sales, cumulative)):
             raise ValueError("Invalid public shadow policy.")
         datetime.fromisoformat(last)
         used = set()
         holdings = {}
+        background_enabled = False
+        pools = {}
+        orders = {}
         for item in db.execute("SELECT * FROM public_decisions WHERE run_id=? ORDER BY revision", (run["id"],)):
             revision += 1
             kind, last = item["kind"], item["recorded"]
@@ -460,13 +552,20 @@ def verify_archive(db, version=WORKSPACE_VERSION):
             if item["revision"] != revision or not isinstance(item["reason"], str):
                 raise ValueError("Invalid public shadow journal sequence.")
             released = 0
-            if kind in CONTROLS or kind == "enable-exits":
-                if kind == "enable-exits":
+            if kind in CONTROLS or kind == "enable-exits" or kind in BACKGROUND_REASONS:
+                if kind in BACKGROUND_REASONS:
+                    requested = kind == "background-on"
+                    if version < 5 or status != "running" or requested == background_enabled or (requested and cash < 1_000_000):
+                        raise ValueError("Invalid background sampling change.")
+                    background_enabled, reason = requested, BACKGROUND_REASONS[kind]
+                elif kind == "enable-exits":
                     if version < 3 or exit_enabled or status == "stopped":
                         raise ValueError("Invalid change of exit policy.")
                     exit_enabled, reason = True, ENABLE_REASON
                 else:
                     status, reason = _check_control(status, kind), CONTROL_REASONS[kind]
+                    if kind in ("pause", "stop"):
+                        background_enabled = False
                 expected = NO_ENTRY
                 if item["receipt"] is not None:
                     raise ValueError("Unexpected receipt on a public shadow control.")
@@ -481,7 +580,16 @@ def verify_archive(db, version=WORKSPACE_VERSION):
                     if not 0 < int(scope["maxShares"]) <= held:
                         raise ValueError("The sale limit exceeds the attributed position.")
                     basis = {"shares": str(held), "cost": units(cost), "lastChangeAt": changed}
-                    outcome, reason, expected, released = _sale_decision(run, scope, basis, receipt, last, used.__contains__)
+                    basis["pool"], basis["lastEntryAt"] = pools[(scope["conditionId"], token)]
+                    saved_sale = receipt.pop("portfolioSale", None)
+                    outcome, reason, expected, released = _sale_decision(run, scope, basis, receipt, last, used.__contains__,
+                                                                          lambda key: orders.get(key, SaleOrder()))
+                    if saved_sale != receipt.get("portfolioSale"):
+                        raise ValueError("The cumulative SELL target differs from the retained fill evidence.")
+                    if saved_sale is not None:
+                        key = _source_order(receipt, "SELL")
+                        orders.setdefault(key, SaleOrder()).include(scope["maxShares"], receipt["participant"]["sharesBaseUnits"], expected[5], last)
+                        used.add(expected[0])
                 else:
                     budget = _next_budget(cash, run["entry_cap"])
                     if status != "running" or budget is None:
@@ -495,6 +603,7 @@ def verify_archive(db, version=WORKSPACE_VERSION):
                     held, cost, _ = holdings.get((condition, token), (0, 0, None))
                     if kind == "entry":
                         holdings[(condition, token)] = held + shares, cost + gross + fee, last
+                        pools[(condition, token)] = ((held + shares, cost + gross + fee), last)
                     else:
                         holdings[(condition, token)] = held - shares, cost - released, last
             if version >= 3 and item["released_cost"] != released:
@@ -506,5 +615,10 @@ def verify_archive(db, version=WORKSPACE_VERSION):
             if actual != expected:
                 raise ValueError("The public shadow journal disagrees with its recorded amounts.")
             cash += (item["gross"] if kind == "exit" else -item["gross"]) - item["fee"]
+            if cash < 1_000_000:
+                background_enabled = False
+        if version >= 5 and background_enabled != bool(db.execute(
+                "SELECT 1 FROM background_runs WHERE run_id=?", (run["id"],)).fetchone()):
+            raise ValueError("Background sampling permission disagrees with the journal.")
         if (revision, status, last) != (run["revision"], run["status"], run["updated"]):
             raise ValueError("The public shadow run disagrees with its journal.")

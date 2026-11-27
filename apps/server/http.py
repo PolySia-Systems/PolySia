@@ -7,7 +7,7 @@ import re
 import socket
 import socketserver
 import sqlite3
-from threading import Lock
+from threading import Event, Lock, Thread
 from time import monotonic
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 from uuid import uuid4
 
-from . import VERSION, observe, provider, public_depth, public_history, public_leaders, public_marks, public_shadow, shadow
+from . import VERSION, background, observe, polygon, provider, public_depth, public_history, public_leaders, public_marks, public_shadow, shadow
 from .store import Conflict, Workspace
 
 API = "/api/v1"
@@ -44,6 +44,24 @@ class LocalServer(ThreadingHTTPServer):
 
     def sample_sell(self, address, scope):
         return self._sample(address, None, retry_empty=True, exit_scope=scope)
+
+    def _background_buy(self, wallet, budget, **options):
+        try:
+            return self.sample_buy(wallet, budget, **options)
+        except RequestError as exc:
+            if exc.status == 409:
+                raise Conflict("Another observation is running.") from exc
+            raise OSError("The public provider was unavailable.") from exc
+
+    def serve_forever(self, poll_interval=0.5):
+        stopped = Event()
+        worker = Thread(target=background.run, args=(self.store, self._background_buy, stopped), daemon=True)
+        worker.start()
+        try:
+            super().serve_forever(poll_interval)
+        finally:
+            stopped.set()
+            worker.join()
 
     def _sample(self, address, budget, **options):
         # Run the same CLI as an operator. Its process deadline also bounds slow
@@ -242,14 +260,16 @@ class Handler(BaseHTTPRequestHandler):
                     "artifactSha256": self.server.artifact_sha256}
         if path == API + "/workspace" and method == "GET":
             return store.read()
+        if path == API + "/workspace/overview" and method == "GET":
+            return store.overview()
         if path == API + "/public-runs" or path.startswith(API + "/public-runs/"):
             return self.public_runs_api(path, method)
         if path == API + "/public/leaders" and self.command == "GET":
-            query = parse_qs(urlsplit(self.path).query, keep_blank_values=True, max_num_fields=1)
-            if query.keys() - {"period"}:
-                raise ValueError("Use the period filter for public rankings.")
+            query = parse_qs(urlsplit(self.path).query, keep_blank_values=True, max_num_fields=2)
+            if query.keys() - {"period", "cursor"} or any(len(values) != 1 for values in query.values()):
+                raise ValueError("Choose one ranking period and one page.")
             self.operation = "public-rankings"
-            return public_leaders.leaderboard(query.get("period", ["month"])[0])
+            return public_leaders.leaderboard(query.get("period", ["month"])[0], query.get("cursor", [None])[0])
         observation = re.fullmatch(API + r"/public/traders/(0x[0-9a-fA-F]{40})/observe", path)
         if observation:
             if self.command != "POST":
@@ -265,10 +285,13 @@ class Handler(BaseHTTPRequestHandler):
         if history and self.command == "GET":
             self.operation = "public-history"
             return public_history.pnl_history(history[1])
-        valuation = re.fullmatch(API + r"/public/traders/(0x[0-9a-fA-F]{40})/value", path)
+        valuation = re.fullmatch(API + r"/public/traders/(0x[0-9a-fA-F]{40})/(value|cash)", path)
         if valuation and self.command == "GET":
             if urlsplit(self.path).query:
-                raise ValueError("Holdings value covers the full trading wallet.")
+                raise ValueError("This lookup covers the full trading wallet.")
+            if valuation[2] == "cash":
+                self.operation = "public-cash"
+                return polygon.cash_balance(valuation[1])
             self.operation = "public-holdings-value"
             return provider.holdings_value(valuation[1])
         if path.startswith(API + "/public/traders/") and self.command == "GET":
@@ -282,6 +305,11 @@ class Handler(BaseHTTPRequestHandler):
             return shadow.compare_entry_coverage(data["allocation"], data["orderSize"])
         if path == API + "/settings" and method == "PUT":
             return store.set_theme(**self.body(("version", "revision", "theme")))
+        if path == API + "/account/saved":
+            if method == "PUT":
+                return store.update_saved_wallet(**self.body(("address", "revision", "label")))
+            if method == "DELETE":
+                return store.update_saved_wallet(**self.body(("address", "revision")), remove=True)
         if path == API + "/account":
             if method == "DELETE":
                 revision = self.body(("revision",))["revision"]
@@ -345,7 +373,7 @@ class Handler(BaseHTTPRequestHandler):
                 receipt = {"status": "unavailable", "reason": str(exc), "wallet": wallet, "exitScope": scope}
             with store.connection() as db:
                 return public_shadow.record_sale(db, run_id, revision, token, limit, receipt)
-        match = re.fullmatch(API + r"/public-runs(?:/([0-9a-f]{32})(?:/(sample|pause|resume|stop|enable-exits|valuation|export))?)?", path)
+        match = re.fullmatch(API + r"/public-runs(?:/([0-9a-f]{32})(?:/(sample|pause|resume|stop|enable-exits|background-on|background-off|valuation|export))?)?", path)
         if not match:
             raise RequestError(404, "Unknown public shadow run.")
         run_id, action = match.groups()
@@ -388,6 +416,10 @@ class Handler(BaseHTTPRequestHandler):
             with store.connection(write=False) as db:
                 public_shadow.require_revision(db, run_id, revision)
             return result
+        if method == "POST" and action in ("background-on", "background-off"):
+            revision = self.body(("revision",))["revision"]
+            with store.connection() as db:
+                return background.configure(db, run_id, revision, action == "background-on")
         if method == "POST" and action in ("sample", "enable-exits", *public_shadow.CONTROLS):
             revision = self.body(("revision",))["revision"]
             if action != "sample":

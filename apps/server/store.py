@@ -8,9 +8,10 @@ from pathlib import Path
 from uuid import uuid4
 
 from . import shadow
+from .provider import validate_address
 
 
-WORKSPACE_VERSION = 4
+WORKSPACE_VERSION = 5
 
 
 class Conflict(ValueError):
@@ -58,6 +59,22 @@ def add_public_exits(db):
     db.execute("PRAGMA user_version = 3")
 
 
+def add_saved_wallets(db):
+    db.execute("CREATE TABLE saved_wallets (address TEXT PRIMARY KEY NOT NULL, label TEXT NOT NULL)")
+
+
+def wallet_label(value):
+    if not isinstance(value, str) or len(value) > 64 or (value and not value.isprintable()):
+        raise ValueError("Use a wallet name of up to 64 printable characters.")
+    return value.strip()
+
+
+def verify_saved_wallets(db):
+    for address, label in db.execute("SELECT address, label FROM saved_wallets"):
+        if validate_address(address) != address or wallet_label(label) != label:
+            raise ValueError("Invalid saved wallet record.")
+
+
 class Workspace:
     def __init__(self, path: Path):
         self.path = path
@@ -75,6 +92,11 @@ class Workspace:
             if version < 4:
                 # Older writers understand the tables but ignore the recorded pre-BUY sale check.
                 db.execute("PRAGMA user_version = 4")
+            if version < 5:
+                from .background import add_table
+                add_table(db)
+                add_saved_wallets(db)
+                db.execute("PRAGMA user_version = 5")
 
     @contextmanager
     def connection(self, write=True):
@@ -97,6 +119,9 @@ class Workspace:
                 "settings": self.settings(row),
                 "accountRevision": row["account_revision"],
                 "account": json.loads(row["account"]) if row["account"] is not None else None,
+                "savedWallets": [dict(wallet) for wallet in db.execute(
+                    "SELECT address, label FROM saved_wallets ORDER BY label COLLATE NOCASE, address"
+                )],
                 "run": shadow.run_report(run) if run else None,
             }
 
@@ -114,6 +139,30 @@ class Workspace:
             if not result.rowcount:
                 raise Conflict("Settings changed. Reload before saving.")
             return self.settings(db.execute("SELECT * FROM workspace WHERE id = 1").fetchone())
+
+    def overview(self):
+        with self.connection(write=False) as db:
+            counts = dict(db.execute("SELECT status, count(*) FROM public_runs GROUP BY status"))
+            background = db.execute("SELECT count(*) FROM background_runs").fetchone()[0]
+            # Compare the current revision, so a later successful window clears an old warning.
+            # Open shares remain meaningful after stop. Compute them only for stopped runs.
+            issues = db.execute("""
+                WITH issues AS (
+                    SELECT r.id, r.name, r.updated, d.kind, d.reason
+                    FROM public_runs r JOIN public_decisions d ON d.run_id=r.id AND d.revision=r.revision
+                    WHERE r.status='running' AND d.kind IN ('unavailable','incomplete')
+                    UNION ALL
+                    SELECT r.id, r.name, r.updated, 'exposure', 'Stopped with open simulated shares.'
+                    FROM public_runs r WHERE r.status='stopped' AND (
+                        SELECT sum(CASE d.kind WHEN 'entry' THEN d.shares WHEN 'exit' THEN -d.shares ELSE 0 END)
+                        FROM public_decisions d WHERE d.run_id=r.id
+                    ) > 0
+                )
+                SELECT * FROM issues ORDER BY updated DESC, id LIMIT 6""").fetchall()
+            return {"running": counts.get("running", 0), "paused": counts.get("paused", 0),
+                    "stopped": counts.get("stopped", 0), "background": background,
+                    "issues": [dict(row) for row in issues[:5]], "more": len(issues) > 5,
+                    "checkedAt": timestamp()}
 
     def account_revision(self):
         with self.connection(write=False) as db:
@@ -149,6 +198,25 @@ class Workspace:
             if not result.rowcount:
                 raise Conflict("The watched account changed. Review the current watch and try again.")
         return account
+
+    def update_saved_wallet(self, address, revision, *, label=None, remove=False):
+        address = validate_address(address)
+        if not remove:
+            label = wallet_label(label)
+        if type(revision) is not int or not 0 <= revision < 2**63:
+            raise ValueError("Provide the integer revision of the displayed account watch.")
+        with self.connection() as db:
+            active = db.execute("SELECT account, account_revision FROM workspace WHERE id = 1").fetchone()
+            if (revision != active["account_revision"] or not active["account"]
+                    or json.loads(active["account"])["address"] != address):
+                raise Conflict("The selected account changed. Review the current watch and try again.")
+            if remove:
+                db.execute("DELETE FROM saved_wallets WHERE address = ?", (address,))
+            else:
+                db.execute("""INSERT INTO saved_wallets(address, label) VALUES (?, ?)
+                              ON CONFLICT(address) DO UPDATE SET label=excluded.label""", (address, label))
+            db.execute("UPDATE workspace SET account_revision = account_revision + 1 WHERE id = 1")
+        return {"address": address, "saved": not remove}
 
     @staticmethod
     def latest_run(db):
