@@ -6,12 +6,12 @@ Follow a public Polymarket wallet with simulated cash. See which orders your bud
 
 ## Install on Linux
 
-You need a single-user Linux machine with Python 3.12 or newer, SQLite support in Python, and `sha256sum`. Use your existing GitHub access to [download polysia.pyz](https://github.com/PolySia-Systems/PolySia/releases/download/v0.5.0/polysia.pyz). You can transfer this file to an offline machine. Only the download needs GitHub access.
+You need a single-user Linux machine with Python 3.12 or newer, SQLite support in Python, and `sha256sum`. Use your existing GitHub access to [download polysia.pyz](https://github.com/PolySia-Systems/PolySia/releases/download/v0.5.1/polysia.pyz). You can transfer this file to an offline machine. Only the download needs GitHub access.
 
 Save `polysia.pyz` in a folder only you can change. Open a terminal in that folder. Copy and run both lines together to check the file and start PolySia.
 
 ```sh
-printf '%s  polysia.pyz\n' 77c6d9873cefdaa8583e3db5d0ab7c088130073171127d7b45ca81a2002c0bea | sha256sum -c - &&
+printf '%s  polysia.pyz\n' 9045a276038050adad8e7c9b77ad15894bec1c4ecc2a135dc0fa83797c31fe38 | sha256sum -c - &&
   python3 -I ./polysia.pyz --start
 ```
 
@@ -29,6 +29,7 @@ To try a public wallet, open **Public rankings**, choose a trader, then **Set up
 
 ## Updates and help
 
+- **Moving an owner-only HTTPS site?** Keep its Cloudflare resources. Follow the [host recovery guide](docs/operations.md#recover-an-https-site).
 - **Updating an existing installation?** Back up the workspace and stop the old process before installing the new bundle. The guide includes the backup, restore and rollback commands. [Update and recovery](docs/operations.md#update-and-recover)
 - **Download missing or denied?** Sign in to GitHub with the account that can read this private repository and open the [release page](https://github.com/PolySia-Systems/PolySia/releases/latest).
 - **Checksum failed?** Stop there. Download a fresh copy from the linked release and repeat the check. If it still fails, report it.

@@ -126,7 +126,7 @@ def install_runtime():
     run(*check)
 
 
-def prepare(archive):
+def prepare(archive, recovery_id=None, backup=None, empty_workspace=False):
     if sys.platform != "linux" or os.geteuid() != 0:
         raise ValueError("Use sudo for --prepare-cloudflare-host on the designated Ubuntu host.")
     os_release = platform.freedesktop_os_release()
@@ -159,8 +159,15 @@ def prepare(archive):
         if value := os.getenv(key):
             env[key] = value
     # Continue as the service user before prompting for the management token.
+    recovery_args = []
+    if recovery_id:
+        recovery_args.extend(["--recover-tunnel", str(recovery_id)])
+        if backup:
+            recovery_args.extend(["--workspace-backup", str(backup.absolute())])
+        if empty_workspace:
+            recovery_args.append("--empty-workspace")
     os.chdir(HOME_DIR)
     os.setgroups([entry.pw_gid])
     os.setgid(entry.pw_gid)
     os.setuid(entry.pw_uid)
-    os.execve("/usr/bin/python3", ["python3", "-I", str(bundle), "--cloudflare"], env)
+    os.execve("/usr/bin/python3", ["python3", "-I", str(bundle), "--cloudflare", *recovery_args], env)
