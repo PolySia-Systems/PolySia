@@ -373,7 +373,7 @@ class Handler(BaseHTTPRequestHandler):
                 receipt = {"status": "unavailable", "reason": str(exc), "wallet": wallet, "exitScope": scope}
             with store.connection() as db:
                 return public_shadow.record_sale(db, run_id, revision, token, limit, receipt)
-        match = re.fullmatch(API + r"/public-runs(?:/([0-9a-f]{32})(?:/(sample|pause|resume|stop|enable-exits|background-on|background-off|valuation|export))?)?", path)
+        match = re.fullmatch(API + r"/public-runs(?:/([0-9a-f]{32})(?:/(sample|pause|resume|stop|enable-exits|background-on|background-off|change-cap|valuation|export))?)?", path)
         if not match:
             raise RequestError(404, "Unknown public shadow run.")
         run_id, action = match.groups()
@@ -420,6 +420,10 @@ class Handler(BaseHTTPRequestHandler):
             revision = self.body(("revision",))["revision"]
             with store.connection() as db:
                 return background.configure(db, run_id, revision, action == "background-on")
+        if method == "POST" and action == "change-cap":
+            body = self.body(("revision", "cap"))
+            with store.connection() as db:
+                return public_shadow.change_cap(db, run_id, body["revision"], body["cap"])
         if method == "POST" and action in ("sample", "enable-exits", *public_shadow.CONTROLS):
             revision = self.body(("revision",))["revision"]
             if action != "sample":

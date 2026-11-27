@@ -193,6 +193,13 @@
 .board-budget input { width: 4.2rem; height: 2.5rem; border: 0; background: transparent; color: var(--ink); font: inherit; }
 .compare-choices { margin-inline-start: auto; }
 .compare-choices .btn { white-space: nowrap; flex-shrink: 0; }
+.public-shortlist { display: flex; align-items: center; gap: .35rem .75rem; flex-wrap: wrap; }
+.public-shortlist h3 { margin: 0; font-size: .95rem; }
+.public-shortlist ul { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0; padding: 0; min-width: 0; }
+.public-shortlist li { display: flex; align-items: center; gap: .15rem; max-width: 100%; padding-inline-start: .6rem; border: 1px solid var(--line); border-radius: 7px; }
+.public-shortlist .text-link { min-width: 0; overflow-wrap: anywhere; text-align: start; }
+.shortlist-remove { display: inline-grid; place-items: center; width: 2.5rem; height: 2.5rem; flex-shrink: 0; }
+.public-shortlist small { color: var(--muted); }
 .wallet-check-summary { padding: .75rem; margin-top: .75rem; background: var(--soft); border-radius: 8px; }
 .wallet-check-summary p { margin: .25rem 0; }
 .wallet-check-summary small { color: var(--muted); }

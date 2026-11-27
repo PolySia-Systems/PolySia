@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowRight, ChevronLeft, ChevronRight, RefreshCw, Search } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ChevronLeft, ChevronRight, RefreshCw, Search, X } from 'lucide-react'
 import { api, type Account, errorMessage } from './api'
 import { PositionSnapshot, WalletValue } from './Workspace'
 import { PublicObservation, type BudgetTest, type WalletCheck } from './PublicObservation'
@@ -37,6 +37,34 @@ function profitLabel(raw: string) {
 const utc = (stamp: string) => new Date(stamp).toLocaleString('en-GB', { timeZone: 'UTC' }) + ' UTC'
 type PickedTrader = PublicTrader & { rankedAt: string }
 
+const shortlistKey = (period: Period) => 'polysia:public-shortlist:v1:' + period
+const periodKey = 'polysia:rankings-period:v1'
+function visitPeriod(): Period {
+  try {
+    const value = sessionStorage.getItem(periodKey)
+    if (value && Object.hasOwn(periods, value)) return value as Period
+  } catch { /* The default period works without browser storage. */ }
+  return 'month'
+}
+function readShortlist(period: Period): PickedTrader[] {
+  try {
+    const raw = localStorage.getItem(shortlistKey(period))
+    if (!raw || raw.length > 16384) return []
+    const rows = JSON.parse(raw)
+    if (!Array.isArray(rows) || rows.length > 2) return []
+    const valid = rows.every(row =>
+      row && typeof row.address === 'string' && /^0x[0-9a-f]{40}$/.test(row.address) &&
+      typeof row.name === 'string' && row.name.length > 0 && row.name.length <= 1000 &&
+      Number.isSafeInteger(row.rank) && row.rank > 0 &&
+      typeof row.pnl === 'string' && /^-?\d+(?:\.\d+)?$/.test(row.pnl) && Number.isFinite(Number(row.pnl)) &&
+      typeof row.volumeShares === 'string' && /^\d+(?:\.\d+)?$/.test(row.volumeShares) && Number.isFinite(Number(row.volumeShares)) &&
+      typeof row.rankedAt === 'string' && Number.isFinite(Date.parse(row.rankedAt)))
+    return valid && new Set(rows.map(row => row.address)).size === rows.length ? rows : []
+  } catch {
+    return []
+  }
+}
+
 type ComparisonRead = { account: Account } | { error: string }
 
 function openMarkets(read?: ComparisonRead) {
@@ -54,13 +82,13 @@ function openMarkets(read?: ComparisonRead) {
 
 function PublicComparison({
   traders,
-  board,
+  period,
   close,
   inspect,
   checks,
 }: {
   traders: PickedTrader[]
-  board: Leaderboard
+  period: Period
   close: () => void
   inspect: (trader: PickedTrader) => void
   checks: Record<string, WalletCheck>
@@ -124,11 +152,11 @@ function PublicComparison({
         </button>
       </div>
       <p className="muted">
-        {periods[board.period as Period]} ·{' '}
-        {board.period === 'all'
+        {periods[period]} ·{' '}
+        {period === 'all'
           ? 'Lifetime realized P/L'
           : 'Marked equity change net of external flows'}{' '}
-        · Volume in shares.
+        · Volume in shares. The rank, P/L and volume below are snapshots from the time each wallet was selected.
       </p>
       <div className="comparison">
         {traders.map((trader) => {
@@ -211,6 +239,7 @@ function PublicComparison({
 function Profile({
   address,
   trader,
+  rankedAt,
   period,
   close,
   budgetTest,
@@ -218,6 +247,7 @@ function Profile({
 }: {
   address: string
   trader?: PublicTrader
+  rankedAt?: string
   period: Period
   close: () => void
   budgetTest: BudgetTest
@@ -261,7 +291,7 @@ function Profile({
         </div>
         <code className="wallet-address">{address}</code>
         {trader && (
-          <p className="muted">Reported volume: {summaryNumber.format(Number(trader.volumeShares))} shares · P/L: {profitLabel(trader.pnl)} USDC</p>
+          <p className="muted">Reported volume: {summaryNumber.format(Number(trader.volumeShares))} shares · P/L: {profitLabel(trader.pnl)} USDC{rankedAt && <> · Rank read {utc(rankedAt)}</>}</p>
         )}
       </section>
       <PublicObservation address={address} name={trader?.name ?? 'Public wallet'} {...budgetTest} />
@@ -292,12 +322,14 @@ function Profile({
 }
 
 export function PublicRankings() {
-  const [period, setPeriod] = useState<Period>('month')
+  const [period, setPeriod] = useState<Period>(visitPeriod)
   const [budget, setBudget] = useState('10')
   const [checks, setChecks] = useState<Record<string, WalletCheck>>({})
   const [query, setQuery] = useState('')
   const [selected, select] = useState<string | null>(null)
-  const [picks, setPicks] = useState<PickedTrader[]>([])
+  const [picks, setPicks] = useState<PickedTrader[]>(() => readShortlist(period))
+  const [storageIssue, setStorageIssue] = useState(false)
+  const unsaved = useRef<Partial<Record<Period, PickedTrader[]>>>({})
   const [comparing, setComparing] = useState(false)
   const profileTrigger = useRef<HTMLElement | null>(null)
   const searchInput = useRef<HTMLInputElement>(null)
@@ -320,7 +352,6 @@ export function PublicRankings() {
     setPageError('')
     setError('')
     select(null)
-    setPicks([])
     setComparing(false)
     api<Leaderboard>('public/leaders?period=' + period)
       .then((data) => {
@@ -335,11 +366,37 @@ export function PublicRankings() {
       generation.current++
     }
   }, [period, revision])
+  useEffect(() => {
+    const sync = (event: StorageEvent) => {
+      if (event.key === null || event.key === shortlistKey(period)) {
+        if (unsaved.current[period]) return
+        setPicks(readShortlist(period))
+        setComparing(false)
+        returnToComparison.current = false
+      }
+    }
+    window.addEventListener('storage', sync)
+    return () => window.removeEventListener('storage', sync)
+  }, [period])
+  function updatePicks(next: PickedTrader[]) {
+    setPicks(next)
+    try {
+      if (next.length) localStorage.setItem(shortlistKey(period), JSON.stringify(next))
+      else localStorage.removeItem(shortlistKey(period))
+      delete unsaved.current[period]
+      setStorageIssue(false)
+    } catch {
+      unsaved.current[period] = next
+      setStorageIssue(true)
+    }
+  }
   const matching = (board?.leaders ?? []).filter((trader) =>
     (trader.name + ' ' + trader.address).toLowerCase().includes(query.trim().toLowerCase()),
   )
   const pastedAddress = /^0x[0-9a-f]{40}$/i.test(query.trim()) ? query.trim().toLowerCase() : null
-  const trader = board?.leaders.find((item) => item.address === selected) ?? picks.find((item) => item.address === selected)
+  const ranked = board?.leaders.find((item) => item.address === selected)
+  const picked = picks.find((item) => item.address === selected)
+  const trader = ranked ?? picked
   function openProfile(address: string, trigger: HTMLElement | null, fromComparison = false) {
     returnToComparison.current = fromComparison
     setComparing(false)
@@ -412,7 +469,11 @@ export function PublicRankings() {
               aria-label="Ranking period"
               value={period}
               onChange={(e) => {
-                setPeriod(e.target.value as Period)
+                const next = e.target.value as Period
+                setPeriod(next)
+                try { sessionStorage.setItem(periodKey, next) } catch { /* Keep this visit usable. */ }
+                setPicks(unsaved.current[next] ?? readShortlist(next))
+                setStorageIssue(unsaved.current[next] !== undefined)
               }}
             >
               {Object.entries(periods).map(([value, label]) => (
@@ -443,7 +504,7 @@ export function PublicRankings() {
             {error || board?.message} Use Refresh rankings to try again.
           </p>
         )}
-        {board?.status === 'available' && (
+        {(board?.status === 'available' || picks.length > 0) && (
           <>
             <div className="public-compare-tools">
               <label className="board-budget">Budget per buy
@@ -461,6 +522,23 @@ export function PublicRankings() {
                 </button>
               </div>
             </div>
+            {picks.length > 0 && <section className="public-shortlist" aria-label="Saved comparison shortlist">
+              <h3>{periods[period]} shortlist</h3>
+              <ul>{picks.map(pick => <li key={pick.address}>
+                <button className="text-link" onClick={event => openProfile(pick.address, event.currentTarget)}
+                  aria-label={'Inspect shortlisted wallet ' + pick.name}>{pick.name}</button>
+                <button className="shortlist-remove" aria-label={'Remove ' + pick.name + ' from shortlist'}
+                  onClick={() => updatePicks(picks.filter(row => row.address !== pick.address))}>
+                  <X size={15} aria-hidden="true"/>
+                </button>
+              </li>)}</ul>
+              {!storageIssue && <small>Saved in this browser for this ranking period.</small>}
+            </section>}
+            {storageIssue && <p role="status" className="notice">Browser storage is unavailable. Reloading may lose these changes.</p>}
+          </>
+        )}
+        {board?.status === 'available' && (
+          <>
             {matching.length ? (
               <div className="public-list" ref={list}>
                 <table>
@@ -490,7 +568,7 @@ export function PublicRankings() {
                             disabled={picks.length === 2 && !picks.some(pick => pick.address === row.address)}
                             onChange={(e) => {
                               setComparing(false)
-                              setPicks(
+                              updatePicks(
                                 e.target.checked
                                   ? [...picks, {...row, rankedAt: board.observedAt!}]
                                   : picks.filter((pick) => pick.address !== row.address),
@@ -555,10 +633,10 @@ export function PublicRankings() {
           </>
         )}
       </section>
-      {comparing && picks.length === 2 && board?.period === period && (
+      {comparing && picks.length === 2 && (
         <PublicComparison
           traders={picks}
-          board={board}
+          period={period}
           checks={checks}
           inspect={pick => openProfile(pick.address, compareButton.current, true)}
           close={() => {
@@ -573,6 +651,7 @@ export function PublicRankings() {
           address={selected}
           period={period}
           trader={trader}
+          rankedAt={ranked ? board?.observedAt ?? undefined : picked?.rankedAt}
           budgetTest={{budget, setBudget, saveCheck: (wallet, result) => setChecks(old => ({...old, [wallet]: result}))}}
           close={() => {
             select(null)

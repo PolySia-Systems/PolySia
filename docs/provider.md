@@ -20,6 +20,8 @@ Inspected the official `polymarket-client` 0.20.1 source at commit `81e8abfb2a13
 
 ## Prospective observation
 
+The public comparison shortlist stores the two selected wallet identities and their dated ranking rows in this browser for each ranking period. Opening rankings or switching periods restores those selections without reading either wallet. A comparison requests one positions page per wallet and labels its coverage. Saved rank, P/L and volume refer to the original provider read time for that wallet. The shortlist remains available when a new ranking read fails. Remove an address from the shortlist on any page to replace it. A buy check belongs to the current visit and retains its own simulated budget and window.
+
 Run this from the repository root on a Linux host with authorized access to the public Data API and CLOB. The example uses the wallet in the upstream SDK fixture. Replace it with the public trading wallet to observe.
 
 ```sh

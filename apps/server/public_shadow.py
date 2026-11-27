@@ -68,7 +68,8 @@ def create(db, run_id, wallet, name, capital, cap):
     db.execute("""INSERT INTO public_runs VALUES (?,?,?,?,?,?,?,?,'running',1)
                   ON CONFLICT(id) DO NOTHING""", (run_id, *config, json.dumps(policy), now, now))
     row = _run(db, run_id)
-    if tuple(row[k] for k in ("wallet", "name", "capital", "entry_cap")) != config:
+    initial_cap = _budget(json.loads(row["policy"])["budget"])
+    if (row["wallet"], row["name"], row["capital"], initial_cap) != config:
         raise Conflict("This run already exists with different settings.")
     return report(db, run_id)
 
@@ -266,6 +267,30 @@ def sampling_terms(db, run_id, revision):
     if not budget:
         raise Conflict("Less than 1 pUSD of simulated cash remains. Review the open positions.")
     return row["wallet"], budget, json.loads(row["policy"]).get("checkSalesBeforeEntry", False)
+
+
+def _cap_change(previous, cap, capital):
+    amount = _budget(cap)
+    if amount > capital:
+        raise ValueError("The per-entry cap exceeds this run's starting cash.")
+    return amount, f"Changed future simulated BUY cap from {units(previous)} to {units(amount)} pUSD."
+
+
+def change_cap(db, run_id, revision, cap):
+    row = _run(db, run_id)
+    _check_revision(row, revision)
+    if row["status"] == "stopped":
+        raise Conflict("This portfolio has stopped.")
+    amount, reason = _cap_change(row["entry_cap"], cap, row["capital"])
+    if amount != row["entry_cap"]:
+        now = timestamp()
+        change = {"previousCap": units(row["entry_cap"]), "nextCap": units(amount)}
+        db.execute("""INSERT INTO public_decisions(run_id,revision,recorded,kind,reason,shares,gross,fee,receipt)
+                      VALUES(?,?,?,'change-cap',?,0,0,0,?)""",
+                   (run_id, revision + 1, now, reason, json.dumps(change)))
+        db.execute("UPDATE public_runs SET entry_cap=?, revision=revision+1, updated=? WHERE id=?",
+                   (amount, now, run_id))
+    return report(db, run_id)
 
 
 def _source_order(receipt, side):
@@ -536,8 +561,10 @@ def verify_archive(db, version=WORKSPACE_VERSION):
         exit_enabled = policy.get("exitModel") is not None
         check_sales = policy.get("checkSalesBeforeEntry") is True
         cumulative = "saleSizing" in policy
+        active_cap = _budget(policy["budget"])
         if ((exit_enabled and version < 3) or (check_sales and not exit_enabled) or (cumulative and (not exit_enabled or version < 5))
-                or policy != _policy(_next_budget(run["entry_cap"], run["entry_cap"]), exit_enabled, check_sales, cumulative)):
+                or active_cap > run["capital"]
+                or policy != _policy(_next_budget(active_cap, active_cap), exit_enabled, check_sales, cumulative)):
             raise ValueError("Invalid public shadow policy.")
         datetime.fromisoformat(last)
         used = set()
@@ -552,7 +579,14 @@ def verify_archive(db, version=WORKSPACE_VERSION):
             if item["revision"] != revision or not isinstance(item["reason"], str):
                 raise ValueError("Invalid public shadow journal sequence.")
             released = 0
-            if kind in CONTROLS or kind == "enable-exits" or kind in BACKGROUND_REASONS:
+            if kind == "change-cap":
+                change = json.loads(item["receipt"])
+                amount, reason = _cap_change(active_cap, change["nextCap"], run["capital"])
+                if (version < 6 or status == "stopped" or amount == active_cap
+                        or change != {"previousCap": units(active_cap), "nextCap": units(amount)}):
+                    raise ValueError("The budget change disagrees with the portfolio history.")
+                active_cap, expected = amount, NO_ENTRY
+            elif kind in CONTROLS or kind == "enable-exits" or kind in BACKGROUND_REASONS:
                 if kind in BACKGROUND_REASONS:
                     requested = kind == "background-on"
                     if version < 5 or status != "running" or requested == background_enabled or (requested and cash < 1_000_000):
@@ -591,7 +625,7 @@ def verify_archive(db, version=WORKSPACE_VERSION):
                         orders.setdefault(key, SaleOrder()).include(scope["maxShares"], receipt["participant"]["sharesBaseUnits"], expected[5], last)
                         used.add(expected[0])
                 else:
-                    budget = _next_budget(cash, run["entry_cap"])
+                    budget = _next_budget(cash, active_cap)
                     if status != "running" or budget is None:
                         raise ValueError("Receipt outside the run's scope.")
                     outcome, reason, expected = _decision(run, budget, receipt, last, used.__contains__)
@@ -620,5 +654,5 @@ def verify_archive(db, version=WORKSPACE_VERSION):
         if version >= 5 and background_enabled != bool(db.execute(
                 "SELECT 1 FROM background_runs WHERE run_id=?", (run["id"],)).fetchone()):
             raise ValueError("Background sampling permission disagrees with the journal.")
-        if (revision, status, last) != (run["revision"], run["status"], run["updated"]):
+        if (revision, status, last, active_cap) != (run["revision"], run["status"], run["updated"], run["entry_cap"]):
             raise ValueError("The public shadow run disagrees with its journal.")

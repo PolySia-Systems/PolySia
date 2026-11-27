@@ -65,6 +65,7 @@ interface Portfolio extends Summary {
 }
 const when = (value: string | number) => new Date(value).toLocaleString('en-GB', { timeZone: 'UTC' }) + ' UTC'
 const labels: Record<string, string> = {
+  'change-cap': 'BUY cap changed',
   running: 'Running', paused: 'Paused', stopped: 'Stopped', entry: 'Modeled BUY', duplicate: 'Already modeled',
   'background-on': 'Background sampling enabled', 'background-off': 'Background sampling disabled',
   waiting: 'No BUY observed', incomplete: 'Evidence incomplete', skipped: 'Entry skipped',
@@ -217,6 +218,12 @@ interface Valuation {
   equity: string | null
   unrealized: string | null
   netResult: string | null
+  cash: string
+  capital: string
+  grossPurchases: string
+  grossSales: string
+  modeledFees: string
+  cashBenchmark: { from: string; endValue: string; netReturnPct: string | null; unpricedValueNeededToMatchCash: string | null }
   marks: (Mark & {tokenId: string; market: string | null; outcome: string | null})[]
 }
 function PortfolioValue({run}: {run: Portfolio}) {
@@ -244,9 +251,18 @@ function PortfolioValue({run}: {run: Portfolio}) {
         <p>{value.total ? value.priced + ' of ' + value.total + (value.total === 1 ? ' open position priced.' : ' open positions priced.') + (value.priced > 0 ? ' Midpoint value is ' + value.pricedValue + ' pUSD before exit fees.' : '') :
           'All value is held in simulated cash.'} Checked {when(value.checkedMs)}.</p>
         {value.total > value.checked && <p>This check covered {value.checked} holdings. Other holdings have no price in this snapshot.</p>}
+        <p><strong>Compared with holding cash</strong> · Keeping the starting cash since {when(value.cashBenchmark.from)}
+          {' '}would leave {value.cashBenchmark.endValue} pUSD at zero yield.
+          {value.cashBenchmark.netReturnPct !== null && <> The simulated return on starting cash is {value.cashBenchmark.netReturnPct}%.</>}
+          {value.cashBenchmark.unpricedValueNeededToMatchCash === '0' && <> Cash and priced shares already cover the starting amount. Total return is unknown.</>}
+          {value.cashBenchmark.unpricedValueNeededToMatchCash != null && value.cashBenchmark.unpricedValueNeededToMatchCash !== '0' && <>
+            {' '}The unpriced holdings would need a combined value of {value.cashBenchmark.unpricedValueNeededToMatchCash} pUSD to match it. Total return is unknown.</>}
+        </p>
       </>}
     </div>
     {value && <details className="paper-evidence"><summary>Valuation evidence</summary>
+      <p>Cash reconciliation in pUSD · {value.capital} starting cash − {value.grossPurchases} purchases
+        {' '}+ {value.grossSales} sales − {value.modeledFees} modeled fees = {value.cash} remaining cash.</p>
       {value.marks.map(m => <div key={m.tokenId}><b>{m.market ?? 'Outcome token ' + m.tokenId} · {m.outcome}</b>
         <p>{m.value == null ? m.reason : m.value + ' pUSD at a midpoint of ' + m.midpoint + ' pUSD per share.'}
           {m.bookTimeMs != null && <> Polymarket book updated {when(m.bookTimeMs)}.</>}</p></div>)}
@@ -272,6 +288,7 @@ function Detail({id}: {id: string}) {
   const [error, setError] = useState('')
   const [confirmStop, setConfirmStop] = useState(false)
   const [windows, setWindows] = useState(1)
+  const [newCap, setNewCap] = useState('')
   const [progress, setProgress] = useState('')
   const [saleFeedback, setSaleFeedback] = useState('')
   const [tradesOnly, setTradesOnly] = useState(false)
@@ -322,11 +339,16 @@ function Detail({id}: {id: string}) {
       for (let i = 1; i <= count; i++) {
         if (action === 'sample') setProgress('Observing window ' + i + ' of ' + count + '…')
         const endpoint = sale ? route + '/positions/' + sale.token + '/observe-sell' : route + '/' + action
-        const fresh = await api<Portfolio>(endpoint, 'POST', sale ? {revision, maxShares: sale.limit} : {revision})
+        const body = sale ? {revision, maxShares: sale.limit} : action === 'change-cap' ? {revision, cap: newCap} : {revision}
+        const fresh = await api<Portfolio>(endpoint, 'POST', body)
         if (ticket !== latestAction.current) return
         const displayed = tradesOnly ? await api<Portfolio>(historyRoute(true)) : fresh
         if (ticket !== latestAction.current) return
         setRun(displayed)
+        if (action === 'change-cap') {
+          setNewCap('')
+          setProgress('Future BUY cap saved at ' + fresh.entryCap + ' pUSD.')
+        }
         revision = fresh.revision
         if (sale) {
           const decision = fresh.decisions[0]
@@ -367,6 +389,16 @@ function Detail({id}: {id: string}) {
           <div><dt>Realized result</dt><dd>{run.realized} <small>pUSD</small></dd></div>
         </dl>
         <p className="workspace-note">Started with {run.capital} pUSD · {run.entryCap} pUSD per entry · {when(run.createdAt)}</p>
+        {run.status !== 'stopped' && <details className="paper-evidence"><summary>Change future BUY cap</summary>
+          <form className="stack paper-form" onSubmit={e => { e.preventDefault(); void act('change-cap') }}>
+            <label className="field">New per-entry cap (pUSD)
+              <input required type="number" min="1" max={Number(run.capital)} step=".01" value={newCap}
+                placeholder={run.entryCap} onChange={e => setNewCap(e.target.value)}/>
+            </label>
+            <p>Each future purchase can use up to this amount, including modeled fees, from the remaining simulated cash. Existing positions keep their original costs.</p>
+            <button className="btn" disabled={!!busy || !newCap}>Save future cap</button>
+          </form>
+        </details>}
         <p className="workspace-note">Purchases {run.gross} pUSD · Sales {run.sales} pUSD before fees · Total modeled fees {run.fees} pUSD</p>
         <details className="paper-evidence"><summary>Entry assumptions</summary>
           <p>The model uses whole shares from up to {run.policy.maxLevels} displayed ask levels after a {run.policy.delaySeconds}-second delay.
