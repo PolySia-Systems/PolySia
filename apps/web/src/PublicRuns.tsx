@@ -272,6 +272,8 @@ function PositionSale({shares, policy, cumulative, busy, observe}: {shares: stri
 }
 
 interface Valuation {
+  includesPayoutCheck: boolean
+  payoutAssumption: string | null
   runId: string
   revision: number
   checkedMs: number
@@ -289,32 +291,36 @@ interface Valuation {
   modeledFees: string
   withdrawals: string
   cashBenchmark: { from: string; endValue: string | null; additionalFlows: string; netReturnPct: string | null; unpricedValueNeededToMatchCash: string | null }
-  marks: (Mark & {tokenId: string; market: string | null; outcome: string | null})[]
+  marks: (Mark & {tokenId: string; market: string | null; outcome: string | null; settlement?: Resolution})[]
 }
 function PortfolioValue({run}: {run: Portfolio}) {
   const [value, setValue] = useState<Valuation | null>(null)
+  const [includePayouts, setIncludePayouts] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   async function price() {
     setBusy(true)
     setValue(null)
     setError('')
-    try { setValue(await api<Valuation>('public-runs/' + run.id + '/valuation', 'POST', {revision: run.revision})) }
+    try { setValue(await api<Valuation>('public-runs/' + run.id + '/valuation', 'POST', {revision: run.revision, includePayouts})) }
     catch (cause) { setError(errorMessage(cause)) }
     finally { setBusy(false) }
   }
   return <div className="paper-valuation">
     <div className="panel-head"><h3>Portfolio value</h3>
       <button className="btn" disabled={busy} onClick={price}>{busy ? 'Checking prices…' : value ? 'Refresh portfolio value' : 'Check portfolio value'}</button></div>
+    {run.positions.length > 0 && <div className="observation-retry"><label><input type="checkbox" checked={includePayouts} disabled={busy}
+      onChange={event => { setIncludePayouts(event.target.checked); setValue(null); setError('') }} />Include final payouts</label></div>}
     <div role="status">
       {error && <p>{error}</p>}
-      {!value && !error && <p>Combine simulated cash with recent midpoint prices for your open shares.</p>}
+      {!value && !error && <p>{includePayouts ? 'Use verified final payouts for settled shares and recent midpoint prices for the rest.' : 'Combine simulated cash with recent midpoint prices for your open shares.'}</p>}
       {value && <>
         <dl className="paper-metrics"><div><dt>Estimated equity</dt><dd>{value.equity ?? 'Unknown'} {value.equity != null && <small>pUSD</small>}</dd></div>
           <div><dt>Unrealized result</dt><dd>{value.unrealized ?? 'Unknown'} {value.unrealized != null && <small>pUSD</small>}</dd></div>
           <div><dt>Net result</dt><dd>{value.netResult ?? 'Unknown'} {value.netResult != null && <small>pUSD</small>}</dd></div></dl>
-        <p>{value.total ? value.priced + ' of ' + value.total + (value.total === 1 ? ' open position priced.' : ' open positions priced.') + (value.priced > 0 ? ' Midpoint value is ' + value.pricedValue + ' pUSD before exit fees.' : '') :
+        <p>{value.total ? value.priced + ' of ' + value.total + (value.total === 1 ? ' open position priced.' : ' open positions priced.') + (value.priced > 0 ? ' Combined holding value is ' + value.pricedValue + ' pUSD before costs to exit.' : '') :
           'All value is held in simulated cash.'} Checked {when(value.checkedMs)}.</p>
+        {value.includesPayoutCheck && <p>{value.payoutAssumption} Simulated cash remains {value.cash} pUSD.</p>}
         {value.total > value.checked && <p>This check covered {value.checked} holdings. Other holdings have no price in this snapshot.</p>}
         <p><strong>Compared with holding cash</strong> · {value.cashBenchmark.endValue === null
           ? 'A cash-only account could not have covered every withdrawal at the time it was made.'
@@ -332,8 +338,11 @@ function PortfolioValue({run}: {run: Portfolio}) {
       <p>Cash reconciliation in pUSD · {value.capital} starting cash + {value.cashBenchmark.additionalFlows} added cash − {value.withdrawals} withdrawn − {value.grossPurchases} purchases
         {' '}+ {value.grossSales} sales − {value.modeledFees} modeled fees = {value.cash} remaining cash.</p>
       {value.marks.map(m => <div key={m.tokenId}><b>{m.market ?? 'Outcome token ' + m.tokenId} · {m.outcome}</b>
-        <p>{m.value == null ? m.reason : m.value + ' pUSD at a midpoint of ' + m.midpoint + ' pUSD per share.'}
-          {m.bookTimeMs != null && <> Polymarket book updated {when(m.bookTimeMs)}.</>}</p></div>)}
+        <p>{m.settlement?.status === 'resolved' ? 'Final payout of ' + m.settlement.payout + ' ' + m.settlement.unit + ' for these shares.'
+          : m.value == null ? m.reason : m.value + ' pUSD at a midpoint of ' + m.midpoint + ' pUSD per share.'}
+          {m.bookTimeMs != null && <> Polymarket book updated {when(m.bookTimeMs)}.</>}</p>
+        {m.settlement && <small>{m.settlement.status !== 'resolved' && m.settlement.reason + ' '}
+          {m.settlement.blockNumber !== null && <>Polygon finalized block {m.settlement.blockNumber}.</>}</small>}</div>)}
       <a className="text-link" href={'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(value, null, 2))}
         download={'polysia-valuation-' + run.id + '.json'}>Download valuation</a>
     </details>}

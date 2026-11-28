@@ -6,6 +6,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation, localcontext
 from http.client import HTTPException
 
+from . import public_resolution
 from .observe import BOOK, normalize_book
 from .provider import read_public_json
 
@@ -45,13 +46,28 @@ def read_mark(basis):
     return dict(result, checkedMs=received, reason=reason)
 
 
-def portfolio_value(basis):
+def portfolio_value(basis, *, include_payouts=False):
     positions = basis["positions"]
+    head = public_resolution.finalized_head() if positions and include_payouts else None
+
+    def value_position(position):
+        if not include_payouts:
+            return read_mark(position)
+        settlement = public_resolution.read_at(position, head)
+        if settlement["status"] != "resolved":
+            return dict(read_mark(position), settlement=settlement)
+        payout = settlement["payout"]
+        return {**position, "method": "final payout", "source": settlement["source"], "settlement": settlement,
+                "asset": "pUSD equivalent", "value": payout, "midpoint": None, "bookTimeMs": None,
+                "changeFromCost": format(Decimal(payout) - Decimal(position["cost"]), "f"),
+                "checkedMs": time.time_ns() // 1_000_000, "reason": settlement["reason"]}
+
     with ThreadPoolExecutor(max_workers=3) as readers:
-        marks = list(readers.map(read_mark, positions[:MAX_PORTFOLIO_BOOKS]))
+        marks = list(readers.map(value_position, positions[:MAX_PORTFOLIO_BOOKS]))
     checked = time.time_ns() // 1_000_000
     for mark in marks:
-        if mark["value"] is not None and not 0 <= checked - mark["bookTimeMs"] <= MAX_BOOK_AGE_MS:
+        if (mark["method"] == "two-sided midpoint" and mark["value"] is not None
+                and not 0 <= checked - mark["bookTimeMs"] <= MAX_BOOK_AGE_MS):
             mark.update(value=None, changeFromCost=None, midpoint=None,
                         reason="The quote fell outside the freshness window before the portfolio check finished.")
     priced = [Decimal(mark["value"]) for mark in marks if mark["value"] is not None]
@@ -81,7 +97,9 @@ def portfolio_value(basis):
             # With missing marks this is a break-even requirement, not a valuation.
             benchmark["unpricedValueNeededToMatchCash"] = format(max(Decimal(0), -net).normalize(), "f")
         return {"runId": basis["id"], "revision": basis["revision"], "wallet": basis["wallet"],
-                "mode": basis["mode"], "asset": "pUSD", "source": BOOK, "checkedMs": checked,
+                "mode": basis["mode"], "asset": "pUSD", "source": "Polygon final payouts and Polymarket books" if include_payouts else BOOK,
+                "includesPayoutCheck": include_payouts, "checkedMs": checked,
+                "payoutAssumption": "One USDC.e equivalent is valued at one simulated pUSD before redemption or conversion costs." if include_payouts else None,
                 "cashBenchmark": benchmark, "grossPurchases": basis["gross"], "grossSales": basis["sales"],
                 "modeledFees": basis["fees"], "entryCap": basis["entryCap"],
                 "capital": basis["capital"], "withdrawals": withdrawn, "netContributions": contributed,

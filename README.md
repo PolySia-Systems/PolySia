@@ -74,6 +74,8 @@ While a run is active or paused, **Withdraw simulated cash** removes up to the f
 
 Under **Open simulated positions**, choose **Check final payout** for an outcome. A supported Polygon condition can show a positive payout, a final zero, or an unresolved result. The check shows gross collateral for simulated shares. The journal and cash balance change only through a recorded portfolio action.
 
+To see the effect on the whole run, open **Portfolio value**, select **Include final payouts**, then **Check portfolio value**. Settled holdings use their verified gross payouts, including zero. Other holdings need a recent two-sided book. A missing value leaves the total unknown. **Valuation evidence → Download valuation** saves this check with its time, block and assumptions. Earlier downloads keep their original results.
+
 Public rankings remembers your two selected wallets for each ranking period in this browser. If the provider is unavailable, you can reopen the saved comparison and check its retrieval dates.
 
 To revise a portfolio budget, open its run and choose **Change future BUY cap**. Enter an amount from 1 pUSD up to the run's starting capital. Each future BUY is also limited by remaining cash. The decision history records the previous and new limits. To return to a previous limit, enter that amount again. Changing the cap keeps a paused run paused.
