@@ -2,10 +2,12 @@
 
 import json
 import re
+from datetime import UTC, datetime
 from itertools import zip_longest
 
 from . import shared_replay
 from .provider import units_from_micros
+from .pool_week import SharedWeek
 from .public_shadow import _budget, _journal_time, _recorded_time
 from .store import Conflict, timestamp
 
@@ -108,17 +110,20 @@ def capture(db, run_id, revision, claim, opened):
 
 
 def listing(db):
-    return [dict(row) for row in db.execute("""SELECT p.id,p.name,c.status FROM capital_pools p JOIN pool_controls c
+    return [dict(row) for row in db.execute("""SELECT p.id,p.name,c.status,count(b.run_id) AS enabledSources,
+            count(m.run_id) AS sources FROM capital_pools p JOIN pool_controls c
             ON c.pool_id=p.id AND c.generation=(SELECT max(generation) FROM pool_controls WHERE pool_id=p.id)
+            JOIN pool_members m ON m.pool_id=p.id LEFT JOIN background_runs b ON b.run_id=m.run_id GROUP BY p.id
             ORDER BY p.rowid DESC""")]
 
 
-def report(db, pool):
+def report(db, pool, *, through=None):
     current = _current(db, pool)
     row = db.execute("SELECT name,capital,model,created FROM capital_pools WHERE id=?", (pool,)).fetchone()
     members = dict(db.execute("""SELECT m.run_id,b.run_id IS NOT NULL FROM pool_members m LEFT JOIN background_runs b
                                  ON b.run_id=m.run_id WHERE m.pool_id=?""", (pool,)))
-    pooled = shared_replay.allocate(db, list(members), units_from_micros(row["capital"]), pool=pool)
+    week = SharedWeek(row["capital"], row["created"], through or datetime.now(UTC))
+    pooled = shared_replay.allocate(db, list(members), units_from_micros(row["capital"]), pool=pool, week=week)
     for run in pooled["runs"]:
         run["sourceBackgroundEnabled"] = bool(members[run["id"]])
     windows = db.execute("SELECT count(*) FROM pool_windows WHERE pool_id=?", (pool,)).fetchone()[0]
@@ -127,7 +132,7 @@ def report(db, pool):
         (pool,)).fetchone()
     return dict(pooled, id=pool, name=row["name"], model=row["model"], created=row["created"],
                 generation=current["generation"], status=current["status"], windows=windows,
-                latestSourceWindow=dict(latest) if latest else None)
+                latestSourceWindow=dict(latest) if latest else None, week=week.report(db, pool, members))
 
 
 def verify(db):
