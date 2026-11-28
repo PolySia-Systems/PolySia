@@ -46,6 +46,10 @@
 .paper-page .paper-actions + [role="status"] { margin-top: 8px; }
 .paper-holding { border-bottom: 1px solid var(--line); padding-bottom: 12px; }
 .paper-holding .paper-position { border-bottom: 0; padding-bottom: 6px; }
+.paper-mark > .text-link { min-height: 32px; }
+@media (any-pointer: coarse) {
+  .paper-mark > .text-link { min-height: 44px; }
+}
 .paper-mark p { margin: 6px 0; }
 
 .paper-sale, .paper-legacy { margin-top: 12px; padding: 12px 14px; background: var(--soft); border-radius: 8px; }

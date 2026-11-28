@@ -1100,6 +1100,9 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
             sample.click()
             expect(page.get_by_text("19 shares", exact=True)).to_be_visible()
             expect(page.locator("dd").filter(has_text="15.14256")).to_be_visible()
+            for label in ("Check price estimate", "Check final payout"):
+                target = page.get_by_role("button", name=label, exact=True).bounding_box()
+                assert target and min(target["width"], target["height"]) >= 24, label
             resolved = {"status": "resolved", "reason": "Final payout for the simulated shares, before any redemption costs.",
                         "payout": "0", "numerator": "0", "denominator": "1", "unit": "USDC.e equivalent",
                         "blockNumber": 98078743, "blockTime": "2026-11-27T23:53:13+00:00"}
