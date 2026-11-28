@@ -374,6 +374,7 @@ interface WeekSummary {
   realizedOnSales: string
   netResult: string | null
   observations: number
+  buyCoverage: {completePageSeconds: number; periodSeconds: number; longestGap: {from: string; through: string} | null}
   counts: Record<string, number>
   latestObservation: {kind: string; reason: string; recorded: string} | null
 }
@@ -433,6 +434,11 @@ function WeekOverview({run, refreshRun}: {run: Portfolio; refreshRun: () => void
         {report.netResult === null && <p className="workspace-note">An open position needs a price at the start or end of this period. The journal has no price for that boundary.</p>}
         <p>Opening cash {report.openingCash} · Funding added {report.funding} · Withdrawn {report.withdrawals} · Purchases {report.purchases} · Gross sales {report.sales} · Closing cash {report.closingCash}</p>
         <p>{report.observations} recorded windows · {report.counts.entry ?? 0} buys · {report.counts.exit ?? 0} sales · {report.counts.skipped ?? 0} skipped · {report.counts.waiting ?? 0} quiet · {(report.counts.incomplete ?? 0) + (report.counts.unavailable ?? 0)} with missing evidence · {report.counts.duplicate ?? 0} repeats.</p>
+        <details className="paper-evidence"><summary>How much activity was checked?</summary>
+          <p>Complete BUY activity pages covered {report.buyCoverage.completePageSeconds.toLocaleString()} of {report.buyCoverage.periodSeconds.toLocaleString()} seconds that this run existed during the report.</p>
+          {report.buyCoverage.longestGap && <p>Longest gap · {when(report.buyCoverage.longestGap.from)} – {when(report.buyCoverage.longestGap.through)}</p>}
+          <p>Trades could have occurred between checks or appeared in the public data later. This measure covers purchases. Sale checks follow individual positions.</p>
+        </details>
         <p>{run.status === 'stopped' ? 'Sampling has stopped.' : run.status === 'paused' ? 'New entries are paused. Resume to check new purchases.' :
           !run.nextBudget ? 'The remaining cash is below the minimum for a BUY window.' : run.backgroundEnabled ? 'Background BUY sampling is enabled.' : 'Manual sampling is active. Choose a window to check for a purchase.'}
           {' '}{run.positions.length} open {run.positions.length === 1 ? 'position' : 'positions'} currently, with a recorded cost of {run.openCost} pUSD.</p>
