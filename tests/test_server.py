@@ -185,8 +185,7 @@ class WorkspaceHttpTest(unittest.TestCase):
         with self.server.store.connection() as db, patch.object(public_shadow, "timestamp", return_value="2020-01-02T00:00:00Z"):
             public_shadow.record(db, ID, 1, observed_buy(WALLET, "10.00", start=1577836810))
         entered, release = Event(), Event()
-        def price(basis, *, include_payouts):
-            self.assertTrue(include_payouts)
+        def price(basis):
             entered.set()
             self.assertTrue(release.wait(4))
             return {"value": "9.5", "shares": basis["shares"]}
@@ -225,7 +224,8 @@ class WorkspaceHttpTest(unittest.TestCase):
             self.assertTrue(release.wait(4))
             return {"wallet": wallet, "exitScope": scope, "status": "waiting", "reason": "Quiet window."}
 
-        def price(basis):
+        def price(basis, *, include_payouts):
+            self.assertTrue(include_payouts)
             pricing.set()
             self.assertTrue(release.wait(4))
             return {"revision": basis["revision"]}
