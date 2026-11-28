@@ -47,6 +47,8 @@ class LocalServer(ThreadingHTTPServer):
 
     def _background_buy(self, wallet, budget, **options):
         try:
+            if "exit_scope" in options:
+                return self.sample_sell(wallet, options["exit_scope"])
             return self.sample_buy(wallet, budget, **options)
         except RequestError as exc:
             if exc.status == 409:
@@ -459,7 +461,7 @@ class Handler(BaseHTTPRequestHandler):
                     return public_shadow.listing(db, before, account)
                 return public_shadow.report(db, run_id, export=action == "export", before=before, trades=trades)
         if method == "PUT" and run_id and not action:
-            config = self.body(("wallet", "name", "capital", "cap"), ("followerAccount",))
+            config = self.body(("wallet", "name", "capital", "cap"), ("followerAccount", "backgroundSaleLimit"))
             with store.connection() as db:
                 return public_shadow.create(db, run_id, **config)
         if method == "POST" and action == "valuation":

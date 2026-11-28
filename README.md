@@ -41,6 +41,8 @@ To follow multiple accounts, enter an optional wallet name and select **Save wal
 
 When creating a public shadow run, you can label its simulated funds with a watched or saved follower account. Choose **Independent simulation** to practice without an account. In **Saved public runs**, filter by follower account to find its runs. Switching watches or removing a saved wallet preserves the run's original account, cash and history.
 
+For a new single-leader simulation, select **Follow sales when background sampling is on**, enter the maximum shares per leader sale, then create the run and enable background sampling. Keep the host running. While the browser is closed, the server alternates BUY windows with SELL windows for held outcomes. A verified matching sale can reduce the simulated position within the cap, held shares and available bids. If buying cash runs low, sale checks continue while shares remain. Pause or stop the run to end background checks. Trades between windows can be missed. Existing runs keep their original policy.
+
 Open **System status → Shadow portfolio overview** to see how many portfolios use background sampling and which runs need review. Select a run name to inspect its decisions, simulated cash, fees and remaining positions.
 
 Open **Notifications** to find past observation warnings and simulated buys or sales across runs, including events recorded while your browser was closed. Repeated events are grouped by run and type. Open the linked run for the latest state and its full decision history.

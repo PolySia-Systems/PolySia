@@ -24,6 +24,7 @@
 .paper-list-row > div:first-child, .paper-position > div:first-child { flex: 1; min-width: 0; }
 .paper-list-row b, .paper-position b, .paper-position small { overflow-wrap: anywhere; }
 .paper-list small { display: block; }
+.paper-list-row small { overflow-wrap: anywhere; }
 .paper-confirm { margin: 12px 0; padding: 12px; background: var(--soft); border-radius: 8px; }
 .paper-stop-summary { margin: 10px 0 14px; padding: 10px 14px; border-left: 3px solid var(--accent); background: var(--panel); }
 .paper-confirm p { margin: 4px 0 10px; }
@@ -46,6 +47,9 @@
 .paper-page .paper-actions + [role="status"] { margin-top: 8px; }
 .paper-holding { border-bottom: 1px solid var(--line); padding-bottom: 12px; }
 .paper-holding .paper-position { border-bottom: 0; padding-bottom: 6px; }
+@media (max-width: 420px) {
+  .paper-holding .paper-position { display: grid; grid-template-columns: minmax(0, 1fr); }
+}
 .paper-mark > .text-link { min-height: 32px; }
 @media (any-pointer: coarse) {
   .paper-mark > .text-link { min-height: 44px; }

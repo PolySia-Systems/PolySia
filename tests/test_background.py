@@ -1,11 +1,14 @@
+from datetime import UTC, datetime
 import tempfile
+import time
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from apps.server import background, public_shadow
 from apps.server.archive import copy_workspace
 from apps.server.store import Conflict, Workspace
+from test_public_shadow import observed_buy, observed_sell
 
 
 ID = "2" * 32
@@ -50,6 +53,41 @@ class BackgroundTests(unittest.TestCase):
             public_shadow.control(db, ID, 4, "pause")
             state = public_shadow.control(db, ID, 5, "resume")
             self.assertFalse(state["backgroundEnabled"])
+
+    def test_unattended_buy_then_capped_sale_with_low_cash_and_restart(self):
+        run_id = "5" * 32
+        start = int(time.time()) - 120
+        stamp = lambda seconds: datetime.fromtimestamp(seconds, UTC).isoformat()
+        with self.store.connection() as db, patch.object(public_shadow, "timestamp", return_value=stamp(start)):
+            public_shadow.create(db, run_id, WALLET, "Copy both sides", "10", "10", backgroundSaleLimit="7")
+            background.configure(db, run_id, 1, True)
+            due = db.execute("SELECT due FROM background_runs WHERE run_id=?", (run_id,)).fetchone()[0]
+        with patch.object(public_shadow, "timestamp", return_value=stamp(start + 16)):
+            background.tick(self.store, Mock(return_value=observed_buy(WALLET, "10.00", start=start+10)), due)
+        with self.store.connection(write=False) as db:
+            state = public_shadow.report(db, run_id)
+            self.assertEqual((state["positions"][0]["shares"], state["cash"]), ("19", "0.14256"))
+            self.assertTrue(state["backgroundEnabled"])
+        scopes = []
+        def sale(wallet, budget, *, exit_scope):
+            self.assertIsNone(budget)
+            self.assertEqual(exit_scope["maxShares"], "7")
+            scopes.append(exit_scope)
+            return observed_sell(wallet, exit_scope, start=start+30)
+        with patch.object(public_shadow, "timestamp", return_value=stamp(start + 36)):
+            background.tick(Workspace(self.path), sale, due+15)
+        self.assertEqual(len(scopes), 1)
+        backup = self.path.with_suffix(".two-sides")
+        copy_workspace(self.path, backup)
+        with Workspace(backup).connection() as db:
+            state = public_shadow.report(db, run_id, export=True)
+            self.assertEqual((state["positions"][0]["shares"], state["decisions"][-1]["kind"]), ("12", "exit"))
+            self.assertIs(state["decisions"][-1]["receipt"]["backgroundSale"], True)
+            self.assertEqual(db.execute("SELECT count(*) FROM worker_windows").fetchone()[0], 1)
+            public_shadow.control(db, run_id, state["revision"], "pause")
+        sampler = Mock()
+        background.tick(Workspace(backup), sampler, due+100)
+        sampler.assert_not_called()
 
     def test_stop_during_read_discards_receipt_and_only_one_worker_claims(self):
         now = self.enable()
