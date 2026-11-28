@@ -65,7 +65,6 @@ class CapitalPoolTests(unittest.TestCase):
             self.assertEqual((limited["cash"], limited["limitedBuys"]), ("0.2625", 1))
             for run_id in IDS:
                 self.assertEqual(paper.report(db, run_id)["positions"][0]["shares"], "19")
-                capital_pool.capture(db, run_id, 3, capital_pool.authorized(db, run_id))
         self.assertEqual(self.state(), pooled)
         destination = self.store.path.with_suffix(".backup")
         copy_workspace(self.store.path, destination)
@@ -92,7 +91,6 @@ class CapitalPoolTests(unittest.TestCase):
         background.tick(self.store, after_stop, self.start)
         self.assertEqual((self.state()["status"], self.state()["cash"]), ("stopped", "25"))
         with self.store.connection() as db:
-            self.assertEqual(capital_pool.authorized(db, IDS[0]), [])
             with self.assertRaises(Conflict):
                 capital_pool.control(db, POOL, 4, "running")
             self.assertTrue(all(paper.report(db, run)["backgroundEnabled"] for run in IDS))
@@ -117,3 +115,47 @@ class CapitalPoolTests(unittest.TestCase):
                 capital_pool.create(db, "a" * 32, "Missing source", "10", IDS)
             with self.assertRaises(Conflict):
                 capital_pool.create(db, POOL, "Different funding", "12", IDS)
+
+    def test_restore_matches_worker_provenance_control_generation_and_commit_order(self):
+        self.create()
+        # One genuine background entry in each running generation. The two
+        # controls intentionally have the same timestamp, as after a clock correction.
+        background.tick(self.store, self.receipt, self.start)
+        with self.store.connection() as db, patch.object(capital_pool, "timestamp", return_value=STARTED):
+            capital_pool.control(db, POOL, 1, "paused")
+            capital_pool.control(db, POOL, 2, "running")
+        background.tick(self.store, self.receipt, self.start)
+        with self.store.connection() as db:
+            receipt = self.receipt(WALLETS[1], "10.00", retry_empty=True, check_sales=True)
+            receipt["participant"]["orderHash"] = "0x" + "af" * 32
+            manual = paper.record(db, IDS[1], 3, receipt)
+            self.assertEqual(manual["decisions"][0]["kind"], "entry")
+        valid = self.store.path.with_suffix(".valid")
+        copy_workspace(self.store.path, valid)
+        with Workspace(valid).connection(write=False) as db:
+            self.assertEqual(capital_pool.report(db, POOL), self.state())
+        modifications = [
+            # Substitute a valid manual decision from the same active source.
+            "UPDATE pool_windows SET revision=4 WHERE sequence=2",
+            "UPDATE pool_windows SET generation=1 WHERE sequence=2",
+            "DELETE FROM pool_windows WHERE sequence=2",
+            "UPDATE public_decisions SET receipt=json_remove(receipt,'$.serverWorker') WHERE run_id=? AND revision=3",
+            "UPDATE worker_windows SET opened=1 WHERE ordinal=2",
+        ]
+        for i, sql in enumerate(modifications):
+            tampered = self.store.path.with_suffix(f".trial{i}")
+            copy_workspace(valid, tampered)
+            with Workspace(tampered).connection() as db:
+                db.execute(sql, (IDS[1],) if "?" in sql else ())
+            with self.subTest(sql=sql), self.assertRaisesRegex(ValueError, "worker|background|authorized"):
+                copy_workspace(tampered, self.store.path.with_suffix(f".reject{i}"))
+        with self.store.connection() as db:
+            # Reverse sequence in a single generation without manipulating the
+            # source receipts, which retain their independent commit ordinals.
+            capital_pool.create(db, "d" * 32, "New pool", "25", IDS)
+        for offset in (15, 16):
+            background.tick(self.store, self.receipt, self.start + offset)
+        with self.store.connection() as db:
+            db.execute("UPDATE pool_windows SET sequence=-sequence WHERE pool_id=?", ("d" * 32,))
+        with self.assertRaisesRegex(ValueError, "commit order"):
+            copy_workspace(self.store.path, self.store.path.with_suffix(".bad-order"))

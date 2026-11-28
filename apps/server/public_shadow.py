@@ -465,6 +465,8 @@ def _decision(run, budget, receipt, recorded, seen):
 
 
 def record(db, run_id, revision, receipt):
+    if isinstance(receipt, dict) and "serverWorker" in receipt:
+        receipt = {key: value for key, value in receipt.items() if key != "serverWorker"}
     wallet, budget, _ = sampling_terms(db, run_id, revision)
     now = timestamp()
 
@@ -690,6 +692,8 @@ def verify_archive(db, version=WORKSPACE_VERSION):
                     raise ValueError("Unexpected receipt on a public shadow control.")
             else:
                 receipt = json.loads(item["receipt"])
+                if "serverWorker" in receipt and (version < 9 or not background_enabled or "exitScope" in receipt):
+                    raise ValueError("Source window was not authorized for background BUY sampling.")
                 if "exitScope" in receipt:
                     scope = receipt["exitScope"]
                     token = scope["tokenId"]

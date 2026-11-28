@@ -1,6 +1,8 @@
 """Forward, entry-only portfolios sharing durable background observations."""
 
+import json
 import re
+from itertools import zip_longest
 
 from . import shared_replay
 from .provider import units_from_micros
@@ -19,9 +21,12 @@ def add_tables(db):
         run_id TEXT NOT NULL REFERENCES public_runs(id), start_revision INTEGER NOT NULL,
         PRIMARY KEY (pool_id,run_id))""")
     db.execute("CREATE INDEX pool_members_run ON pool_members(run_id)")
-    db.execute("""CREATE TABLE pool_controls (pool_id TEXT NOT NULL REFERENCES capital_pools(id),
+    db.execute("""CREATE TABLE pool_controls (boundary INTEGER PRIMARY KEY, pool_id TEXT NOT NULL REFERENCES capital_pools(id),
         generation INTEGER NOT NULL, status TEXT NOT NULL, recorded TEXT NOT NULL,
-        PRIMARY KEY(pool_id,generation))""")
+        UNIQUE(pool_id,generation))""")
+    db.execute("""CREATE TABLE worker_windows (ordinal INTEGER PRIMARY KEY, run_id TEXT NOT NULL, revision INTEGER NOT NULL,
+        claim TEXT NOT NULL UNIQUE, opened INTEGER NOT NULL, completed INTEGER NOT NULL,
+        FOREIGN KEY(run_id,revision) REFERENCES public_decisions(run_id,revision), UNIQUE(run_id,revision))""")
     db.execute("""CREATE TABLE pool_windows (sequence INTEGER PRIMARY KEY, pool_id TEXT NOT NULL,
         generation INTEGER NOT NULL, run_id TEXT NOT NULL, revision INTEGER NOT NULL,
         FOREIGN KEY(pool_id,generation) REFERENCES pool_controls(pool_id,generation),
@@ -61,7 +66,7 @@ def create(db, pool, name, capital, run_ids):
         wallets.add(member[0])
     now = timestamp()
     db.execute("INSERT INTO capital_pools VALUES(?,?,?,?,?)", (pool, name, micros, MODEL, now))
-    db.execute("INSERT INTO pool_controls VALUES(?,1,'running',?)", (pool, now))
+    db.execute("INSERT INTO pool_controls(pool_id,generation,status,recorded) VALUES(?,1,'running',?)", (pool, now))
     db.executemany("INSERT INTO pool_members SELECT ?,id,revision FROM public_runs WHERE id=?",
                    ((pool, run_id) for run_id in run_ids))
     return report(db, pool)
@@ -73,25 +78,33 @@ def control(db, pool, generation, status):
             or status not in TRANSITIONS[current["status"]]):
         raise Conflict("The shared portfolio changed or this control is unavailable. Refresh its status.")
     now = _recorded_time(current["recorded"], timestamp())
-    db.execute("INSERT INTO pool_controls VALUES(?,?,?,?)", (pool, generation + 1, status, now))
+    db.execute("INSERT INTO pool_controls(pool_id,generation,status,recorded) VALUES(?,?,?,?)", (pool, generation + 1, status, now))
     return report(db, pool)
 
 
-def authorized(db, run_id):
-    rows = db.execute("""SELECT c.pool_id,c.generation FROM pool_members m JOIN pool_controls c ON c.pool_id=m.pool_id
-                         WHERE m.run_id=? AND c.status='running' AND c.generation=(SELECT max(generation)
-                         FROM pool_controls WHERE pool_id=m.pool_id)""", (run_id,))
-    return [tuple(row) for row in rows]
+def control_boundary(db):
+    return db.execute("SELECT coalesce(max(boundary),0) FROM pool_controls").fetchone()[0]
 
 
-def capture(db, run_id, revision, claims):
-    # Hold the same write transaction as the source decision. A pause and resume
-    # during the read changes the generation, even if the clock stepped back.
-    for pool, generation in claims:
-        current = _current(db, pool)
-        if (current["generation"], current["status"]) == (generation, "running"):
-            db.execute("""INSERT INTO pool_windows(pool_id,generation,run_id,revision) VALUES(?,?,?,?)
-                          ON CONFLICT(pool_id,run_id,revision) DO NOTHING""", (pool, generation, run_id, revision))
+# A member must have the same running generation at claim and completion.
+# Both logical boundaries are captured inside the source worker's write transactions.
+ELIGIBLE = """SELECT c.pool_id,c.generation,w.run_id,w.revision FROM worker_windows w
+    JOIN pool_members m ON m.run_id=w.run_id AND m.start_revision<w.revision
+    JOIN pool_controls c ON c.pool_id=m.pool_id AND c.status='running'
+        AND c.boundary=(SELECT max(at_open.boundary) FROM pool_controls at_open
+                        WHERE at_open.pool_id=m.pool_id AND at_open.boundary<=w.opened)
+    WHERE NOT EXISTS(SELECT 1 FROM pool_controls later WHERE later.pool_id=c.pool_id
+                     AND later.boundary>w.opened AND later.boundary<=w.completed)"""
+
+
+def capture(db, run_id, revision, claim, opened):
+    completed = control_boundary(db)
+    ordinal = db.execute("""INSERT INTO worker_windows(run_id,revision,claim,opened,completed) VALUES(?,?,?,?,?)""",
+                         (run_id, revision, claim, opened, completed)).lastrowid
+    marker = json.dumps([ordinal, claim, opened, completed])
+    db.execute("""UPDATE public_decisions SET receipt=json_set(receipt,'$.serverWorker',json(?))
+                  WHERE run_id=? AND revision=?""", (marker, run_id, revision))
+    db.execute("INSERT INTO pool_windows(pool_id,generation,run_id,revision) " + ELIGIBLE + " AND w.ordinal=?", (ordinal,))
 
 
 def listing(db):
@@ -120,6 +133,23 @@ def report(db, pool):
 def verify(db):
     if db.execute("PRAGMA foreign_key_check").fetchone():
         raise ValueError("A shared portfolio record has a missing reference.")
+    previous = 0
+    boundaries = {0} | {r[0] for r in db.execute("SELECT boundary FROM pool_controls")}
+    records = db.execute("""SELECT w.*,json_extract(d.receipt,'$.serverWorker') AS marker
+        FROM worker_windows w JOIN public_decisions d USING(run_id,revision) ORDER BY ordinal""")
+    for r in records:
+        expected = [r["ordinal"], r["claim"], r["opened"], r["completed"]]
+        if (r["ordinal"] <= 0 or not re.fullmatch("[0-9a-f]{32}", r["claim"])
+                or type(r["opened"]) is not int or type(r["completed"]) is not int
+                or r["opened"] not in boundaries or r["completed"] not in boundaries
+                or r["opened"] > r["completed"] or r["completed"] < previous
+                or r["marker"] != json.dumps(expected, separators=(",", ":"))):
+            raise ValueError("A background source receipt disagrees with its worker claim.")
+        previous = r["completed"]
+    orphan_marker = db.execute("""SELECT 1 FROM public_decisions d LEFT JOIN worker_windows w USING(run_id,revision)
+        WHERE json_type(d.receipt,'$.serverWorker') IS NOT NULL AND w.ordinal IS NULL LIMIT 1""").fetchone()
+    if orphan_marker:
+        raise ValueError("A source receipt has no corresponding worker claim.")
     for row in db.execute("SELECT * FROM capital_pools"):
         pool = row["id"]
         if (not re.fullmatch("[0-9a-f]{32}", pool) or not isinstance(row["name"], str)
@@ -128,13 +158,14 @@ def verify(db):
                 or row["model"] != MODEL):
             raise ValueError("Invalid shared portfolio configuration.")
         previous = _journal_time(row["created"])
-        status = None
+        status, last_boundary = None, 0
         for expected, change in enumerate(db.execute("SELECT * FROM pool_controls WHERE pool_id=? ORDER BY generation", (pool,)), 1):
             recorded = _journal_time(change["recorded"])
             allowed = ("running",) if status is None else TRANSITIONS[status]
-            if change["generation"] != expected or change["status"] not in allowed or recorded < previous:
+            if (change["generation"] != expected or change["status"] not in allowed or recorded < previous
+                    or change["boundary"] <= last_boundary):
                 raise ValueError("Invalid shared portfolio controls.")
-            status, previous = change["status"], recorded
+            status, previous, last_boundary = change["status"], recorded, change["boundary"]
         members = db.execute("""SELECT r.wallet,m.start_revision,r.revision FROM pool_members m JOIN public_runs r
                                 ON r.id=m.run_id WHERE m.pool_id=?""", (pool,)).fetchall()
         if (status is None or len({r[0] for r in members}) != len(members) or len(members) < 2
@@ -152,3 +183,7 @@ def verify(db):
             if epoch < generation or revision <= revisions.get(run_id, 0):
                 raise ValueError("Shared observations are out of order.")
             generation, revisions[run_id] = epoch, revision
+    elected = db.execute(ELIGIBLE + " ORDER BY c.pool_id,w.ordinal")
+    saved = db.execute("SELECT pool_id,generation,run_id,revision FROM pool_windows ORDER BY pool_id,sequence")
+    if any(a != b for a, b in zip_longest(elected, saved)):
+        raise ValueError("Shared portfolio windows differ from the authorized background claims or their commit order.")
