@@ -138,6 +138,25 @@ The local JSON Lines receipt has SHA-256 `a841c9427ff647a4f72f6309b76fe637c70714
 
 The trial ended with the decision to retain polling. The trial revision preserves the WebSocket observer, comparison tests and reproduction command. [Study code and instructions](https://github.com/PolySia-Systems/PolySia/blob/380c9681c66b3153419b8f8a155afb3ede922f09/docs/provider.md#paired-source-decision-26-november-2026)
 
+## Prospective wallet selection on a second date
+
+On 28 November 2026 the public 0.12.0 executable repeated the earlier wallet-selection pilot in a new time period. A 100-row public BUY page yielded 78 eligible wallets under the two-minute lookback. The wallet with the most distinct transaction/outcome references and a hash-selected control were fixed before observation. Each used 30 simulated pUSD and a 5 pUSD cap. Six two-second windows aligned per wallet. The run made 41 public requests in about 130 seconds. Real spend was zero.
+
+| Result at the predeclared endpoint | Activity-selected wallet | Control |
+| --- | ---: | ---: |
+| Windows with timely eligible BUY | 1 of 6 | 0 of 6 |
+| Positive windows on later activity reads | 2 of 6 | 0 of 6 |
+| Simulated shares bought | 26 | 0 |
+| Cash remaining, pUSD | 25.12812 | 30 |
+| Fees included in cost, pUSD | 0.19188 | 0 |
+| Net result versus cash | Unknown | 0 pUSD |
+
+The selected entry used 4.68 pUSD of ask depth plus fees. Its endpoint book had a 0.01 ask and no bid, leaving no defensible midpoint or liquidation value. The earlier pilot produced zero entries for both wallets. This replication demonstrates a prospective modeled purchase from public data. Its missing endpoint price prevents a comparison of returns. The later activity reads never changed the journal.
+
+An exploratory replay of the same captured book modeled 5, 26 and 53 shares at caps of 1, 5 and 10 pUSD. Those are separate alternatives on one book. No alternative-delay book was captured. The retained first-window receipt has SHA-256 `2e73b86a8e94d7f0f8cac9eec4eb2cb2d4f8cbc04e54cf9abc65e268cc60d234`. [Public leader transaction](https://polygonscan.com/tx/0xdcea0ca7330307734b52b44082d523020417fe4bc8caab4a4ad6f0be8435c945)
+
+A separate lookup was scheduled after the original endpoint, two minutes after the market's announced end. At finalized Polygon block 98093892 the verified payout for those 26 simulated Down shares was zero. The cash plus final payout was therefore 25.12812 pUSD equivalent, 4.87188 below the initial cash benchmark before any redemption costs. This later settlement observation did not backfill an endpoint price or add a cash transaction.
+
 ## Background sampling capacity
 
 On 28 November 2026, three isolated Linux workspaces ran the scheduler from the public 0.11.0 executable for 100 seconds each. All sources were eligible at the start. Each controlled provider call took five seconds and returned a quiet result. The scheduler used its shipped timing and completed any observation in progress at the cutoff. Each start was timed with a monotonic clock, and every completed call was reconciled to a stored receipt.
