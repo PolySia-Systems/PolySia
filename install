@@ -2,8 +2,8 @@
 # The release digest is checked by make release-check before and after publication.
 set -eu
 umask 077
-version=0.13.0
-sha256=d5e73d44cec8389a8302da6ac261adda380f2d00525acfa36a46e0bb981143bc
+version=0.14.0
+sha256=3e147300de910dbe8e6ccbe1456d04320c3b8566a1e9495deed5790996e3abdb
 release="https://github.com/PolySia-Systems/PolySia/releases/download/v$version/polysia.pyz"
 
 fail() { printf 'PolySia: %s\n' "$*" >&2; exit 1; }

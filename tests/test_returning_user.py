@@ -50,6 +50,29 @@ class ReturningUserTests(unittest.TestCase):
         self.assertEqual(datetime.fromisoformat(report["from"]), START)
         self.assertEqual(datetime.fromisoformat(report["through"]), END)
 
+    def test_buy_coverage_clips_unions_and_ignores_incomplete_scoped_and_late_pages(self):
+        created = END - timedelta(seconds=10, milliseconds=500)
+        self.at(created, paper.create, WALLET, "Coverage", "25", "10")
+        end = int(END.timestamp())
+        def receipt(offset):
+            lo = end + offset
+            return {"wallet": WALLET, "status": "waiting", "researchBudget": "10.00",
+                    "reason": "Quiet window.", "windowStartSeconds": lo, "windowEndSeconds": lo + 1,
+                    "activityCoverage": {"complete": True}, "activityReceivedMs": (lo + 2) * 1000}
+        rows = [receipt(-11), receipt(-10), receipt(-10),
+                receipt(-7) | {"activityCoverage": {"complete": False}},
+                receipt(-4) | {"activityReceivedMs": (end + 1) * 1000}, receipt(-3)]
+        for revision, row in enumerate(rows, 1):
+            self.at(END, paper.record, revision, row)
+        with self.store.connection() as db:
+            # A complete scoped sale search does not cover all wallet purchases.
+            db.execute("""UPDATE public_decisions SET receipt=json_set(receipt,'$.exitScope',json('{}'))
+                          WHERE run_id=? AND revision=7""", (ID,))
+            period = summary(db, ID, now=END)
+        self.assertEqual(period["observations"], 6)
+        self.assertEqual(period["buyCoverage"], {"periodSeconds": 10.5, "completePageSeconds": 2.5,
+                         "longestGap": {"from": (END - timedelta(seconds=8)).isoformat(), "through": END.isoformat()}})
+
     def test_new_quiet_run_and_future_rows(self):
         self.at(START, paper.create, WALLET, "Quiet run", "25", "10")
         self.at(END, paper.record, 1, {"wallet": WALLET, "researchBudget": "10.00", "status": "waiting",

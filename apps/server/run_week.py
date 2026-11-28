@@ -3,6 +3,7 @@
 import json
 from datetime import UTC, datetime, timedelta
 
+from . import sampling_coverage
 from .provider import units_from_micros
 from .public_shadow import _journal_time, _run, _signed, report, require_revision
 
@@ -15,6 +16,8 @@ def summary(db, run_id, *, now=None, evidence=None):
     through = now or datetime.now(UTC)
     start = through - timedelta(days=7)
     previous = _journal_time(run["created"])
+    since = min(through, max(start, previous))
+    first_observation = last_observation = None
     opening = run["capital"] if previous < start else 0
     funding = run["capital"] if start <= previous <= through else 0
     buys = sales = fees = realized = withdrawals = 0
@@ -23,9 +26,9 @@ def summary(db, run_id, *, now=None, evidence=None):
     last = None
     # Restore and reporting use the same timestamp parser. Walk in revision
     # order so a clock correction or sub-millisecond boundary is visible.
-    detail = "" if evidence is None else """, revision, condition_id, token_id, source_order,
+    detail = "" if evidence is None else """, condition_id, token_id, source_order,
                 CASE WHEN kind='change-cap' THEN receipt END AS cap_change"""
-    rows = db.execute(f"""SELECT recorded,kind,gross,fee,shares,released_cost,reason{detail},
+    rows = db.execute(f"""SELECT revision,recorded,kind,gross,fee,shares,released_cost,reason{detail},
                          CASE WHEN kind IN ('deposit','withdraw') THEN json_extract(receipt,'$.amountMicros') END AS transfer
                          FROM public_decisions WHERE run_id=? ORDER BY revision""", (run_id,))
     for row in rows:
@@ -62,10 +65,24 @@ def summary(db, run_id, *, now=None, evidence=None):
         if in_week:
             counts[kind] = counts.get(kind, 0) + 1
             if kind in OBSERVATIONS:
+                last_observation = row["revision"]
+                if first_observation is None:
+                    first_observation = last_observation
                 last = {key: row[key] for key in ("kind", "reason", "recorded")}
             if evidence is not None:
                 evidence.append(_period_decision(row))
 
+    windows = []
+    if first_observation is not None:
+        pages = db.execute(f"""SELECT d.recorded, {sampling_coverage.PAGE_FIELDS}
+            FROM public_decisions d WHERE d.run_id=? AND d.revision BETWEEN ? AND ?
+            AND d.receipt IS NOT NULL AND json_type(d.receipt,'$.exitScope') IS NULL
+            AND d.kind IN ('entry','skipped','duplicate','waiting','incomplete','unavailable')""",
+            (run_id, first_observation, last_observation))
+        for page in pages:
+            span = sampling_coverage.buy_span(page, _journal_time(page["recorded"]), since.timestamp(), through.timestamp())
+            if span:
+                windows.append(span)
     cash_change = sales - buys - fees
     closing = opening + funding - withdrawals + cash_change
     return {"runId": run_id, "revision": run["revision"], "from": start.isoformat(), "through": through.isoformat(),
@@ -74,6 +91,7 @@ def summary(db, run_id, *, now=None, evidence=None):
             "sales": units_from_micros(sales), "fees": units_from_micros(fees),
             "closingCash": units_from_micros(closing), "realizedOnSales": _signed(realized),
             "netResult": _signed(cash_change) if not shares_before and not shares_at_end else None,
+            "buyCoverage": sampling_coverage.coverage(since.timestamp(), through.timestamp(), windows),
             "observations": sum(counts.get(kind, 0) for kind in OBSERVATIONS), "counts": counts, "latestObservation": last}
 
 
