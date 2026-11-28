@@ -138,6 +138,18 @@ The local JSON Lines receipt has SHA-256 `a841c9427ff647a4f72f6309b76fe637c70714
 
 The trial ended with the decision to retain polling. The trial revision preserves the WebSocket observer, comparison tests and reproduction command. [Study code and instructions](https://github.com/PolySia-Systems/PolySia/blob/380c9681c66b3153419b8f8a155afb3ede922f09/docs/provider.md#paired-source-decision-26-november-2026)
 
+## Background sampling capacity
+
+On 28 November 2026, three isolated Linux workspaces ran the scheduler from the public 0.11.0 executable for 100 seconds each. All sources were eligible at the start. Each controlled provider call took five seconds and returned a quiet result. The scheduler used its shipped timing and completed any observation in progress at the cutoff. Each start was timed with a monotonic clock, and every completed call was reconciled to a stored receipt.
+
+| Enabled wallets | Saved receipts | Median time between starts for the same wallet | Delay before the last wallet's first check |
+| --- | ---: | ---: | ---: |
+| 1 | 5 | 20.1 s | under 0.1 s |
+| 4 | 17 | 24.1 s | 18.1 s |
+| 8 | 17 | 48.3 s | 42.2 s |
+
+Doubling the enabled sources from four to eight spread the same 17 observations over twice as many wallets. The real provider can respond faster, slower or with an error that triggers backoff. Use the window times in Decision history to assess coverage on your host. These counts measure scheduler behavior under the declared latency. The study used zero public requests and supplies no provider throughput, price or profitability estimate. [Release under test](https://github.com/PolySia-Systems/PolySia/releases/tag/v0.11.0)
+
 ## Public shadow sales
 
 One historical ordinary SELL for the previously observed wallet `0xc69b…2076` matched its own taker order in Polygon block 97327765, log 191. The adjacent exchange summary corroborated the same order. The public activity row reported 2,917.3 shares at 0.999 pUSD per share and 2,914.23699 pUSD in collateral. The on-chain gross was 2,914.3827 pUSD and the charged fee was 0.14571 pUSD. The historical fixture exercises exact-price SELL attribution and fee deduction. Prospective visibility and follower execution are separate measurements. [Public transaction](https://polygonscan.com/tx/0xe8c4b8480720bdd4a682dff89e9679b5a07bdab773f7313558ca39163088fe3a) · [Exchange settlement implementation](https://github.com/Polymarket/ctf-exchange-v2/blob/ccc0596074f4dfd62c944fbca4de252893b82b4b/src/exchange/mixins/Trading.sol) · [Retained receipt and activity fields](../tests/fixtures/polygon-sell.json)
