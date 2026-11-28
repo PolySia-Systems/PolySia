@@ -47,7 +47,8 @@ Open **Notifications** to find past observation warnings and simulated buys or s
 
 1. In **Discover**, choose **Try a shadow replay**, then **Start shadow**. Keep the default budget for this example.
 2. Select **Observe next signal** twice. The first fictional purchase fills. The second fills only partly. Look at the share count after each purchase.
-3. Choose **Stop run**. You can still see the shares you hold. To revisit the result later, open **Scenario replays**.
+3. Select **Observe next signal** once more. Under **Signal activity**, read why the purchase was skipped. There was no order book for this signal, so the run spent nothing on it.
+4. Choose **Stop run**. Reopen **Scenario replays** and select this run. With the default budget you should find $88.26 in simulated cash and 23 open Yes shares.
 
 To try a public wallet, open **Public rankings** and choose a period. Use **Next page** to explore more ranked wallets, or paste a wallet address. Set **Budget per buy** and open a trader. **Check next buy** tests one short window using public data. **Set up public shadow run** carries your wallet and per-buy cap into the simulation. Choose the total starting cash before creating the run. A quiet window leaves the wallet’s suitability unknown. Select two wallets across pages, then choose **Compare wallets → Check both wallets** to test the same budget on each. The checks run one after the other. Read the time, page coverage and result on each wallet card. Your shortlist keeps the latest check for each saved wallet in this browser. Enter the same budget when you return to see those results again.
 
