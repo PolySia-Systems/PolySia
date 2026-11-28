@@ -13,6 +13,7 @@ from tempfile import NamedTemporaryFile
 from .provider import decimal_value, validate_address
 from .store import WORKSPACE_VERSION, add_accent, add_public_exits, add_public_runs, add_saved_wallets, create_schema_v1, verify_saved_wallets
 from .background import add_table
+from . import capital_pool
 from .public_shadow import verify_archive
 
 
@@ -151,6 +152,8 @@ def _verify_schema(db, version):
             add_saved_wallets(reference)
         if version >= 8:
             add_accent(reference)
+        if version >= 9:
+            capital_pool.add_tables(reference)
         expected = reference.execute(catalog).fetchall()
     if db.execute(catalog).fetchmany(len(expected) + 1) != expected:
         raise ValueError("The database schema differs from the supported PolySia workspace schema.")
@@ -200,6 +203,8 @@ def copy_workspace(source: Path, destination: Path):
                     writer.row_factory = sqlite3.Row
                     try:
                         verify_archive(writer, version=version)
+                        if version >= 9:
+                            capital_pool.verify(writer)
                     except (AttributeError, ArithmeticError, IndexError, KeyError, TypeError, ValueError, RecursionError) as exc:
                         raise ValueError(f"Public shadow archive failed its integrity check: {exc}") from exc
         os.fsync(staging.fileno())

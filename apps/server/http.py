@@ -269,6 +269,24 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("Choose a supported notification category.")
             with store.connection(write=False) as db:
                 return recent(db, query.get("category", ["warnings"])[0])
+        if path == API + "/capital-pools" or path.startswith(API + "/capital-pools/"):
+            from . import capital_pool
+            match = re.fullmatch(API + r"/capital-pools(?:/([0-9a-f]{32})(?:/(control))?)?", path)
+            if not match or urlsplit(self.path).query:
+                raise RequestError(404, "Unknown shared portfolio route.")
+            pool, control = match.groups()
+            if method == "GET" and not control:
+                with store.connection(write=False) as db:
+                    return capital_pool.report(db, pool) if pool else {"pools": capital_pool.listing(db)}
+            if method == "PUT" and pool and not control:
+                data = self.body(("name", "capital", "runIds"))
+                with store.connection() as db:
+                    return capital_pool.create(db, pool, data["name"], data["capital"], data["runIds"])
+            if method == "POST" and control:
+                data = self.body(("generation", "status"))
+                with store.connection() as db:
+                    return capital_pool.control(db, pool, data["generation"], data["status"])
+            raise RequestError(405, "Use a supported shared portfolio action.")
         if path == API + "/public-runs" or path.startswith(API + "/public-runs/"):
             return self.public_runs_api(path, method)
         if path == API + "/public/leaders" and self.command == "GET":

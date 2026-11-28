@@ -2,9 +2,11 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ArrowLeft, ArrowRight, Download, Pause, Play, Plus, ScanLine, Square } from 'lucide-react'
 import { api, apiResponse, errorMessage, validBuyBudget } from './api'
 import { SharedReplay } from './SharedReplay'
+import { CapitalPool, CapitalPoolSetup } from './CapitalPools'
 import './public-runs.css'
 
 interface Summary {
+  backgroundEnabled: boolean
   id: string
   name: string
   wallet: string
@@ -174,6 +176,7 @@ function Library() {
       <ArrowRight size={16} aria-hidden="true"/></a>)}</div>
     {list?.nextCursor && <button className="btn" disabled={busy} onClick={() => load(list.nextCursor!)}>Older runs</button>}
     {list && list.runs.length > 1 && <SharedReplay runs={list.runs} />}
+    {list && <CapitalPoolSetup runs={list.runs} />}
   </section>
 }
 
@@ -716,6 +719,7 @@ function Detail({id}: {id: string}) {
 }
 
 export function PublicRuns({id}: {id?: string}) {
+  if (id?.startsWith('pool-')) return <CapitalPool key={id} id={id.slice(5)} />
   if (id === 'new') return <Setup/>
   return id ? <Detail key={id} id={id}/> : <Library/>
 }

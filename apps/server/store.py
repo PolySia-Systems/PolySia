@@ -11,7 +11,7 @@ from . import shadow
 from .provider import validate_address
 
 
-WORKSPACE_VERSION = 8
+WORKSPACE_VERSION = 9
 
 
 class Conflict(ValueError):
@@ -110,6 +110,10 @@ class Workspace:
             if version < 8:
                 add_accent(db)
                 db.execute("PRAGMA user_version = 8")
+            if version < 9:
+                from .capital_pool import add_tables
+                add_tables(db)
+                db.execute("PRAGMA user_version = 9")
 
     @contextmanager
     def connection(self, write=True):

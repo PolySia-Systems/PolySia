@@ -1310,6 +1310,93 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
             page.close()
 
 
+def shared_background_journey(pw, cwd: Path):
+    """Create from the UI, close its entire browser, then return after two decisions and restart."""
+    from threading import Event, Thread
+    from unittest.mock import patch
+    from apps.server import background, public_depth, public_shadow
+    from apps.server.http import LocalServer
+    from apps.server.store import Workspace
+    from test_public_shadow import STARTED, observed_buy
+
+    store = Workspace(cwd / "shared-background.db")
+    wallets = ("0x" + "11" * 20, "0x" + "22" * 20)
+    with store.connection() as db, patch.object(public_shadow, "timestamp", return_value=STARTED):
+        for index, wallet in enumerate(wallets, 1):
+            public_shadow.create(db, str(index) * 32, wallet, "Source " + str(index), "50", "10")
+    server = LocalServer(0, store)
+    origin = f"http://127.0.0.1:{server.server_port}"
+    closed = Event()
+    def sample(wallet, budget, **options):
+        if not closed.is_set():
+            return {"status": "waiting", "reason": "Controlled quiet window.", "wallet": wallet, "researchBudget": budget}
+        receipt = observed_buy(wallet, budget)
+        receipt["book"]["bestAsks"] = [{"price": "0.50", "shares": "25"}]
+        receipt["capacity"] = public_depth.measure_depth(receipt, budget)
+        return receipt
+    chromium = os.environ.get("CHROMIUM_PATH") or shutil.which("chromium")
+    browser = pw.chromium.launch(executable_path=chromium)
+    thread = Thread(target=server.serve_forever)
+    with patch.object(server, "_background_buy", side_effect=sample), patch.object(background, "INTERVAL", 1):
+        thread.start()
+        try:
+            page = browser.new_page(viewport={"width": 1380, "height": 960})
+            page.goto(origin + "/#/paper")
+            for index in (1, 2):
+                page.get_by_role("link", name=re.compile("^Source " + str(index))).click()
+                page.get_by_role("button", name="Enable background sampling").click()
+                expect(page.get_by_role("button", name="Disable background sampling")).to_be_visible()
+                page.get_by_role("link", name="All public runs").click()
+            page.get_by_text("Follow leaders with one simulated balance", exact=True).click()
+            page.get_by_label("Portfolio name").fill("Weekend pool")
+            page.get_by_label("Shared cash (pUSD)").fill("25")
+            for label in ("Source 1", "Source 2"):
+                page.get_by_role("checkbox", name=re.compile("^" + label)).check()
+            page.get_by_role("button", name="Start shared portfolio").click()
+            expect(page.get_by_role("heading", name="Weekend pool")).to_be_visible()
+            pool_id = page.url.split("pool-")[-1]
+            browser.close()
+            closed.set()
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                with urlopen(origin + "/api/v1/capital-pools/" + pool_id, timeout=2) as reply:
+                    report = json.load(reply)
+                if all(run["modeledBuys"] == 1 for run in report["runs"]):
+                    break
+                time.sleep(.2)
+            assert report["cash"] == "12.1875", report
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+            browser.close()
+    server = LocalServer(0, Workspace(store.path))
+    origin = f"http://127.0.0.1:{server.server_port}"
+    with patch.object(server, "_background_buy", side_effect=sample):
+        thread = Thread(target=server.serve_forever)
+        thread.start()
+        browser = pw.chromium.launch(executable_path=chromium)
+        try:
+            page = browser.new_page(viewport={"width": 390, "height": 844})
+            page.goto(origin + "/#/paper")
+            page.get_by_role("link", name="Weekend pool", exact=True).click()
+            expect(page.get_by_text("12.1875", exact=False)).to_be_visible()
+            expect(page.get_by_text("6 shares · Outcome token 734", exact=True)).to_be_visible()
+            expect(page.get_by_text("19 shares · Outcome token 734", exact=True)).to_be_visible()
+            page.get_by_role("button", name="Pause shared buys").click()
+            expect(page.get_by_role("button", name="Resume shared buys")).to_be_visible()
+            page.get_by_role("button", name="Stop shared portfolio").click()
+            page.get_by_role("button", name="Confirm stop", exact=True).click()
+            expect(page.get_by_text("stopped", exact=True)).to_be_visible()
+            check_width(page)
+        finally:
+            browser.close()
+            server.shutdown()
+            thread.join()
+            server.server_close()
+    print("Two source runs shared 25 displayed asks while the operator browser was closed. Cash, holdings and stop survived the return.")
+
+
 def public_artifact_smoke(browser: Browser, cwd: Path, output: Path | None):
     """Opt-in. Inspect a real public ranking and persist one read-only watch."""
     # Reuse the installer test's launcher to exercise the actual shipped code.
@@ -1475,6 +1562,7 @@ def main():
                     public_rankings_journey(browser, origin, options.screenshots)
                     change_cap_journey(browser, origin)
                 public_shadow_journey(browser, Path(temp), options.screenshots)
+                shared_background_journey(pw, Path(temp))
         finally:
             browser.close()
 

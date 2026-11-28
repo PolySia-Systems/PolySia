@@ -138,9 +138,10 @@ def listing(db, before=None):
         if not row:
             raise ValueError("Unknown public run cursor.")
         cursor = row[0]
-    rows = db.execute("SELECT * FROM public_runs WHERE rowid < ? ORDER BY rowid DESC LIMIT ?",
+    rows = db.execute("""SELECT r.*, EXISTS(SELECT 1 FROM background_runs b WHERE b.run_id=r.id) AS sampling
+                      FROM public_runs r WHERE r.rowid < ? ORDER BY r.rowid DESC LIMIT ?""",
                       (cursor, PAGE + 1)).fetchall()
-    items = [_summary(row, _totals(db, row["id"])) for row in rows[:PAGE]]
+    items = [dict(_summary(row, _totals(db, row["id"])), backgroundEnabled=bool(row["sampling"])) for row in rows[:PAGE]]
     return {"runs": items, "nextCursor": items[-1]["id"] if len(rows) > PAGE else None}
 
 
