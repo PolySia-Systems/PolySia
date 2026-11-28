@@ -123,6 +123,7 @@ function PublicComparison({
   const heading = useRef<HTMLHeadingElement>(null)
   const [left, right] = traders
   const [progress, setProgress] = useState('')
+  const [cashDate, setCashDate] = useState('')
   const [running, setRunning] = useState(false)
   const active = useRef<{cancelled: boolean} | null>(null)
   const {budget, setBudget, saveCheck} = budgetTest
@@ -231,6 +232,25 @@ function PublicComparison({
         {progress && <p role="status">{progress}</p>}
         {storageIssue && <p role="status">Browser storage is unavailable. Results may be lost when you leave.</p>}
       </div>
+      <details className="paper-evidence">
+        <summary>Compare holding periods</summary>
+        <p>Enter the day you may need cash. Compare it with the scheduled market end dates of each wallet’s open positions.
+          Settlement can take longer, and an earlier sale depends on buyers.</p>
+        <label className="field">When might you need cash?
+          <input type="date" value={cashDate} onChange={event => setCashDate(event.target.value)} />
+        </label>
+        {cashDate && <ul>{traders.map(trader => {
+          const read = reads[trader.address]
+          const account = read && 'account' in read ? read.account : null
+          if (account?.status !== 'available') return <li key={trader.address}>{trader.name} · Holdings unknown.</li>
+          const open = account.positions.filter(row => row.status === 'OPEN' && Number(row.shares) > 0)
+          const later = open.filter(row => row.endDate && row.endDate > cashDate).length
+          const unknown = open.filter(row => !row.endDate).length
+          return <li key={trader.address}><strong>{trader.name}</strong> · {later} of {open.length} open positions shown
+            {' '}have a scheduled end after your date. Missing end dates: {unknown}.
+            {!account.complete && ' Additional positions may be outside this page.'}</li>
+        })}</ul>}
+      </details>
       <div className="comparison">
         {traders.map((trader) => {
           const read = reads[trader.address]

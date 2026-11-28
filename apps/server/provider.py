@@ -2,7 +2,7 @@
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from http.client import HTTPException
 from urllib.error import HTTPError
@@ -93,6 +93,15 @@ def unpack_page(payload: object, limit: int) -> tuple[list, str | None]:
     return rows, cursor
 
 
+def market_end_date(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+        return None
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError:
+        return None
+
+
 def _positions(payload: object, address: str) -> tuple[list[dict], str | None]:
     rows, cursor = unpack_page(payload, PAGE_SIZE)
     positions = []
@@ -116,6 +125,9 @@ def _positions(payload: object, address: str) -> tuple[list[dict], str | None]:
             "shares": format(decimal_value(row["current_size"]), "f"),
             "status": row["status"],
         })
+        end = market_end_date(row.get("end_date"))
+        if end:
+            positions[-1]["endDate"] = end
     return positions, cursor
 
 

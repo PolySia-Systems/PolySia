@@ -424,7 +424,8 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
         address = urlsplit(route.request.url).path.rsplit("/", 1)[1]
         assert route.request.method == "GET" and address in (wallet, other, unranked)
         profile_reads.append(address)
-        position = {"market": "Fixture opening day?", "conditionId": market_id, "outcome": "Yes", "shares": "7.125", "status": "OPEN"}
+        position = {"market": "Fixture opening day?", "conditionId": market_id, "outcome": "Yes", "shares": "7.125",
+                    "status": "OPEN", "endDate": "2026-12-12"}
         rows = [position]
         if address == other:
             if compare_case == "error":
@@ -551,6 +552,13 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
         expect(comparison.get_by_text(expected, exact=True)).to_be_visible()
         expect(comparison.get_by_text("19,348.35", exact=True)).to_be_visible()
         if compare_case == "shared":
+            comparison.get_by_text("Compare holding periods", exact=True).click()
+            horizon = comparison.get_by_label("When might you need cash?")
+            horizon.fill("2026-12-11")
+            expect(comparison.get_by_text("1 of 1 open positions shown", exact=False)).to_be_visible()
+            horizon.fill("2026-12-12")
+            expect(comparison.get_by_text("0 of 1 open positions shown", exact=False)).to_be_visible()
+            comparison.get_by_text("Compare holding periods", exact=True).click()
             expect(comparison.get_by_text("1 of 1 shown", exact=True)).to_have_count(2)
             expect(comparison.get_by_text("Fixture opening day?", exact=True)).to_have_count(1)
             expect(comparison.get_by_text("Fixture Lumen · Yes", exact=True)).to_be_visible()

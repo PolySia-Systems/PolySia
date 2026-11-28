@@ -10,7 +10,7 @@ from decimal import InvalidOperation
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from .provider import decimal_value, validate_address
+from .provider import decimal_value, market_end_date, validate_address
 from .store import WORKSPACE_VERSION, add_accent, add_public_exits, add_public_runs, add_saved_wallets, create_schema_v1, verify_saved_wallets
 from .background import add_table
 from . import capital_pool
@@ -112,6 +112,8 @@ def _verify_position_page(page, available):
         if not all(isinstance(row[field], str) for field in ("market", "outcome", "shares")):
             raise ValueError("Unreadable position row.")
         decimal_value(row["shares"])
+        if "endDate" in row and market_end_date(row["endDate"]) is None:
+            raise ValueError("Invalid market end date.")
 
 
 def _verify_records(db, stored_account):

@@ -53,6 +53,8 @@ To try a public wallet, open **Public rankings** and choose a period. Use **Next
 
 ## Updates and help
 
+In a two-wallet comparison, **Compare holding periods** checks the scheduled market end dates on each returned positions page against the day you may need your cash. The comparison reports missing dates. Settlement time and the ability to sell early depend on the market.
+
 To follow several leaders prospectively with one simulated balance, enable background BUY sampling on runs for at least two different wallets. Open **Saved public runs → Follow leaders with one simulated balance**, choose the runs and starting cash, and start the shared portfolio. Close the browser while the server stays online. Reopen **Shared background portfolios** to inspect cash, entry cost, holdings and missed windows. Pausing or stopping the shared portfolio preserves its positions and each source run's settings. Shared portfolios currently model purchases only.
 
 In **Saved public runs**, choose **Replay buys with one shared budget** once you have two or more runs. Select the runs, enter one simulated starting balance and replay their recorded buys together. Each purchase uses the remaining cash and displayed shares. The replay leaves positions open and shows the modeled cost for each run.

@@ -14,6 +14,7 @@ export interface Account {
   message: string
   positions: {
     conditionId?: string
+    endDate?: string
     market: string
     outcome: string
     shares: string
