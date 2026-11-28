@@ -171,7 +171,9 @@ def copy_workspace(source: Path, destination: Path):
 
     # Link only a complete, verified snapshot. A racing process that creates
     # the destination first wins; no existing backup or DB can be replaced.
-    with NamedTemporaryFile(dir=destination.parent, prefix=".polysia-backup-") as staging:
+    # SQLite opens its own handle. Defer removal until context exit so this
+    # second handle can also open the file on Windows.
+    with NamedTemporaryFile(dir=destination.parent, prefix=".polysia-backup-", delete_on_close=False) as staging:
         with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as reader:
             with closing(sqlite3.connect(staging.name)) as writer:
                 reader.backup(writer, pages=256)
@@ -211,8 +213,9 @@ def copy_workspace(source: Path, destination: Path):
                         raise ValueError(f"Public shadow archive failed its integrity check: {exc}") from exc
         os.fsync(staging.fileno())
         os.link(staging.name, destination)
-        dir_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
+        if os.name == "posix":
+            dir_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
