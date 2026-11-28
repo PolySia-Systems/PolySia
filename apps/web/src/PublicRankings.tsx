@@ -299,6 +299,15 @@ function PublicComparison({
                   <dt>Shared open markets</dt><dd>{shared.length} of {markets.size} shown</dd>
                 </div>}
               </dl>
+              <details className="paper-evidence">
+                <summary>Largest market by value</summary>
+                {account?.concentration ? <p>{account.concentration.market} accounts for {account.concentration.percent}% of
+                  the marked value shown across {account.concentration.marketCount} open ordinary
+                  {account.concentration.marketCount === 1 ? ' market' : ' markets'}.
+                  {account.concentration.tied && ' Another market has the same largest value.'}
+                  {!account.complete && ' More positions exist. The wallet-wide percentage is unknown.'}</p>
+                  : <p>{!read ? 'Reading holdings…' : 'Unavailable. This needs a positive total and a mark for every open holding shown.'}</p>}
+              </details>
               <p className="workspace-note muted">
                 {account?.observedAt
                   ? 'Retrieved ' +

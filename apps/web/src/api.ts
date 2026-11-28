@@ -18,8 +18,10 @@ export interface Account {
     market: string
     outcome: string
     shares: string
+    markedValue?: string
     status?: 'OPEN' | 'REDEEMABLE'
   }[]
+  concentration?: {conditionId: string; market: string; marketCount: number; percent: string; tied: boolean} | null
   complete: boolean
   nextCursor: string | null
   lastSuccessful?: Pick<Account, 'source' | 'observedAt' | 'positions' | 'complete'>

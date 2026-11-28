@@ -24,6 +24,20 @@ def envelope(rows, more=False):
 
 
 class AccountReadTests(unittest.TestCase):
+    def test_concentration_groups_outcomes_and_keeps_missing_marks_unknown(self):
+        rows = [row(current_value="2.75"), row(token_id="213", current_value="1.25"),
+                row(token_id="214", condition_id="0x" + "ef" * 32, current_value="2"),
+                row(token_id="215", status="REDEEMABLE", current_value="100")]
+        snapshot = self.read(envelope(rows, more=True))
+        self.assertFalse(snapshot["complete"])
+        self.assertEqual(snapshot["concentration"], {"conditionId": rows[0]["condition_id"],
+                         "market": rows[0]["title"], "marketCount": 2, "percent": "66.7", "tied": False})
+        for mark in (None, "invalid", -1):
+            result = self.read(envelope([row(current_value=mark)]))
+            self.assertEqual(result["status"], "available")
+            self.assertIsNone(result["concentration"])
+        self.assertIsNone(self.read(envelope([row(current_value=0)]))["concentration"])
+
     def test_optional_market_date_preserves_missing_evidence(self):
         for value, expected in (("2028-02-29", "2028-02-29"), ("2027-02-29", None), (None, None)):
             with self.subTest(value=value):

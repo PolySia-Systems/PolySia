@@ -443,6 +443,9 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
             "source": "Polymarket Data API v2 · open positions", "complete": complete,
             "nextCursor": None if complete else "more", "message": "Open ordinary positions",
             "positions": rows,
+            "concentration": ({"conditionId": market_id, "market": "Fixture opening day?",
+                               "marketCount": 1, "percent": "100.0", "tied": False}
+                              if compare_case in ("shared", "partial-shared") else None),
         })
 
     history_reads = []
@@ -551,6 +554,13 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
         expect(comparison.get_by_role("heading", name="Wallet comparison")).to_be_focused()
         expect(comparison.get_by_text(expected, exact=True)).to_be_visible()
         expect(comparison.get_by_text("19,348.35", exact=True)).to_be_visible()
+        if compare_case in ("partial", "partial-shared"):
+            concentration = comparison.locator("article").last.get_by_text("Largest market by value")
+            concentration.click()
+            if compare_case == "partial-shared":
+                expect(comparison.locator("article").last.get_by_text("100.0% of", exact=False)).to_contain_text("wallet-wide percentage is unknown")
+            else:
+                expect(comparison.locator("article").last.get_by_text("Unavailable. This needs", exact=False)).to_be_visible()
         if compare_case == "shared":
             comparison.get_by_text("Compare holding periods", exact=True).click()
             horizon = comparison.get_by_label("When might you need cash?")

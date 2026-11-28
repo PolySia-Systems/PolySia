@@ -66,6 +66,8 @@ In **Settings → Appearance**, choose a light or dark theme. Under **Workspace 
 
 Use **Buy check at this budget** in Public rankings to filter wallets you have browsed or shortlisted in the current period. An observation at another budget cannot establish a match. The run overview shows the last seven days of cash movements, decisions and outstanding exposure.
 
+In **Compare wallets**, expand **Largest market by value** for each wallet. It shows how much of the displayed open holdings' marked value is in one market. When additional positions exist, the percentage covers the returned page only.
+
 In **Last seven days**, open **How much activity was checked?** to see how much time the saved BUY activity pages cover and the longest gap between checks. A quiet result applies only to the observed window. Choose **Export this period** to save the displayed interval, its cash totals, and the decisions behind them as JSON. If the run changed in the meantime, select **Refresh report** before exporting. **Export run** includes the complete journal and retained observation receipts.
 
 In a public run, **Add simulated cash** records a contribution separately from gains and fees. Adding cash preserves a pause. **Decision history → Recheck public activity** lets you revisit a quiet BUY window if the provider indexed trades later. A recheck keeps the original decision and portfolio balances intact.
