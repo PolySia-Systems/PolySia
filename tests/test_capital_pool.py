@@ -141,6 +141,19 @@ class CapitalPoolTests(unittest.TestCase):
         self.assertEqual(covered["longestGap"], {"from": (created + timedelta(seconds=12)).isoformat(), "through": through.isoformat()})
         self.assertEqual((unknown["receipts"], unknown["completePageSeconds"], unknown["longestGap"]["from"]),
                          (1, 0, created.isoformat()))
+        # Pricing evidence and activity-page evidence are independent. A failed
+        # final activity read, however, clears the complete page from the receipt.
+        def missing_book(wallet, budget, **options):
+            receipt = quiet(wallet, budget, **options)
+            receipt.update(status="incomplete", reason="Book unavailable.", activityCoverage={"complete": True},
+                           windowStartSeconds=begin + 40, windowEndSeconds=begin + 41,
+                           activityReceivedMs=(begin + 43) * 1000)
+            return receipt
+        with patch.object(paper, "timestamp", return_value=(created + timedelta(seconds=50)).isoformat()):
+            background.tick(self.store, missing_book, self.start + 15)
+        week = self.state(through)["week"]
+        self.assertEqual(week["counts"]["incomplete"], 1)
+        self.assertEqual(week["coverage"][IDS[1]]["completePageSeconds"], 2)
 
     def test_new_subscriber_excludes_inflight_and_manual_decisions_and_reports_outage(self):
         def subscribe(*args, **kwargs):

@@ -36,7 +36,8 @@ class SharedWeek:
                 following.recorded AS disabled,json_extract(d.receipt,'$.windowStartSeconds') AS lo,
                 json_extract(d.receipt,'$.windowEndSeconds') AS hi,
                 json_type(d.receipt,'$.activityCoverage.complete') AS complete,
-                json_extract(d.receipt,'$.activityReceivedMs') AS received
+                json_extract(d.receipt,'$.activityReceivedMs') AS received,
+                json_extract(d.receipt,'$.activityReads[#-1].requestedMs') AS requested
             FROM pool_windows w JOIN public_decisions d USING(run_id,revision)
             JOIN pool_controls c USING(pool_id,generation)
             LEFT JOIN pool_controls following ON following.pool_id=w.pool_id AND following.generation=w.generation+1
@@ -55,9 +56,12 @@ class SharedWeek:
             lo, hi, received = row["lo"], row["hi"], row["received"]
             # A worker requests two inclusive seconds. A missing or late-indexed
             # activity page cannot establish that the wallet made no trades.
-            if (kind in ("unavailable", "incomplete") or row["complete"] != "true"
+            # A missing book can prevent a buy even when the activity page was complete.
+            if (row["complete"] != "true"
                     or type(lo) is not int or type(hi) is not int or hi != lo + 1
                     or type(received) is not int or received < (hi + 1) * 1000
+                    or (row["requested"] is not None and
+                        (type(row["requested"]) is not int or not (hi + 1) * 1000 <= row["requested"] <= received))
                     or received > recorded.timestamp() * 1000 + 1):
                 continue
             left, right = max(since.timestamp(), lo), min(self.through.timestamp(), hi + 1)
