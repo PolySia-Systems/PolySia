@@ -58,7 +58,7 @@ BACKGROUND_REASONS = {"background-on": "Enabled background BUY sampling.",
 CUMULATIVE_SELL = "cumulative verified fills capped by the first share limit per source order"
 
 
-def _policy(budget, exits=False, check_sales=False, cumulative=False):
+def _policy(budget, exits=False, check_sales=False, cumulative=False, sale_limit=None):
     policy = {**capacity_policy(budget), "model": MODEL, "side": "BUY", "entryModel": "displayed whole shares",
             "windowSeconds": 2, "retryEmpty": True, "venueMinimumNotionalEnforced": False,
             "exitModel": EXIT_MODEL if exits else None, "markModel": "on-demand two-sided midpoint"}
@@ -66,10 +66,14 @@ def _policy(budget, exits=False, check_sales=False, cumulative=False):
         policy["checkSalesBeforeEntry"] = True
     if cumulative:
         policy["saleSizing"] = CUMULATIVE_SELL
+    if sale_limit is not None:
+        if not cumulative or not isinstance(sale_limit, str) or not re.fullmatch("[1-9][0-9]{0,9}", sale_limit):
+            raise ValueError("Choose a positive whole-share limit for unattended sales.")
+        policy["backgroundSaleLimit"] = sale_limit
     return policy
 
 
-def create(db, run_id, wallet, name, capital, cap):
+def create(db, run_id, wallet, name, capital, cap, followerAccount=None, backgroundSaleLimit=None):
     wallet = validate_address(wallet)
     if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
         raise ValueError("Give the run a name of 1–80 characters.")
@@ -77,13 +81,21 @@ def create(db, run_id, wallet, name, capital, cap):
     if config[3] > config[2]:
         raise ValueError("The per-entry budget must fit within the starting cash.")
     now = timestamp()
-    policy = _policy(budget_amount(cap), exits=True, check_sales=True, cumulative=True)
-    db.execute("""INSERT INTO public_runs VALUES (?,?,?,?,?,?,?,?,'running',1)
-                  ON CONFLICT(id) DO NOTHING""", (run_id, *config, json.dumps(policy), now, now))
+    policy = _policy(budget_amount(cap), exits=True, check_sales=True, cumulative=True, sale_limit=backgroundSaleLimit)
+    account = validate_address(followerAccount) if followerAccount is not None else None
+    if account and not db.execute("""SELECT 1 FROM saved_wallets WHERE address=?
+            UNION ALL SELECT 1 FROM workspace WHERE json_extract(account,'$.address')=?
+            UNION ALL SELECT 1 FROM public_runs WHERE id=? AND follower_account=?""",
+            (account, account, run_id, account)).fetchone():
+        raise Conflict("Choose a currently watched or saved follower account.")
+    db.execute("""INSERT INTO public_runs VALUES (?,?,?,?,?,?,?,?,'running',1,?)
+                  ON CONFLICT(id) DO NOTHING""", (run_id, *config, json.dumps(policy), now, now, account))
     row = _run(db, run_id)
     initial_cap = _budget(json.loads(row["policy"])["budget"])
-    if (row["wallet"], row["name"], row["capital"], initial_cap) != config:
+    if (row["wallet"], row["name"], row["capital"], initial_cap) != config or row["follower_account"] != account:
         raise Conflict("This run already exists with different settings.")
+    if json.loads(row["policy"]).get("backgroundSaleLimit") != backgroundSaleLimit:
+        raise Conflict("This run already exists with a different unattended sale policy.")
     return report(db, run_id)
 
 
@@ -124,6 +136,7 @@ def _summary(row, totals):
     contributed, cash = _balances(row, totals)
     return {"id": row["id"], "name": row["name"], "wallet": row["wallet"], "mode": MODE,
             "model": MODEL, "asset": "pUSD", "status": row["status"], "revision": row["revision"],
+            "followerAccount": row["follower_account"],
             "createdAt": row["created"], "updatedAt": row["updated"], "capital": units(row["capital"]),
             "entryCap": units(row["entry_cap"]), "cash": units(cash), "gross": units(gross), "fees": units(fee),
             "fundedCapital": units(row["capital"] + deposits), "deposits": units(deposits), "withdrawals": units(withdrawals),
@@ -131,16 +144,17 @@ def _summary(row, totals):
             "entries": entries, "sales": units(sales), "realized": _signed(realized), "exits": exits, "nextBudget": _next_budget(cash, row["entry_cap"])}
 
 
-def listing(db, before=None):
+def listing(db, before=None, account=None):
     cursor = 2**63 - 1
     if before:
         row = db.execute("SELECT rowid FROM public_runs WHERE id=?", (before,)).fetchone()
         if not row:
             raise ValueError("Unknown public run cursor.")
         cursor = row[0]
+    account_filter = None if account in (None, "unassigned") else validate_address(account)
     rows = db.execute("""SELECT r.*, EXISTS(SELECT 1 FROM background_runs b WHERE b.run_id=r.id) AS sampling
-                      FROM public_runs r WHERE r.rowid < ? ORDER BY r.rowid DESC LIMIT ?""",
-                      (cursor, PAGE + 1)).fetchall()
+                      FROM public_runs r WHERE r.rowid < ? AND (? OR r.follower_account IS ?)
+                      ORDER BY r.rowid DESC LIMIT ?""", (cursor, account is None, account_filter, PAGE + 1)).fetchall()
     items = [dict(_summary(row, _totals(db, row["id"])), backgroundEnabled=bool(row["sampling"])) for row in rows[:PAGE]]
     return {"runs": items, "nextCursor": items[-1]["id"] if len(rows) > PAGE else None}
 
@@ -272,6 +286,8 @@ def control(db, run_id, revision, action):
     _check_revision(row, revision)
     if action in BACKGROUND_REASONS:
         status, reason = row["status"], BACKGROUND_REASONS[action]
+        if json.loads(row["policy"]).get("backgroundSaleLimit"):
+            reason = reason.replace("BUY", "BUY and SELL")
     elif action == "enable-exits":
         if row["status"] == "stopped" or _enabled(db, row):
             raise Conflict("This run cannot enable another exit policy.")
@@ -340,7 +356,8 @@ def _transfer(db, run_id, revision, amount, kind):
     db.execute("""INSERT INTO public_decisions(run_id,revision,recorded,kind,reason,shares,gross,fee,receipt)
                   VALUES(?,?,?,?,?,0,0,0,?)""", (run_id, revision + 1, now, kind, reason, json.dumps(receipt)))
     db.execute("UPDATE public_runs SET revision=revision+1, updated=? WHERE id=?", (now, run_id))
-    if kind == "withdraw" and cash - micros < 1_000_000:
+    if (kind == "withdraw" and cash - micros < 1_000_000
+            and not (json.loads(row["policy"]).get("backgroundSaleLimit") and _positions(db, run_id))):
         db.execute("DELETE FROM background_runs WHERE run_id=?", (run_id,))
     return report(db, run_id)
 
@@ -556,15 +573,16 @@ def _sale_decision(run, scope, basis, receipt, recorded, seen, order_history):
         raise ValueError("The sale predates the current position.")
     if cumulative:
         observed = prior.source_micros + int(participant["sharesBaseUnits"])
-        authorized = min(prior.limit or int(scope["maxShares"]), observed // 1_000_000)
-        target = min(int(scope["maxShares"]), authorized - prior.sold)
-        if target < 0:
-            raise ValueError("Invalid cumulative SELL target")
+        order_limit = prior.limit or int(scope["maxShares"])
+        if receipt.get("backgroundSale"):
+            order_limit = min(order_limit, int(json.loads(run["policy"])["backgroundSaleLimit"]))
+        authorized = min(order_limit, observed // 1_000_000)
+        target = min(int(scope["maxShares"]), max(0, authorized - prior.sold))
         quote = measure_sale(receipt, remaining_target=target)
         receipt["portfolioSale"] = {"targetShares": str(target), "orderTargetShares": str(authorized),
                                     "sourceShareMicros": str(observed), "soldBefore": str(prior.sold)}
         if quote["status"] == "skipped":
-            reason = "The source order reached its original share limit." if prior.sold == (prior.limit or int(scope["maxShares"])) else quote["reason"]
+            reason = "The source order reached its original share limit." if prior.sold >= order_limit else quote["reason"]
             return "skipped", reason, (source, *NO_ENTRY[1:]), 0
         if quote["status"] != "estimated":
             raise ValueError("Cumulative sale cannot be verified")
@@ -583,8 +601,14 @@ def _sale_decision(run, scope, basis, receipt, recorded, seen, order_history):
     return "exit", "Modeled a SELL against the delayed displayed bids.", amounts, released
 
 
-def record_sale(db, run_id, revision, token, limit, receipt):
+def record_sale(db, run_id, revision, token, limit, receipt, *, background=False):
     wallet, scope, basis = sale_terms(db, run_id, revision, token, limit)
+    run = _run(db, run_id)
+    if background:
+        approved = json.loads(run["policy"]).get("backgroundSaleLimit")
+        active = db.execute("SELECT 1 FROM background_runs WHERE run_id=?", (run_id,)).fetchone()
+        if not (approved and active and run["status"] == "running" and int(limit) == min(int(approved), int(basis["shares"]))):
+            raise Conflict("Background sale no longer matches the approved policy and holding.")
     now = timestamp()
 
     def seen(source):
@@ -592,17 +616,22 @@ def record_sale(db, run_id, revision, token, limit, receipt):
 
     if isinstance(receipt, dict):
         receipt = receipt.copy()
+        receipt.pop("backgroundSale", None)
+        if background:
+            receipt["backgroundSale"] = True
     try:
         sold, released_since_buy = db.execute("""SELECT coalesce(sum(shares),0),coalesce(sum(released_cost),0)
             FROM public_decisions WHERE run_id=? AND token_id=? AND kind='exit' AND revision >
             (SELECT max(revision) FROM public_decisions WHERE run_id=? AND token_id=? AND kind='entry')""",
             (run_id, token, run_id, token)).fetchone()
         basis["pool"] = (int(basis["shares"]) + sold, _money(basis["cost"]) + released_since_buy)
-        kind, reason, amounts, released = _sale_decision(_run(db, run_id), scope, basis, receipt, now, seen,
+        kind, reason, amounts, released = _sale_decision(run, scope, basis, receipt, now, seen,
                                                           lambda order: _sale_progress(db, run_id, order))
     except (AttributeError, ArithmeticError, IndexError, KeyError, TypeError, ValueError):
         kind, reason, amounts, released = "incomplete", "The SELL observation could not be reconciled with this position.", NO_ENTRY, 0
         receipt = {"wallet": wallet, "exitScope": scope, "status": kind, "reason": reason}
+        if background:
+            receipt["backgroundSale"] = True
     return _save(db, run_id, revision, now, kind, reason, amounts, receipt, released)
 
 
@@ -612,7 +641,8 @@ def _save(db, run_id, revision, now, kind, reason, amounts, receipt, released):
                (run_id, revision + 1, now, kind, reason, *amounts, json.dumps(receipt, allow_nan=False), released))
     db.execute("UPDATE public_runs SET revision=revision+1, updated=? WHERE id=?", (now, run_id))
     state = report(db, run_id)
-    if state["backgroundEnabled"] and not state["nextBudget"]:
+    if (state["backgroundEnabled"] and not state["nextBudget"]
+            and not (state["positions"] and state["policy"].get("backgroundSaleLimit"))):
         db.execute("DELETE FROM background_runs WHERE run_id=?", (run_id,))
         state["backgroundEnabled"] = False
     return state
@@ -623,6 +653,8 @@ def verify_archive(db, version=WORKSPACE_VERSION):
     if db.execute("PRAGMA foreign_key_check").fetchone():
         raise ValueError("A public shadow decision has no run.")
     for run in db.execute("SELECT * FROM public_runs"):
+        if version >= 10 and run["follower_account"] is not None and validate_address(run["follower_account"]) != run["follower_account"]:
+            raise ValueError("Invalid simulated follower account.")
         if (not re.fullmatch("[0-9a-f]{32}", run["id"]) or validate_address(run["wallet"]) != run["wallet"]
                 or not isinstance(run["name"], str) or not 1 <= len(run["name"].strip()) <= 80
                 or not 1_000_000 <= run["entry_cap"] <= run["capital"] <= 1_000_000_000
@@ -634,10 +666,12 @@ def verify_archive(db, version=WORKSPACE_VERSION):
         exit_enabled = policy.get("exitModel") is not None
         check_sales = policy.get("checkSalesBeforeEntry") is True
         cumulative = "saleSizing" in policy
+        sale_limit = policy.get("backgroundSaleLimit")
         active_cap = _budget(policy["budget"])
         if ((exit_enabled and version < 3) or (check_sales and not exit_enabled) or (cumulative and (not exit_enabled or version < 5))
                 or active_cap > run["capital"]
-                or policy != _policy(_next_budget(active_cap, active_cap), exit_enabled, check_sales, cumulative)):
+                or (sale_limit is not None and version < 10)
+                or policy != _policy(_next_budget(active_cap, active_cap), exit_enabled, check_sales, cumulative, sale_limit)):
             raise ValueError("Invalid public shadow policy.")
         _journal_time(last)
         used = set()
@@ -676,9 +710,12 @@ def verify_archive(db, version=WORKSPACE_VERSION):
             elif kind in CONTROLS or kind == "enable-exits" or kind in BACKGROUND_REASONS:
                 if kind in BACKGROUND_REASONS:
                     requested = kind == "background-on"
-                    if version < 5 or status != "running" or requested == background_enabled or (requested and cash < 1_000_000):
+                    available_sale = sale_limit and any(h[0] > 0 for h in holdings.values())
+                    if version < 5 or status != "running" or requested == background_enabled or (requested and cash < 1_000_000 and not available_sale):
                         raise ValueError("Invalid background sampling change.")
                     background_enabled, reason = requested, BACKGROUND_REASONS[kind]
+                    if sale_limit:
+                        reason = reason.replace("BUY", "BUY and SELL")
                 elif kind == "enable-exits":
                     if version < 3 or exit_enabled or status == "stopped":
                         raise ValueError("Invalid change of exit policy.")
@@ -692,6 +729,9 @@ def verify_archive(db, version=WORKSPACE_VERSION):
                     raise ValueError("Unexpected receipt on a public shadow control.")
             else:
                 receipt = json.loads(item["receipt"])
+                if "backgroundSale" in receipt and (receipt["backgroundSale"] is not True or not background_enabled
+                        or not sale_limit or "exitScope" not in receipt or status != "running"):
+                    raise ValueError("Unattended sale outside the approved policy.")
                 if "serverWorker" in receipt and (version < 9 or not background_enabled or "exitScope" in receipt):
                     raise ValueError("Source window was not authorized for background BUY sampling.")
                 if "exitScope" in receipt:
@@ -700,6 +740,8 @@ def verify_archive(db, version=WORKSPACE_VERSION):
                     if (not exit_enabled or status == "stopped" or scope != sell_scope(scope["conditionId"], token, scope["maxShares"])):
                         raise ValueError("SELL receipt outside the run's scope.")
                     held, cost, changed = holdings[(scope["conditionId"], token)]
+                    if receipt.get("backgroundSale") and int(scope["maxShares"]) != min(held, int(sale_limit)):
+                        raise ValueError("Unattended sale scope exceeds or differs from the configured limit.")
                     if not 0 < int(scope["maxShares"]) <= held:
                         raise ValueError("The sale limit exceeds the attributed position.")
                     basis = {"shares": str(held), "cost": units(cost), "lastChangeAt": changed}
@@ -738,7 +780,7 @@ def verify_archive(db, version=WORKSPACE_VERSION):
             if actual != expected:
                 raise ValueError("The public shadow journal disagrees with its recorded amounts.")
             cash += (item["gross"] if kind == "exit" else -item["gross"]) - item["fee"]
-            if cash < 1_000_000:
+            if cash < 1_000_000 and not (sale_limit and any(h[0] > 0 for h in holdings.values())):
                 background_enabled = False
         if version >= 5 and background_enabled != bool(db.execute(
                 "SELECT 1 FROM background_runs WHERE run_id=?", (run["id"],)).fetchone()):

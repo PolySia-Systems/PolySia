@@ -443,6 +443,9 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
             "source": "Polymarket Data API v2 · open positions", "complete": complete,
             "nextCursor": None if complete else "more", "message": "Open ordinary positions",
             "positions": rows,
+            "concentration": ({"conditionId": market_id, "market": "Fixture opening day?",
+                               "marketCount": 1, "percent": "100.0", "tied": False}
+                              if compare_case in ("shared", "partial-shared") else None),
         })
 
     history_reads = []
@@ -551,6 +554,13 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
         expect(comparison.get_by_role("heading", name="Wallet comparison")).to_be_focused()
         expect(comparison.get_by_text(expected, exact=True)).to_be_visible()
         expect(comparison.get_by_text("19,348.35", exact=True)).to_be_visible()
+        if compare_case in ("partial", "partial-shared"):
+            concentration = comparison.locator("article").last.get_by_text("Largest market by value")
+            concentration.click()
+            if compare_case == "partial-shared":
+                expect(comparison.locator("article").last.get_by_text("100.0% of", exact=False)).to_contain_text("wallet-wide percentage is unknown")
+            else:
+                expect(comparison.locator("article").last.get_by_text("Unavailable. This needs", exact=False)).to_be_visible()
         if compare_case == "shared":
             comparison.get_by_text("Compare holding periods", exact=True).click()
             horizon = comparison.get_by_label("When might you need cash?")
@@ -1321,6 +1331,75 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
             page.close()
 
 
+def unattended_sale_journey(pw, cwd: Path):
+    """Use the real worker, ledger and browser with controlled provider fills."""
+    from threading import Event, Thread
+    from unittest.mock import patch
+    from apps.server import background
+    from apps.server.http import LocalServer
+    from apps.server.store import Workspace
+    from test_public_shadow import observed_buy, observed_sell
+
+    store = Workspace(cwd / "unattended-sale.db")
+    follower, other = "0x" + "12" * 20, "0x" + "34" * 20
+    with store.connection() as db:
+        db.executemany("INSERT INTO saved_wallets VALUES (?,?)", [(follower, "Personal"), (other, "Second")])
+    server = LocalServer(0, store)
+    origin = f"http://127.0.0.1:{server.server_port}"
+    closed = Event()
+    def buy(wallet, budget, **options):
+        if not closed.is_set():
+            return {"wallet": wallet, "researchBudget": budget, "status": "waiting", "reason": "Controlled quiet window."}
+        return observed_buy(wallet, budget)
+    chromium = os.environ.get("CHROMIUM_PATH") or shutil.which("chromium")
+    browser = pw.chromium.launch(executable_path=chromium)
+    with patch.object(server, "sample_buy", side_effect=buy), patch.object(server, "sample_sell", side_effect=observed_sell), patch.object(background, "INTERVAL", 8):
+        thread = Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            page = browser.new_page()
+            page.goto(origin + "/#/paper/new")
+            page.get_by_label("Run name").fill("Follow both sides")
+            page.get_by_label("Leader wallet").fill("0x" + "ab" * 20)
+            page.get_by_label("Follower account for this simulation").select_option(follower)
+            page.get_by_label("Starting cash (pUSD)").fill("10")
+            page.get_by_label("Follow sales when background sampling is on").check()
+            page.get_by_label("Maximum shares per leader sale").fill("7")
+            page.get_by_role("button", name="Create shadow run").click()
+            page.get_by_role("button", name="Enable background sampling").click()
+            expect(page.get_by_role("button", name="Disable background sampling")).to_be_visible()
+            run_id = page.url.split("/")[-1]
+            browser.close()
+            closed.set()
+            deadline = time.monotonic() + 42
+            while time.monotonic() < deadline:
+                with urlopen(origin + "/api/v1/public-runs/" + run_id, timeout=2) as reply:
+                    run = json.load(reply)
+                if run["exits"]:
+                    break
+                time.sleep(.4)
+            assert run["entries"] == run["exits"] == 1 and run["positions"][0]["shares"] == "12", run
+            browser = pw.chromium.launch(executable_path=chromium)
+            page = browser.new_page(viewport={"width": 320, "height": 740}, is_mobile=True, has_touch=True)
+            page.goto(origin + "/#/paper")
+            selector = page.get_by_label("Filter runs by follower account")
+            selector.select_option(other)
+            expect(page.get_by_role("link", name=re.compile("^Follow both sides"))).to_have_count(0)
+            selector.select_option(follower)
+            page.get_by_role("link", name=re.compile("^Follow both sides")).click()
+            page.get_by_role("button", name="Pause entries").click()
+            expect(page.get_by_role("heading", name="New entries paused")).to_be_visible()
+            expect(page.get_by_text("7 of 7 targeted shares sold", exact=False)).to_be_visible()
+            expect(page.get_by_text(follower, exact=True)).to_be_visible()
+            check_width(page)
+            print("Closed desktop browser for a controlled BUY and capped SELL. Returned on 320px, filtered follower accounts, found 12 shares and paused.")
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+            browser.close()
+
+
 def shared_background_journey(pw, cwd: Path):
     """Create from the UI, close its entire browser, then return after two decisions and restart."""
     from threading import Event, Thread
@@ -1581,6 +1660,7 @@ def main():
                     change_cap_journey(browser, origin)
                 public_shadow_journey(browser, Path(temp), options.screenshots)
                 shared_background_journey(pw, Path(temp))
+                unattended_sale_journey(pw, Path(temp))
         finally:
             browser.close()
 

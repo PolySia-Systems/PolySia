@@ -11,7 +11,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from .provider import decimal_value, market_end_date, validate_address
-from .store import WORKSPACE_VERSION, add_accent, add_public_exits, add_public_runs, add_saved_wallets, create_schema_v1, verify_saved_wallets
+from .store import WORKSPACE_VERSION, add_accent, add_follower_account, add_public_exits, add_public_runs, add_saved_wallets, create_schema_v1, verify_saved_wallets
 from .background import add_table
 from . import capital_pool
 from .public_shadow import verify_archive
@@ -156,6 +156,8 @@ def _verify_schema(db, version):
             add_accent(reference)
         if version >= 9:
             capital_pool.add_tables(reference)
+        if version >= 10:
+            add_follower_account(reference)
         expected = reference.execute(catalog).fetchall()
     if db.execute(catalog).fetchmany(len(expected) + 1) != expected:
         raise ValueError("The database schema differs from the supported PolySia workspace schema.")

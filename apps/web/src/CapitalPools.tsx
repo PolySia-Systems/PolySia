@@ -77,7 +77,7 @@ export function CapitalPoolSetup({runs}: {runs: Source[]}) {
     {pools.map(pool => <p key={pool.id}><a href={'#/paper/pool-' + pool.id}>{pool.name}</a> · {pool.status}</p>)}
     {issue && <p role="alert">{issue} <button className="text-link" onClick={() => setAttempt(n => n + 1)}>Refresh list</button></p>}
     <details className="paper-sale"><summary>Follow leaders with one simulated balance</summary>
-      <p>Choose runs for different wallets with background BUY sampling enabled. Only future windows count. The server keeps sampling when the browser closes. Original runs keep their own balances.</p>
+      <p>Choose runs for different leaders with background sampling enabled. This portfolio starts with its own simulated cash and follows future BUY windows. Each source account keeps its funds and history.</p>
       {new Set(enabled.map(run => run.wallet)).size < 2
         ? <p>Enable background sampling in two runs for different wallets, then return here. Use Older runs to load more saved choices.</p>
         : <form onSubmit={start}>

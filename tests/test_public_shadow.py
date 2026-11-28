@@ -72,6 +72,28 @@ class PublicPortfolioTests(unittest.TestCase):
         with self.store.connection() as db, patch.object(paper, "timestamp", return_value=STARTED):
             return paper.create(db, ID, WALLET, "Public wallet", capital, cap)
 
+    def test_simulated_follower_attribution_survives_watch_removal_retry_and_restore(self):
+        first, second = "0x" + "01" * 20, "0x" + "02" * 20
+        run_a, run_b = "a" * 32, "b" * 32
+        with self.store.connection() as db:
+            db.executemany("INSERT INTO saved_wallets VALUES (?,?)", [(first, "A"), (second, "B")])
+            paper.create(db, run_a, WALLET, "A", "25", "5", first)
+            paper.create(db, run_b, WALLET, "B", "10", "1", second)
+            paper.withdraw(db, run_a, 1, "4")
+            with self.assertRaises(Conflict):
+                paper.create(db, run_a, WALLET, "A", "25", "5", second)
+            db.execute("DELETE FROM saved_wallets WHERE address=?", (first,))
+            retry = paper.create(db, run_a, WALLET, "A", "25", "5", first)
+            self.assertEqual((retry["cash"], retry["followerAccount"]), ("21", first))
+            with self.assertRaises(Conflict):
+                paper.create(db, "d" * 32, WALLET, "Detached", "25", "5", first)
+        backup = self.root / "accounts.db"
+        copy_workspace(self.store.path, backup)
+        with Workspace(backup).connection() as db:
+            self.assertEqual([r["id"] for r in paper.listing(db, account=first)["runs"]], [run_a])
+            self.assertEqual(paper.listing(db, account=second)["runs"][0]["cash"], "10")
+            self.assertEqual(paper.report(db, run_a, export=True)["withdrawals"], "4")
+
     def test_duplicate_create_source_order_and_frozen_portfolio_survive_restore(self):
         original = self.create()
         self.assertEqual(self.create(), original)

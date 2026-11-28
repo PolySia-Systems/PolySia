@@ -39,6 +39,10 @@ In **Accounts**, paste the public trading wallet address from your Polymarket pr
 
 To follow multiple accounts, enter an optional wallet name and select **Save wallet** for each address. **Saved wallets** switches the active account and reads its positions. Select **Read cash balance** for a fresh reading of that wallet. Wallet names stay in the local workspace.
 
+When creating a public shadow run, you can label its simulated funds with a watched or saved follower account. Choose **Independent simulation** to practice without an account. In **Saved public runs**, filter by follower account to find its runs. Switching watches or removing a saved wallet preserves the run's original account, cash and history.
+
+For a new single-leader simulation, select **Follow sales when background sampling is on**, enter the maximum shares per leader sale, then create the run and enable background sampling. Keep the host running. While the browser is closed, the server alternates BUY windows with SELL windows for held outcomes. A verified matching sale can reduce the simulated position within the cap, held shares and available bids. If buying cash runs low, sale checks continue while shares remain. Pause or stop the run to end background checks. Trades between windows can be missed. Existing runs keep their original policy.
+
 Open **System status → Shadow portfolio overview** to see how many portfolios use background sampling and which runs need review. Select a run name to inspect its decisions, simulated cash, fees and remaining positions.
 
 Open **Notifications** to find past observation warnings and simulated buys or sales across runs, including events recorded while your browser was closed. Repeated events are grouped by run and type. Open the linked run for the latest state and its full decision history.
@@ -65,6 +69,8 @@ In **Saved public runs**, choose **Replay buys with one shared budget** once you
 In **Settings → Appearance**, choose a light or dark theme. Under **Workspace accent**, preview Forest or Ocean, open **View discovery** to see it in use, then return to Settings to publish or discard it. To restore the default, preview and publish Forest.
 
 Use **Buy check at this budget** in Public rankings to filter wallets you have browsed or shortlisted in the current period. An observation at another budget cannot establish a match. The run overview shows the last seven days of cash movements, decisions and outstanding exposure.
+
+In **Compare wallets**, expand **Largest market by value** for each wallet. It shows how much of the displayed open holdings' marked value is in one market. When additional positions exist, the percentage covers the returned page only.
 
 In **Last seven days**, open **How much activity was checked?** to see how much time the saved BUY activity pages cover and the longest gap between checks. A quiet result applies only to the observed window. Choose **Export this period** to save the displayed interval, its cash totals, and the decisions behind them as JSON. If the run changed in the meantime, select **Refresh report** before exporting. **Export run** includes the complete journal and retained observation receipts.
 

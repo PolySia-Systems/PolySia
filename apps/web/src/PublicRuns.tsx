@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ArrowLeft, ArrowRight, Download, Pause, Play, Plus, ScanLine, Square } from 'lucide-react'
-import { api, apiResponse, errorMessage, validBuyBudget } from './api'
+import { api, apiResponse, errorMessage, validBuyBudget, type Workspace } from './api'
 import { SharedReplay } from './SharedReplay'
 import { CapitalPool, CapitalPoolSetup } from './CapitalPools'
 import './public-runs.css'
@@ -10,6 +10,7 @@ interface Summary {
   id: string
   name: string
   wallet: string
+  followerAccount?: string | null
   capital: string
   cash: string
   entryCap: string
@@ -64,7 +65,7 @@ interface Portfolio extends Summary {
   backgroundEnabled: boolean
   exitsEnabled: boolean
   activeExitPolicy: {maxPriceDecrease: string; costMethod: string} | null
-  policy: { checkSalesBeforeEntry?: boolean; saleSizing?: string; delaySeconds: number; maxSignalAgeMs: number; maxPriceIncrease: string; maxLevels: number }
+  policy: { checkSalesBeforeEntry?: boolean; saleSizing?: string; backgroundSaleLimit?: string; delaySeconds: number; maxSignalAgeMs: number; maxPriceIncrease: string; maxLevels: number }
   decisions: Decision[]
   nextCursor: number | null
   positions: Holding[]
@@ -81,7 +82,9 @@ const labels: Record<string, string> = {
   unavailable: 'Observation unavailable', pause: 'Entries paused', resume: 'Entries resumed', stop: 'Run stopped', exit: 'Modeled SELL', 'enable-exits': 'SELL windows enabled',
 }
 
-function Setup() {
+type WalletChoices = Workspace['savedWallets']
+
+function Setup({accounts}: {accounts: WalletChoices}) {
   const params = new URLSearchParams(location.hash.split('?')[1])
   const carriedCap = params.get('cap')
   const initialCap = validBuyBudget(carriedCap) ? carriedCap : '10'
@@ -89,6 +92,9 @@ function Setup() {
   const [name, setName] = useState((params.get('name') || 'Public wallet').slice(0, 80))
   const [capital, setCapital] = useState(Number(initialCap) > 100 ? '' : '100')
   const [cap, setCap] = useState(initialCap)
+  const [account, setAccount] = useState('')
+  const [followSales, setFollowSales] = useState(false)
+  const [saleLimit, setSaleLimit] = useState('')
   const capitalCents = validBuyBudget(capital) ? Math.round(Number(capital) * 100) : 0
   const capCents = validBuyBudget(cap) ? Math.round(Number(cap) * 100) : 0
   const [id] = useState(() => crypto.randomUUID().replaceAll('-', ''))
@@ -99,7 +105,8 @@ function Setup() {
     setBusy(true)
     setError('')
     try {
-      const run = await api<Portfolio>('public-runs/' + id, 'PUT', {wallet, name, capital, cap})
+      const run = await api<Portfolio>('public-runs/' + id, 'PUT', {wallet, name, capital, cap,
+        ...(account && {followerAccount: account}), ...(followSales && {backgroundSaleLimit: saleLimit})})
       location.hash = '/paper/' + run.id
     } catch (cause) { setError(errorMessage(cause)) }
     finally { setBusy(false) }
@@ -114,6 +121,12 @@ function Setup() {
         <label className="field">Run name<input required maxLength={80} value={name} onChange={e => setName(e.target.value)} /></label>
         <label className="field">Leader wallet<input required pattern="0x[0-9a-fA-F]{40}" placeholder="0x…"
           spellCheck={false} autoComplete="off" value={wallet} onChange={e => setWallet(e.target.value.trim())} /></label>
+        {accounts.length > 0 && <label className="field">Follower account for this simulation
+          <select value={account} onChange={e => setAccount(e.target.value)}>
+            <option value="">Independent simulation</option>
+            {accounts.map(a => <option key={a.address} value={a.address}>{a.label && a.label + ' · '}{a.address}</option>)}
+          </select><small>Starting cash is simulated. Selecting an account spends none of its funds.</small>
+        </label>}
         <div className="paper-pair">
           <label className="field">Starting cash (pUSD)<input required type="number" min="1" max="1000" step=".01" value={capital}
             onChange={e => setCapital(e.target.value)} /></label>
@@ -124,6 +137,12 @@ function Setup() {
           If the first buy uses its full cap, at least {((capitalCents - capCents) / 100).toFixed(2)} pUSD
           of your starting cash remains. Later buys can use more of that cash.
         </p>}
+        <label><input type="checkbox" checked={followSales} onChange={e => setFollowSales(e.target.checked)}/>
+          Follow sales when background sampling is on</label>
+        {followSales && <label className="field">Maximum shares per leader sale
+          <input required type="number" min="1" max="9999999999" step="1" value={saleLimit} onChange={e => setSaleLimit(e.target.value)}/>
+          <small>Alternates purchase checks with sale checks for the outcomes you hold. Trades between checks can be missed.</small>
+        </label>}
         <details className="paper-evidence"><summary>Compare per-buy limits</summary>
           <p>Choose how much of your starting cash one purchase can use, including modeled fees.
             A larger purchase can lose more on a single outcome. A smaller one may fall below the market minimum.</p>
@@ -149,7 +168,7 @@ function Setup() {
 }
 
 interface RunList {runs: Summary[]; nextCursor: string | null}
-function Library() {
+function Library({accounts, filter, setFilter}: {accounts: WalletChoices; filter: string; setFilter: (value: string) => void}) {
   const [list, setList] = useState<RunList | null>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -157,7 +176,10 @@ function Library() {
     setBusy(true)
     setError('')
     try {
-      const page = await api<RunList>('public-runs' + (before ? '?before=' + before : ''))
+      const query = new URLSearchParams()
+      if (before) query.set('before', before)
+      if (filter) query.set('account', filter)
+      const page = await api<RunList>('public-runs' + (query.size ? '?' + query : ''))
       setList(old => ({...page, runs: before && old ? [...old.runs, ...page.runs] : page.runs}))
     } catch (cause) { setError(errorMessage(cause)) }
     finally { setBusy(false) }
@@ -165,13 +187,19 @@ function Library() {
   useEffect(() => { void load() }, [])
   return <section className="panel workspace-panel paper-page">
     <div className="panel-head"><h2>Saved public runs</h2><a className="btn primary" href="#/paper/new"><Plus size={16}/> New run</a></div>
+    {(accounts.length > 0 || filter || list?.runs.some(run => run.followerAccount)) && <label className="field">Filter runs by follower account
+      <select value={filter} onChange={e => setFilter(e.target.value)}>
+        <option value="">All accounts</option><option value="unassigned">Independent simulations</option>
+        {accounts.map(a => <option key={a.address} value={a.address}>{a.label && a.label + ' · '}{a.address}</option>)}
+      </select></label>}
     {error && <p className="error" role="alert">{error} <button className="text-link" onClick={() => load(list?.nextCursor ?? undefined)}>Retry</button></p>}
     {!list && busy && <p role="status">Loading runs…</p>}
     {list && !list.runs.length && <div className="paper-empty"><ScanLine size={26} aria-hidden="true"/><h3>Follow your first public wallet</h3>
       <p>Choose a trader from the rankings or start a run with a wallet address. Your simulated cash, positions and decisions are saved here.</p>
       <a className="text-link" href="#/rankings">Browse public rankings <ArrowRight size={15}/></a></div>}
     <div className="paper-list">{list?.runs.map(run => <a key={run.id} href={'#/paper/' + run.id} className="paper-list-row">
-      <div><b>{run.name}</b><small>{run.wallet.slice(0, 8)}…{run.wallet.slice(-6)} · {when(run.updatedAt)}</small></div>
+      <div><b>{run.name}</b><small>{run.wallet.slice(0, 8)}…{run.wallet.slice(-6)} · {when(run.updatedAt)}</small>
+        {run.followerAccount && <small>Follower · {run.followerAccount}</small>}</div>
       <div><span>{labels[run.status]}</span><small>{run.cash} pUSD cash · {run.openCost} pUSD open cost</small><small>{run.entries} {run.entries === 1 ? 'BUY' : 'BUYs'} · {run.exits} {run.exits === 1 ? 'SELL' : 'SELLs'}</small></div>
       <ArrowRight size={16} aria-hidden="true"/></a>)}</div>
     {list?.nextCursor && <button className="btn" disabled={busy} onClick={() => load(list.nextCursor!)}>Older runs</button>}
@@ -440,6 +468,7 @@ function WeekOverview({run, refreshRun}: {run: Portfolio; refreshRun: () => void
           <p>Trades could have occurred between checks or appeared in the public data later. This measure covers purchases. Sale checks follow individual positions.</p>
         </details>
         <p>{run.status === 'stopped' ? 'Sampling has stopped.' : run.status === 'paused' ? 'New entries are paused. Resume to check new purchases.' :
+          run.backgroundEnabled && run.policy.backgroundSaleLimit ? 'Background sampling can follow purchases and sales of held outcomes.' :
           !run.nextBudget ? 'The remaining cash is below the minimum for a BUY window.' : run.backgroundEnabled ? 'Background BUY sampling is enabled.' : 'Manual sampling is active. Choose a window to check for a purchase.'}
           {' '}{run.positions.length} open {run.positions.length === 1 ? 'position' : 'positions'} currently, with a recorded cost of {run.openCost} pUSD.</p>
         {run.positions.length > 0 && <details className="paper-evidence"><summary>Remaining positions</summary>
@@ -589,6 +618,7 @@ function Detail({id}: {id: string}) {
         <div className="panel-head"><h2>{run.name}</h2><span className="badge">{labels[run.status]}</span></div>
         {run.status === 'stopped' && <p className="paper-stop-summary" role="status">{exposureSummary(run)}</p>}
         <small className="muted">Leader wallet</small><code className="paper-wallet">{run.wallet}</code>
+        <small className="muted">Follower account</small><span className="paper-wallet">{run.followerAccount ?? 'Independent simulation'}</span>
         <dl className="paper-metrics">
           <div><dt>Simulated cash</dt><dd>{run.cash} <small>pUSD</small></dd></div>
           <div><dt>Open position cost</dt><dd>{run.openCost} <small>pUSD</small></dd></div>
@@ -608,7 +638,8 @@ function Detail({id}: {id: string}) {
             <label className="field">Simulated withdrawal (pUSD)<input required type="number" min="0.000001" step="0.000001" max={run.cash}
               value={withdrawAmount} onChange={e => setWithdrawAmount(e.target.value)}/></label>
             <p>Up to {run.cash} pUSD is free. Your shares stay open. Future purchases use the remaining cash within your cap.
-              {run.backgroundEnabled && ' Background sampling turns off if less than 1 pUSD remains.'}</p>
+              {run.backgroundEnabled && (run.policy.backgroundSaleLimit && run.positions.length > 0
+                ? ' Sale checks can continue for remaining holdings.' : ' Background sampling turns off if less than 1 pUSD remains.')}</p>
             <button className="btn" disabled={!!busy || !withdrawAmount}>Record simulated withdrawal</button>
           </form>
         </details>}
@@ -633,13 +664,15 @@ function Detail({id}: {id: string}) {
         </details>
         <PortfolioValue key={run.revision} run={run}/>
       </section>
-      {run.status === 'running' && run.nextBudget && <section className="panel workspace-panel" aria-label="Background sampling">
+      {run.status === 'running' && (run.nextBudget || (run.policy.backgroundSaleLimit && run.positions.length > 0)) && <section className="panel workspace-panel" aria-label="Background sampling">
         <div className="panel-head"><h2>{run.backgroundEnabled ? 'Background sampling enabled' : 'Background sampling'}</h2>
           <button className="btn" disabled={!!busy} onClick={() => act(run.backgroundEnabled ? 'background-off' : 'background-on')}>
             {run.backgroundEnabled ? 'Disable background sampling' : 'Enable background sampling'}
           </button>
         </div>
-        <p>While PolySia is running, it checks short BUY windows with your simulated budget, even after you close the browser. Checks are spaced at least 15 seconds apart. Activity between windows can be missed.</p>
+        <p>{run.policy.backgroundSaleLimit
+          ? 'The server checks for purchases and takes turns checking held outcomes for a sale. Each verified leader sale can reduce your simulated holdings by up to ' + run.policy.backgroundSaleLimit + ' shares.'
+          : 'While PolySia is running, it checks short BUY windows with your simulated budget, even after you close the browser.'} Checks are spaced at least 15 seconds apart. Activity between windows can be missed.</p>
         {run.backgroundEnabled && <button className="text-link" disabled={!!busy} onClick={() => load()}>Refresh decisions</button>}
       </section>}
       <WeekOverview run={run} refreshRun={() => void load()}/>
@@ -733,8 +766,12 @@ function Detail({id}: {id: string}) {
   </div>
 }
 
-export function PublicRuns({id}: {id?: string}) {
+export function PublicRuns({id, workspace}: {id?: string; workspace: Workspace}) {
+  const [filter, setFilter] = useState('')
+  const accounts = workspace.savedWallets.slice()
+  const active = workspace.account?.address
+  if (active && !accounts.some(a => a.address === active)) accounts.push({address: active, label: ''})
   if (id?.startsWith('pool-')) return <CapitalPool key={id} id={id.slice(5)} />
-  if (id === 'new') return <Setup/>
-  return id ? <Detail key={id} id={id}/> : <Library/>
+  if (id === 'new') return <Setup accounts={accounts}/>
+  return id ? <Detail key={id} id={id}/> : <Library key={filter} accounts={accounts} filter={filter} setFilter={setFilter}/>
 }

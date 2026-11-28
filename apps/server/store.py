@@ -11,7 +11,7 @@ from . import shadow
 from .provider import validate_address
 
 
-WORKSPACE_VERSION = 9
+WORKSPACE_VERSION = 10
 
 
 class Conflict(ValueError):
@@ -68,6 +68,10 @@ def add_accent(db):
     db.execute("ALTER TABLE workspace ADD COLUMN accent_revision INTEGER NOT NULL DEFAULT 0 CHECK (accent_revision >= 0)")
 
 
+def add_follower_account(db):
+    db.execute("ALTER TABLE public_runs ADD COLUMN follower_account TEXT")
+
+
 def wallet_label(value):
     if not isinstance(value, str) or len(value) > 64 or (value and not value.isprintable()):
         raise ValueError("Use a wallet name of up to 64 printable characters.")
@@ -114,6 +118,9 @@ class Workspace:
                 from .capital_pool import add_tables
                 add_tables(db)
                 db.execute("PRAGMA user_version = 9")
+            if version < 10:
+                add_follower_account(db)
+                db.execute("PRAGMA user_version = 10")
 
     @contextmanager
     def connection(self, write=True):

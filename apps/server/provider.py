@@ -4,6 +4,7 @@ import json
 import re
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 from http.client import HTTPException
 from urllib.error import HTTPError
 from urllib.parse import urlencode
@@ -128,7 +129,31 @@ def _positions(payload: object, address: str) -> tuple[list[dict], str | None]:
         end = market_end_date(row.get("end_date"))
         if end:
             positions[-1]["endDate"] = end
+        try:
+            positions[-1]["markedValue"] = format(decimal_value(row.get("current_value")), "f")
+        except (ValueError, InvalidOperation):
+            pass  # A missing or invalid mark does not invalidate the share count.
     return positions, cursor
+
+
+def market_concentration(positions):
+    totals = {}
+    names = {}
+    for position in positions:
+        if position["status"] != "OPEN" or not Decimal(position["shares"]):
+            continue
+        if "markedValue" not in position:
+            return None
+        condition = position["conditionId"]
+        totals[condition] = totals.get(condition, 0) + Fraction(position["markedValue"])
+        names[condition] = position["market"]
+    total = sum(totals.values())
+    if not total:
+        return None
+    top = max(totals, key=totals.get)
+    tenths = round(1000 * totals[top] / total)
+    return {"conditionId": top, "market": names[top], "marketCount": len(totals),
+            "percent": f"{tenths // 10}.{tenths % 10}", "tied": list(totals.values()).count(totals[top]) > 1}
 
 
 def provider_error(error: Exception) -> str:
@@ -166,6 +191,7 @@ def inspect_account(address: str) -> dict:
         "address": address, "status": "available" if available else "unavailable",
         "source": SOURCE, "checkedAt": checked, "observedAt": checked if available else None,
         "message": message, "positions": positions, "complete": available and cursor is None,
+        "concentration": market_concentration(positions) if available else None,
         "nextCursor": cursor,
     }
 
