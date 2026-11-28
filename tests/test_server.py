@@ -217,13 +217,15 @@ class WorkspaceHttpTest(unittest.TestCase):
             self.assertEqual(400, self.request("POST", sell, {"revision": 2, "maxShares": limit})[0])
         self.assertEqual(409, self.request("POST", sell, {"revision": 1, "maxShares": "5"})[0])
         selling, pricing, release = Event(), Event(), Event()
+        self.assertEqual(400, self.request("POST", route + "/valuation", {"revision": 2, "includePayouts": "false"})[0])
 
         def sample(wallet, scope):
             selling.set()
             self.assertTrue(release.wait(4))
             return {"wallet": wallet, "exitScope": scope, "status": "waiting", "reason": "Quiet window."}
 
-        def price(basis):
+        def price(basis, *, include_payouts):
+            self.assertTrue(include_payouts)
             pricing.set()
             self.assertTrue(release.wait(4))
             return {"revision": basis["revision"]}
@@ -232,7 +234,7 @@ class WorkspaceHttpTest(unittest.TestCase):
               patch("apps.server.http.public_marks.portfolio_value", side_effect=price),
               ThreadPoolExecutor(max_workers=2) as workers):
             sale = workers.submit(self.request, "POST", sell, {"revision": 2, "maxShares": "5"})
-            value = workers.submit(self.request, "POST", route + "/valuation", {"revision": 2})
+            value = workers.submit(self.request, "POST", route + "/valuation", {"revision": 2, "includePayouts": True})
             try:
                 self.assertTrue(selling.wait(3) and pricing.wait(3))
                 self.assertEqual(409, self.request("POST", route + "/valuation", {"revision": 2})[0])

@@ -25,13 +25,23 @@ def _reads(block_hash, calls):
     return [int(r, 16) for r in responses]
 
 
+def finalized_head():
+    try:
+        return polygon._read("eth_getBlockByNumber", ["finalized", False])
+    except (OSError, HTTPException, TypeError, ValueError, RecursionError):
+        return None
+
+
 def read(basis):
+    return read_at(basis, finalized_head())
+
+
+def read_at(basis, head):
     condition, token = basis["conditionId"], basis["tokenId"]
     result = {**basis, "source": polygon.RPC, "chainId": 137, "contract": CTF, "blockNumber": None,
               "blockHash": None, "blockTime": None, "status": "unavailable", "numerator": None,
               "denominator": None, "payout": None, "unit": "USDC.e equivalent"}
     try:
-        head = polygon._read("eth_getBlockByNumber", ["finalized", False])
         digest = head["hash"]
         if not re.fullmatch("0x[0-9a-fA-F]{64}", digest) or not re.fullmatch("0x[0-9a-fA-F]{64}", condition):
             raise ValueError("Invalid block or condition ID")

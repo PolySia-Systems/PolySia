@@ -458,13 +458,17 @@ class Handler(BaseHTTPRequestHandler):
             with store.connection() as db:
                 return public_shadow.create(db, run_id, **config)
         if method == "POST" and action == "valuation":
-            revision = self.body(("revision",))["revision"]
+            data = self.body(("revision",), ("includePayouts",))
+            revision = data["revision"]
+            payouts = data.get("includePayouts", False)
+            if type(payouts) is not bool:
+                raise ValueError("Choose whether to include final payouts.")
             with store.connection(write=False) as db:
                 basis = public_shadow.valuation_basis(db, run_id, revision)
             if not self.server.valuation_lock.acquire(blocking=False):
                 raise RequestError(409, "A portfolio valuation is in progress. Try again when it finishes.")
             try:
-                result = public_marks.portfolio_value(basis)
+                result = public_marks.portfolio_value(basis, include_payouts=payouts)
             finally:
                 self.server.valuation_lock.release()
             with store.connection(write=False) as db:

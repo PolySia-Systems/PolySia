@@ -388,6 +388,39 @@ class PublicPortfolioTests(unittest.TestCase):
             self.assertNotEqual(public_depth.measure_sale(receipt | changes)["status"], "estimated")
         self.assertEqual(observed_sell(WALLET, scope, depth="4.99")["capacity"]["status"], "skipped")
 
+    def test_final_payout_valuation_uses_one_block_and_preserves_cash_and_missing_marks(self):
+        self.create()
+        with self.store.connection() as db:
+            paper.record(db, ID, 1, observed_buy(WALLET, "10.00"))
+            basis = paper.valuation_basis(db, ID, 2)
+        position, = basis["positions"]
+        head = {"hash": "0x" + "fe" * 32}
+        def settlement(row, block):
+            self.assertIs(block, head)
+            return {"734": {"status": "resolved", "payout": "0", "source": "Polygon", "reason": "Final zero."},
+                    "735": {"status": "resolved", "payout": "6.333333", "source": "Polygon", "reason": "Split payout."},
+                    "736": {"status": "unresolved", "payout": None}}[row["tokenId"]]
+        positions = [position, position | {"tokenId": "735"}, position | {"tokenId": "736"}]
+        with (patch.object(public_marks.public_resolution, "finalized_head", return_value=head) as block,
+              patch.object(public_marks.public_resolution, "read_at", side_effect=settlement),
+              patch.object(public_marks, "read_public_json", side_effect=TimeoutError) as book_read):
+            result = public_marks.portfolio_value(basis, include_payouts=True)
+            self.assertEqual((result["equity"], result["cash"], result["netResult"]), ("15.14256", "15.14256", "-9.85744"))
+            self.assertEqual(result["marks"][0]["method"], "final payout")
+            book_read.assert_not_called()
+            block.assert_called_once()
+            mixed = public_marks.portfolio_value(basis | {"positions": positions}, include_payouts=True)
+            self.assertEqual((mixed["priced"], mixed["pricedValue"], mixed["netResult"]), (2, "6.333333", None))
+            self.assertEqual(mixed["marks"][-1]["settlement"]["status"], "unresolved")
+            book_read.assert_called_once()
+            book_read.side_effect = None
+            book_read.return_value = book(asset_id="736", timestamp=str(time.time_ns() // 1_000_000),
+                                          bids=[{"price": "0.48", "size": "1"}], asks=[{"price": "0.5", "size": "1"}])
+            marked = public_marks.portfolio_value(basis | {"positions": positions}, include_payouts=True)
+            self.assertEqual((marked["priced"], marked["equity"]), (3, "30.785893"))
+            with self.store.connection() as db:
+                self.assertEqual(paper.valuation_basis(db, ID, 2), basis)
+
     def test_whole_portfolio_valuation_requires_fresh_prices_for_every_position(self):
         self.create()
         with self.store.connection() as db:
