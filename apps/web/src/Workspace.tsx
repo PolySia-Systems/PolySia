@@ -535,6 +535,7 @@ export function Settings({ workspace, refresh, preview, previewAccent }: Props &
 }
 
 interface OwnerOverview {
+  shared: {id: string; name: string; status: string; enabledSources: number; sources: number}[]
   running: number
   paused: number
   stopped: number
@@ -573,6 +574,12 @@ function PortfolioStatus() {
           </li>
         ))}</ul> : <p>No current observation warnings or stopped runs with open shares.</p>}
         {overview.more && <p>Showing the five most recent items.</p>}
+        {overview.shared.length > 0 && <>
+          <h3>Shared portfolios</h3>
+          <ul>{overview.shared.map(pool => <li key={pool.id}>
+            <a href={'#/paper/pool-' + pool.id}>{pool.name}</a> · {pool.status} · {pool.enabledSources} of {pool.sources} sources sampling
+          </li>)}</ul>
+        </>}
         <p className="workspace-note">Checked {timestamp(overview.checkedAt)}</p>
       </> : error ? <p role="alert">{error}</p> : <p role="status">Reading saved runs…</p>}
       <div className="watch-actions">

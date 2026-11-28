@@ -2,6 +2,7 @@ import tempfile
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Barrier
 from unittest.mock import patch
@@ -32,9 +33,9 @@ class CapitalPoolTests(unittest.TestCase):
         with self.store.connection() as db:
             return capital_pool.create(db, POOL, "Shared buys", capital, IDS)
 
-    def state(self):
+    def state(self, through=None):
         with self.store.connection(write=False) as db:
-            return capital_pool.report(db, POOL)
+            return capital_pool.report(db, POOL, through=through)
 
     def receipt(self, wallet, budget, **options):
         self.assertEqual(options, {"retry_empty": True, "check_sales": True})
@@ -65,11 +66,12 @@ class CapitalPoolTests(unittest.TestCase):
             self.assertEqual((limited["cash"], limited["limitedBuys"]), ("0.2625", 1))
             for run_id in IDS:
                 self.assertEqual(paper.report(db, run_id)["positions"][0]["shares"], "19")
-        self.assertEqual(self.state(), pooled)
+        through = datetime.fromisoformat(pooled["week"]["through"])
+        self.assertEqual(self.state(through), pooled)
         destination = self.store.path.with_suffix(".backup")
         copy_workspace(self.store.path, destination)
         with Workspace(destination).connection(write=False) as db:
-            self.assertEqual(capital_pool.report(db, POOL), pooled)
+            self.assertEqual(capital_pool.report(db, POOL, through=through), pooled)
         with self.store.connection() as db:
             db.execute("UPDATE pool_members SET start_revision=3 WHERE pool_id=? AND run_id=?", (POOL, IDS[0]))
         with self.assertRaisesRegex(ValueError, "shared BUY window"):
@@ -94,6 +96,64 @@ class CapitalPoolTests(unittest.TestCase):
             with self.assertRaises(Conflict):
                 capital_pool.control(db, POOL, 4, "running")
             self.assertTrue(all(paper.report(db, run)["backgroundEnabled"] for run in IDS))
+
+    def test_week_preserves_shared_depth_and_separates_funding_from_result(self):
+        through = datetime(2025, 3, 15, 12, tzinfo=UTC)
+        start = through - timedelta(days=7)
+        with patch.object(capital_pool, "timestamp", return_value=(start - timedelta(days=1)).isoformat()):
+            self.create()
+        for recorded in (start - timedelta(microseconds=1), start):
+            with patch.object(paper, "timestamp", return_value=recorded.isoformat()), patch.object(time, "time", return_value=recorded.timestamp()):
+                background.tick(self.store, self.receipt, self.start)
+        pooled = self.state(through)
+        week = pooled["week"]
+        self.assertTrue(week["available"])
+        self.assertEqual((week["openingCash"], week["funding"], week["buys"], week["purchaseCost"],
+                          week["includedFees"], week["closingCash"], week["netResult"]),
+                         ("15.2625", "0", 1, "3.075", "0.075", pooled["cash"], None))
+        self.assertEqual(week["counts"], {"entry": 1})
+        with self.store.connection() as db:
+            # Deliberately reverse the wall clocks across two different source runs.
+            db.execute("UPDATE public_decisions SET recorded=? WHERE run_id=? AND kind='entry'",
+                       ((start - timedelta(minutes=1)).isoformat(), IDS[1]))
+        changed = self.state(through)
+        self.assertFalse(changed["week"]["available"])
+        self.assertEqual(changed["cash"], pooled["cash"])
+
+    def test_week_counts_overlapping_complete_pages_once_per_wallet_and_shows_gaps(self):
+        through = datetime(2025, 3, 15, 12, tzinfo=UTC)
+        created = through - timedelta(seconds=100)
+        begin = int(created.timestamp())
+        with patch.object(capital_pool, "timestamp", return_value=created.isoformat()):
+            self.create()
+        def quiet(wallet, budget, **options):
+            return {"wallet": wallet, "researchBudget": budget, "status": "waiting", "reason": "Quiet window.",
+                    "windowStartSeconds": begin + 10, "windowEndSeconds": begin + 11,
+                    "activityCoverage": {"complete": wallet == WALLETS[0]}, "activityReceivedMs": (begin + 12) * 1000}
+        for offset in (0, 0, 15):
+            with patch.object(paper, "timestamp", return_value=(created + timedelta(seconds=20 + offset)).isoformat()):
+                background.tick(self.store, quiet, self.start + offset)
+        week = self.state(through)["week"]
+        self.assertEqual((week["funding"], week["openingCash"], week["closingCash"], week["netResult"]),
+                         ("25", "0", "25", "0"))
+        covered, unknown = [week["coverage"][run] for run in IDS]
+        self.assertEqual((covered["receipts"], covered["completePageSeconds"], covered["periodSeconds"]), (2, 2, 100))
+        self.assertEqual(covered["longestGap"], {"from": (created + timedelta(seconds=12)).isoformat(), "through": through.isoformat()})
+        self.assertEqual((unknown["receipts"], unknown["completePageSeconds"], unknown["longestGap"]["from"]),
+                         (1, 0, created.isoformat()))
+        # Pricing evidence and activity-page evidence are independent. A failed
+        # final activity read, however, clears the complete page from the receipt.
+        def missing_book(wallet, budget, **options):
+            receipt = quiet(wallet, budget, **options)
+            receipt.update(status="incomplete", reason="Book unavailable.", activityCoverage={"complete": True},
+                           windowStartSeconds=begin + 40, windowEndSeconds=begin + 41,
+                           activityReceivedMs=(begin + 43) * 1000)
+            return receipt
+        with patch.object(paper, "timestamp", return_value=(created + timedelta(seconds=50)).isoformat()):
+            background.tick(self.store, missing_book, self.start + 15)
+        week = self.state(through)["week"]
+        self.assertEqual(week["counts"]["incomplete"], 1)
+        self.assertEqual(week["coverage"][IDS[1]]["completePageSeconds"], 2)
 
     def test_new_subscriber_excludes_inflight_and_manual_decisions_and_reports_outage(self):
         def subscribe(*args, **kwargs):
@@ -133,7 +193,8 @@ class CapitalPoolTests(unittest.TestCase):
         valid = self.store.path.with_suffix(".valid")
         copy_workspace(self.store.path, valid)
         with Workspace(valid).connection(write=False) as db:
-            self.assertEqual(capital_pool.report(db, POOL), self.state())
+            through = datetime.now(UTC)
+            self.assertEqual(capital_pool.report(db, POOL, through=through), self.state(through))
         modifications = [
             # Substitute a valid manual decision from the same active source.
             "UPDATE pool_windows SET revision=4 WHERE sequence=2",

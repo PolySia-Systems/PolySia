@@ -3,12 +3,46 @@ import { api, errorMessage } from './api'
 
 type Source = {id: string; wallet: string; name: string; backgroundEnabled: boolean}
 type Item = {id: string; name: string; status: 'running' | 'paused' | 'stopped'}
+type Week = {from: string; through: string} & ({available: false; reason: string} | {
+  available: true; openingCash: string; funding: string; purchaseCost: string; includedFees: string
+  closingCash: string; buys: number; counts: Record<string, number>; netResult: string | null
+  coverage: Record<string, {receipts: number; completePageSeconds: number; periodSeconds: number
+    longestGap: {from: string; through: string} | null}>
+})
 type Pool = Item & {
+  week: Week
   generation: number; windows: number; startingCash: string; cost: string; fees: string; cash: string
   limitedBuys: number; missingSaleChecks: number; duplicateOrders: number; otherRecordedDecisions: Record<string, number>
   latestSourceWindow: {recorded: string; reason: string; run_id: string} | null
-  runs: {id: string; name: string; sourceBackgroundEnabled: boolean; recordedBuys: number; modeledBuys: number
+  runs: {id: string; name: string; wallet: string; sourceBackgroundEnabled: boolean; recordedBuys: number; modeledBuys: number
     sharesByToken: Record<string, number>; cost: string}[]
+}
+
+const utc = (value: string) => new Date(value).toLocaleString(undefined, {timeZone: 'UTC', hour12: false})
+
+function PoolWeek({pool}: {pool: Pool}) {
+  const week = pool.week
+  return <section className="paper-valuation" aria-label="Shared portfolio week">
+    <h3>Last seven days</h3>
+    <small>{utc(week.from)} – {utc(week.through)} UTC</small>
+    {week.available ? <>
+      <p>{week.buys} shared {week.buys === 1 ? 'buy' : 'buys'} used {week.purchaseCost} pUSD, including {week.includedFees} in fees.
+        {' '}{week.counts.waiting ?? 0} quiet windows · {(week.counts.incomplete ?? 0) + (week.counts.unavailable ?? 0)} windows with missing evidence.</p>
+      <p>{week.netResult === null ? 'Net result is unknown because shares remain open without a valuation.' : 'Net result was 0 pUSD. The portfolio held only cash.'}</p>
+      <details className="paper-evidence"><summary>Cash and sampling by wallet</summary>
+        <p>Opening cash {week.openingCash} pUSD · Funding {week.funding} pUSD · Closing cash {week.closingCash} pUSD.</p>
+        <p>Coverage counts the time in windows with a complete public activity page. Indexing may lag. Gaps include pauses and time between checks, starting when the portfolio existed.</p>
+        {pool.runs.map(run => {
+          const sample = week.coverage[run.id]
+          return <div className="paper-closed" key={run.id}><a href={'#/paper/' + run.id}>{run.name} · {run.wallet.slice(0, 6)}…{run.wallet.slice(-4)}</a>
+            <p>{sample.receipts} saved {sample.receipts === 1 ? 'window' : 'windows'} · {sample.completePageSeconds.toLocaleString(undefined, {maximumFractionDigits: 3})} seconds covered
+              {' '}of {sample.periodSeconds.toLocaleString(undefined, {maximumFractionDigits: 3})} seconds.</p>
+            {sample.longestGap && <p>Longest gap · {utc(sample.longestGap.from)} – {utc(sample.longestGap.through)} UTC</p>}
+          </div>
+        })}
+      </details>
+    </> : <p>{week.reason}</p>}
+  </section>
 }
 
 export function CapitalPoolSetup({runs}: {runs: Source[]}) {
@@ -87,11 +121,16 @@ export function CapitalPool({id}: {id: string}) {
     {issue && <p role="alert">{issue}</p>}
     {pool && <>
       <p><strong>{pool.status}</strong> · {pool.windows} recorded background windows</p>
+      {pool.status === 'running' && pool.runs.every(run => !run.sourceBackgroundEnabled) &&
+        <p>No source is sampling. Open a source run below to review its status and enable background sampling if available.</p>}
       {pool.latestSourceWindow && <p>Latest <a href={'#/paper/' + pool.latestSourceWindow.run_id}>source window</a> · {new Date(pool.latestSourceWindow.recorded).toLocaleString()} · {pool.latestSourceWindow.reason}</p>}
       <dl className="paper-metrics"><div><dt>Simulated cash left</dt><dd>{pool.cash} <small>pUSD</small></dd></div>
         <div><dt>Open purchase cost</dt><dd>{pool.cost} <small>pUSD</small></dd></div>
         <div><dt>Included fees</dt><dd>{pool.fees} <small>pUSD</small></dd></div></dl>
-      <p>Starting cash was {pool.startingCash} pUSD. Sales and market valuations are unavailable for shared portfolios. The shares below remain open.</p>
+      <p>Starting cash was {pool.startingCash} pUSD. {pool.runs.some(run => run.modeledBuys > 0)
+        ? 'The shares below remain open. Shared portfolios do not model sales or market valuations.'
+        : 'The shared portfolio has no open shares.'}</p>
+      <PoolWeek pool={pool} />
       {pool.runs.map(run => <div key={run.id} className="paper-closed"><a href={'#/paper/' + run.id}>{run.name}</a>
         <p>Source sampling {run.sourceBackgroundEnabled ? 'enabled' : 'off'} · {run.modeledBuys} of {run.recordedBuys} recorded buys modeled · {run.cost} pUSD used</p>
         {Object.entries(run.sharesByToken).map(([token, shares]) => <p key={token}>{shares} shares · Outcome token {token}</p>)}

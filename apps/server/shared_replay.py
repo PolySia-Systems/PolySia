@@ -15,7 +15,7 @@ def replay(db, run_ids, capital):
     return allocate(db, run_ids, capital)
 
 
-def allocate(db, run_ids, capital, *, pool=None):
+def allocate(db, run_ids, capital, *, pool=None, week=None):
     """Price retained BUYs in receipt order, or in immutable forward-pool commit order."""
     cash = public_depth._micros(public_depth.budget_amount(capital))
     starting = cash
@@ -36,7 +36,7 @@ def allocate(db, run_ids, capital, *, pool=None):
         AND kind IN ('waiting','unavailable','incomplete','skipped','duplicate','exit') GROUP BY kind""", values)
     other = dict(covered)
     # Sort just identifiers and times. Receipts contain full books and are read one at a time.
-    buys = db.execute(f"""SELECT d.rowid, d.run_id, source_order, json_extract(receipt,'$.bookReceivedMs') AS received
+    buys = db.execute(f"""SELECT d.rowid, d.run_id, d.recorded, source_order, json_extract(receipt,'$.bookReceivedMs') AS received
                           FROM {source} WHERE {scope} AND kind='entry' ORDER BY {order}""", values)
     used = {}
     seen = set()
@@ -76,6 +76,8 @@ def allocate(db, run_ids, capital, *, pool=None):
         cost = public_depth._micros(estimate["gross"]) + fee
         cash -= cost
         fees += fee
+        if week is not None:
+            week.purchase(row["recorded"], cost, fee)
         run["costMicros"] += cost
         run["modeledBuys"] += 1
         shares = run["sharesByToken"]

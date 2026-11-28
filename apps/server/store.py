@@ -169,6 +169,7 @@ class Workspace:
             return self.settings(db.execute("SELECT * FROM workspace WHERE id = 1").fetchone())
 
     def overview(self):
+        from . import capital_pool
         with self.connection(write=False) as db:
             counts = dict(db.execute("SELECT status, count(*) FROM public_runs GROUP BY status"))
             background = db.execute("SELECT count(*) FROM background_runs").fetchone()[0]
@@ -194,7 +195,7 @@ class Workspace:
             return {"running": counts.get("running", 0), "paused": counts.get("paused", 0),
                     "stopped": counts.get("stopped", 0), "background": background,
                     "issues": [dict(row) for row in issues[:5]], "more": len(issues) > 5,
-                    "checkedAt": timestamp()}
+                    "shared": capital_pool.listing(db), "checkedAt": timestamp()}
 
     def account_revision(self):
         with self.connection(write=False) as db:
