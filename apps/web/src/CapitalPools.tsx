@@ -14,7 +14,7 @@ type Pool = Item & {
   generation: number; windows: number; startingCash: string; cost: string; fees: string; cash: string
   limitedBuys: number; missingSaleChecks: number; duplicateOrders: number; otherRecordedDecisions: Record<string, number>
   latestSourceWindow: {recorded: string; reason: string; run_id: string} | null
-  runs: {id: string; name: string; sourceBackgroundEnabled: boolean; recordedBuys: number; modeledBuys: number
+  runs: {id: string; name: string; wallet: string; sourceBackgroundEnabled: boolean; recordedBuys: number; modeledBuys: number
     sharesByToken: Record<string, number>; cost: string}[]
 }
 
@@ -34,8 +34,8 @@ function PoolWeek({pool}: {pool: Pool}) {
         <p>Coverage counts the time in windows with a complete public activity page. Indexing may lag. Gaps include pauses and time between checks, starting when the portfolio existed.</p>
         {pool.runs.map(run => {
           const sample = week.coverage[run.id]
-          return <div className="paper-closed" key={run.id}><a href={'#/paper/' + run.id}>{run.name} · {run.id.slice(0, 8)}</a>
-            <p>{sample.receipts} saved windows · {sample.completePageSeconds.toLocaleString(undefined, {maximumFractionDigits: 3})} seconds covered
+          return <div className="paper-closed" key={run.id}><a href={'#/paper/' + run.id}>{run.name} · {run.wallet.slice(0, 6)}…{run.wallet.slice(-4)}</a>
+            <p>{sample.receipts} saved {sample.receipts === 1 ? 'window' : 'windows'} · {sample.completePageSeconds.toLocaleString(undefined, {maximumFractionDigits: 3})} seconds covered
               {' '}of {sample.periodSeconds.toLocaleString(undefined, {maximumFractionDigits: 3})} seconds.</p>
             {sample.longestGap && <p>Longest gap · {utc(sample.longestGap.from)} – {utc(sample.longestGap.through)} UTC</p>}
           </div>
@@ -127,7 +127,9 @@ export function CapitalPool({id}: {id: string}) {
       <dl className="paper-metrics"><div><dt>Simulated cash left</dt><dd>{pool.cash} <small>pUSD</small></dd></div>
         <div><dt>Open purchase cost</dt><dd>{pool.cost} <small>pUSD</small></dd></div>
         <div><dt>Included fees</dt><dd>{pool.fees} <small>pUSD</small></dd></div></dl>
-      <p>Starting cash was {pool.startingCash} pUSD. Sales and market valuations are unavailable for shared portfolios. The shares below remain open.</p>
+      <p>Starting cash was {pool.startingCash} pUSD. {pool.runs.some(run => run.modeledBuys > 0)
+        ? 'The shares below remain open. Shared portfolios do not model sales or market valuations.'
+        : 'The shared portfolio has no open shares.'}</p>
       <PoolWeek pool={pool} />
       {pool.runs.map(run => <div key={run.id} className="paper-closed"><a href={'#/paper/' + run.id}>{run.name}</a>
         <p>Source sampling {run.sourceBackgroundEnabled ? 'enabled' : 'off'} · {run.modeledBuys} of {run.recordedBuys} recorded buys modeled · {run.cost} pUSD used</p>
