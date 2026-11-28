@@ -376,7 +376,7 @@ function App() {
                 ))}
               {page === 'rankings' && <PublicRankings />}
               {page === 'notifications' && <Notifications />}
-              {page === 'paper' && <PublicRuns key={location.hash} id={id}/>}
+              {page === 'paper' && <PublicRuns key={location.hash} id={id} workspace={workspace}/>}
               {page === 'accounts' && (
                 <Accounts
                   key={id}

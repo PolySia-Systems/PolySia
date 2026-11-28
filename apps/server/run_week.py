@@ -123,7 +123,7 @@ def export_week(db, run_id, revision, through):
     period = summary(db, run_id, now=end, evidence=decisions)
     state = report(db, run_id)
     return {"formatVersion": 1, "period": period, "decisions": decisions,
-            "run": {key: state[key] for key in ("id", "name", "wallet", "mode", "model", "asset", "createdAt",
+            "run": {key: state[key] for key in ("id", "name", "wallet", "followerAccount", "mode", "model", "asset", "createdAt",
                                                 "capital", "deposits", "withdrawals", "netContributions",
                                                 "policy", "revision", "status", "entryCap",
                                                 "backgroundEnabled", "exitsEnabled", "positions", "openCost")},

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ArrowLeft, ArrowRight, Download, Pause, Play, Plus, ScanLine, Square } from 'lucide-react'
-import { api, apiResponse, errorMessage, validBuyBudget } from './api'
+import { api, apiResponse, errorMessage, validBuyBudget, type Workspace } from './api'
 import { SharedReplay } from './SharedReplay'
 import { CapitalPool, CapitalPoolSetup } from './CapitalPools'
 import './public-runs.css'
@@ -10,6 +10,7 @@ interface Summary {
   id: string
   name: string
   wallet: string
+  followerAccount?: string | null
   capital: string
   cash: string
   entryCap: string
@@ -81,7 +82,9 @@ const labels: Record<string, string> = {
   unavailable: 'Observation unavailable', pause: 'Entries paused', resume: 'Entries resumed', stop: 'Run stopped', exit: 'Modeled SELL', 'enable-exits': 'SELL windows enabled',
 }
 
-function Setup() {
+type WalletChoices = Workspace['savedWallets']
+
+function Setup({accounts}: {accounts: WalletChoices}) {
   const params = new URLSearchParams(location.hash.split('?')[1])
   const carriedCap = params.get('cap')
   const initialCap = validBuyBudget(carriedCap) ? carriedCap : '10'
@@ -89,6 +92,7 @@ function Setup() {
   const [name, setName] = useState((params.get('name') || 'Public wallet').slice(0, 80))
   const [capital, setCapital] = useState(Number(initialCap) > 100 ? '' : '100')
   const [cap, setCap] = useState(initialCap)
+  const [account, setAccount] = useState('')
   const capitalCents = validBuyBudget(capital) ? Math.round(Number(capital) * 100) : 0
   const capCents = validBuyBudget(cap) ? Math.round(Number(cap) * 100) : 0
   const [id] = useState(() => crypto.randomUUID().replaceAll('-', ''))
@@ -99,7 +103,8 @@ function Setup() {
     setBusy(true)
     setError('')
     try {
-      const run = await api<Portfolio>('public-runs/' + id, 'PUT', {wallet, name, capital, cap})
+      const run = await api<Portfolio>('public-runs/' + id, 'PUT', {wallet, name, capital, cap,
+        ...(account && {followerAccount: account})})
       location.hash = '/paper/' + run.id
     } catch (cause) { setError(errorMessage(cause)) }
     finally { setBusy(false) }
@@ -114,6 +119,12 @@ function Setup() {
         <label className="field">Run name<input required maxLength={80} value={name} onChange={e => setName(e.target.value)} /></label>
         <label className="field">Leader wallet<input required pattern="0x[0-9a-fA-F]{40}" placeholder="0x…"
           spellCheck={false} autoComplete="off" value={wallet} onChange={e => setWallet(e.target.value.trim())} /></label>
+        {accounts.length > 0 && <label className="field">Follower account for this simulation
+          <select value={account} onChange={e => setAccount(e.target.value)}>
+            <option value="">Independent simulation</option>
+            {accounts.map(a => <option key={a.address} value={a.address}>{a.label && a.label + ' · '}{a.address}</option>)}
+          </select><small>Starting cash is simulated. Selecting an account spends none of its funds.</small>
+        </label>}
         <div className="paper-pair">
           <label className="field">Starting cash (pUSD)<input required type="number" min="1" max="1000" step=".01" value={capital}
             onChange={e => setCapital(e.target.value)} /></label>
@@ -149,7 +160,7 @@ function Setup() {
 }
 
 interface RunList {runs: Summary[]; nextCursor: string | null}
-function Library() {
+function Library({accounts, filter, setFilter}: {accounts: WalletChoices; filter: string; setFilter: (value: string) => void}) {
   const [list, setList] = useState<RunList | null>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -157,7 +168,10 @@ function Library() {
     setBusy(true)
     setError('')
     try {
-      const page = await api<RunList>('public-runs' + (before ? '?before=' + before : ''))
+      const query = new URLSearchParams()
+      if (before) query.set('before', before)
+      if (filter) query.set('account', filter)
+      const page = await api<RunList>('public-runs' + (query.size ? '?' + query : ''))
       setList(old => ({...page, runs: before && old ? [...old.runs, ...page.runs] : page.runs}))
     } catch (cause) { setError(errorMessage(cause)) }
     finally { setBusy(false) }
@@ -165,13 +179,19 @@ function Library() {
   useEffect(() => { void load() }, [])
   return <section className="panel workspace-panel paper-page">
     <div className="panel-head"><h2>Saved public runs</h2><a className="btn primary" href="#/paper/new"><Plus size={16}/> New run</a></div>
+    {(accounts.length > 0 || filter || list?.runs.some(run => run.followerAccount)) && <label className="field">Filter runs by follower account
+      <select value={filter} onChange={e => setFilter(e.target.value)}>
+        <option value="">All accounts</option><option value="unassigned">Independent simulations</option>
+        {accounts.map(a => <option key={a.address} value={a.address}>{a.label && a.label + ' · '}{a.address}</option>)}
+      </select></label>}
     {error && <p className="error" role="alert">{error} <button className="text-link" onClick={() => load(list?.nextCursor ?? undefined)}>Retry</button></p>}
     {!list && busy && <p role="status">Loading runs…</p>}
     {list && !list.runs.length && <div className="paper-empty"><ScanLine size={26} aria-hidden="true"/><h3>Follow your first public wallet</h3>
       <p>Choose a trader from the rankings or start a run with a wallet address. Your simulated cash, positions and decisions are saved here.</p>
       <a className="text-link" href="#/rankings">Browse public rankings <ArrowRight size={15}/></a></div>}
     <div className="paper-list">{list?.runs.map(run => <a key={run.id} href={'#/paper/' + run.id} className="paper-list-row">
-      <div><b>{run.name}</b><small>{run.wallet.slice(0, 8)}…{run.wallet.slice(-6)} · {when(run.updatedAt)}</small></div>
+      <div><b>{run.name}</b><small>{run.wallet.slice(0, 8)}…{run.wallet.slice(-6)} · {when(run.updatedAt)}</small>
+        {run.followerAccount && <small>Follower · {run.followerAccount}</small>}</div>
       <div><span>{labels[run.status]}</span><small>{run.cash} pUSD cash · {run.openCost} pUSD open cost</small><small>{run.entries} {run.entries === 1 ? 'BUY' : 'BUYs'} · {run.exits} {run.exits === 1 ? 'SELL' : 'SELLs'}</small></div>
       <ArrowRight size={16} aria-hidden="true"/></a>)}</div>
     {list?.nextCursor && <button className="btn" disabled={busy} onClick={() => load(list.nextCursor!)}>Older runs</button>}
@@ -589,6 +609,7 @@ function Detail({id}: {id: string}) {
         <div className="panel-head"><h2>{run.name}</h2><span className="badge">{labels[run.status]}</span></div>
         {run.status === 'stopped' && <p className="paper-stop-summary" role="status">{exposureSummary(run)}</p>}
         <small className="muted">Leader wallet</small><code className="paper-wallet">{run.wallet}</code>
+        <small className="muted">Follower account</small><span className="paper-wallet">{run.followerAccount ?? 'Independent simulation'}</span>
         <dl className="paper-metrics">
           <div><dt>Simulated cash</dt><dd>{run.cash} <small>pUSD</small></dd></div>
           <div><dt>Open position cost</dt><dd>{run.openCost} <small>pUSD</small></dd></div>
@@ -733,8 +754,12 @@ function Detail({id}: {id: string}) {
   </div>
 }
 
-export function PublicRuns({id}: {id?: string}) {
+export function PublicRuns({id, workspace}: {id?: string; workspace: Workspace}) {
+  const [filter, setFilter] = useState('')
+  const accounts = workspace.savedWallets.slice()
+  const active = workspace.account?.address
+  if (active && !accounts.some(a => a.address === active)) accounts.push({address: active, label: ''})
   if (id?.startsWith('pool-')) return <CapitalPool key={id} id={id.slice(5)} />
-  if (id === 'new') return <Setup/>
-  return id ? <Detail key={id} id={id}/> : <Library/>
+  if (id === 'new') return <Setup accounts={accounts}/>
+  return id ? <Detail key={id} id={id}/> : <Library key={filter} accounts={accounts} filter={filter} setFilter={setFilter}/>
 }

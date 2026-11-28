@@ -39,6 +39,8 @@ In **Accounts**, paste the public trading wallet address from your Polymarket pr
 
 To follow multiple accounts, enter an optional wallet name and select **Save wallet** for each address. **Saved wallets** switches the active account and reads its positions. Select **Read cash balance** for a fresh reading of that wallet. Wallet names stay in the local workspace.
 
+When creating a public shadow run, you can label its simulated funds with a watched or saved follower account. Choose **Independent simulation** to practice without an account. In **Saved public runs**, filter by follower account to find its runs. Switching watches or removing a saved wallet preserves the run's original account, cash and history.
+
 Open **System status → Shadow portfolio overview** to see how many portfolios use background sampling and which runs need review. Select a run name to inspect its decisions, simulated cash, fees and remaining positions.
 
 Open **Notifications** to find past observation warnings and simulated buys or sales across runs, including events recorded while your browser was closed. Repeated events are grouped by run and type. Open the linked run for the latest state and its full decision history.

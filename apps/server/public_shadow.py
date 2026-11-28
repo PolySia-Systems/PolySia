@@ -69,7 +69,7 @@ def _policy(budget, exits=False, check_sales=False, cumulative=False):
     return policy
 
 
-def create(db, run_id, wallet, name, capital, cap):
+def create(db, run_id, wallet, name, capital, cap, followerAccount=None):
     wallet = validate_address(wallet)
     if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
         raise ValueError("Give the run a name of 1–80 characters.")
@@ -78,11 +78,17 @@ def create(db, run_id, wallet, name, capital, cap):
         raise ValueError("The per-entry budget must fit within the starting cash.")
     now = timestamp()
     policy = _policy(budget_amount(cap), exits=True, check_sales=True, cumulative=True)
-    db.execute("""INSERT INTO public_runs VALUES (?,?,?,?,?,?,?,?,'running',1)
-                  ON CONFLICT(id) DO NOTHING""", (run_id, *config, json.dumps(policy), now, now))
+    account = validate_address(followerAccount) if followerAccount is not None else None
+    if account and not db.execute("""SELECT 1 FROM saved_wallets WHERE address=?
+            UNION ALL SELECT 1 FROM workspace WHERE json_extract(account,'$.address')=?
+            UNION ALL SELECT 1 FROM public_runs WHERE id=? AND follower_account=?""",
+            (account, account, run_id, account)).fetchone():
+        raise Conflict("Choose a currently watched or saved follower account.")
+    db.execute("""INSERT INTO public_runs VALUES (?,?,?,?,?,?,?,?,'running',1,?)
+                  ON CONFLICT(id) DO NOTHING""", (run_id, *config, json.dumps(policy), now, now, account))
     row = _run(db, run_id)
     initial_cap = _budget(json.loads(row["policy"])["budget"])
-    if (row["wallet"], row["name"], row["capital"], initial_cap) != config:
+    if (row["wallet"], row["name"], row["capital"], initial_cap) != config or row["follower_account"] != account:
         raise Conflict("This run already exists with different settings.")
     return report(db, run_id)
 
@@ -124,6 +130,7 @@ def _summary(row, totals):
     contributed, cash = _balances(row, totals)
     return {"id": row["id"], "name": row["name"], "wallet": row["wallet"], "mode": MODE,
             "model": MODEL, "asset": "pUSD", "status": row["status"], "revision": row["revision"],
+            "followerAccount": row["follower_account"],
             "createdAt": row["created"], "updatedAt": row["updated"], "capital": units(row["capital"]),
             "entryCap": units(row["entry_cap"]), "cash": units(cash), "gross": units(gross), "fees": units(fee),
             "fundedCapital": units(row["capital"] + deposits), "deposits": units(deposits), "withdrawals": units(withdrawals),
@@ -131,16 +138,17 @@ def _summary(row, totals):
             "entries": entries, "sales": units(sales), "realized": _signed(realized), "exits": exits, "nextBudget": _next_budget(cash, row["entry_cap"])}
 
 
-def listing(db, before=None):
+def listing(db, before=None, account=None):
     cursor = 2**63 - 1
     if before:
         row = db.execute("SELECT rowid FROM public_runs WHERE id=?", (before,)).fetchone()
         if not row:
             raise ValueError("Unknown public run cursor.")
         cursor = row[0]
+    account_filter = None if account in (None, "unassigned") else validate_address(account)
     rows = db.execute("""SELECT r.*, EXISTS(SELECT 1 FROM background_runs b WHERE b.run_id=r.id) AS sampling
-                      FROM public_runs r WHERE r.rowid < ? ORDER BY r.rowid DESC LIMIT ?""",
-                      (cursor, PAGE + 1)).fetchall()
+                      FROM public_runs r WHERE r.rowid < ? AND (? OR r.follower_account IS ?)
+                      ORDER BY r.rowid DESC LIMIT ?""", (cursor, account is None, account_filter, PAGE + 1)).fetchall()
     items = [dict(_summary(row, _totals(db, row["id"])), backgroundEnabled=bool(row["sampling"])) for row in rows[:PAGE]]
     return {"runs": items, "nextCursor": items[-1]["id"] if len(rows) > PAGE else None}
 
@@ -623,6 +631,8 @@ def verify_archive(db, version=WORKSPACE_VERSION):
     if db.execute("PRAGMA foreign_key_check").fetchone():
         raise ValueError("A public shadow decision has no run.")
     for run in db.execute("SELECT * FROM public_runs"):
+        if version >= 10 and run["follower_account"] is not None and validate_address(run["follower_account"]) != run["follower_account"]:
+            raise ValueError("Invalid simulated follower account.")
         if (not re.fullmatch("[0-9a-f]{32}", run["id"]) or validate_address(run["wallet"]) != run["wallet"]
                 or not isinstance(run["name"], str) or not 1 <= len(run["name"].strip()) <= 80
                 or not 1_000_000 <= run["entry_cap"] <= run["capital"] <= 1_000_000_000

@@ -430,11 +430,16 @@ class Handler(BaseHTTPRequestHandler):
         query = urlsplit(self.path).query
         before = None
         trades = False
+        account = None
         if query:
             values = parse_qs(query, keep_blank_values=True, strict_parsing=True, max_num_fields=2)
-            if (method != "GET" or action or set(values) - {"before", "view"}
+            if (method != "GET" or action or set(values) - {"before", "view", "account"}
                     or any(len(v) != 1 for v in values.values())):
                 raise ValueError("Unsupported public run query.")
+            if "account" in values:
+                if run_id:
+                    raise ValueError("Choose an account on the run list.")
+                account = values["account"][0]
             if "view" in values:
                 if not run_id or values["view"] != ["trades"]:
                     raise ValueError("Unknown decision history view.")
@@ -451,10 +456,10 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and action in (None, "export"):
             with store.connection(write=False) as db:
                 if run_id is None:
-                    return public_shadow.listing(db, before)
+                    return public_shadow.listing(db, before, account)
                 return public_shadow.report(db, run_id, export=action == "export", before=before, trades=trades)
         if method == "PUT" and run_id and not action:
-            config = self.body(("wallet", "name", "capital", "cap"))
+            config = self.body(("wallet", "name", "capital", "cap"), ("followerAccount",))
             with store.connection() as db:
                 return public_shadow.create(db, run_id, **config)
         if method == "POST" and action == "valuation":
