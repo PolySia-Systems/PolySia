@@ -138,6 +138,21 @@ The local JSON Lines receipt has SHA-256 `a841c9427ff647a4f72f6309b76fe637c70714
 
 The trial ended with the decision to retain polling. The trial revision preserves the WebSocket observer, comparison tests and reproduction command. [Study code and instructions](https://github.com/PolySia-Systems/PolySia/blob/380c9681c66b3153419b8f8a155afb3ede922f09/docs/provider.md#paired-source-decision-26-november-2026)
 
+## Ranked wallets and subsequent activity on 28 November 2026
+
+Before observing trades, the 0.13.0 audit saved the first two provider-ranked P/L pages for each supported period. The eight pages held 80 entries and 62 distinct addresses. All periods still had a continuation cursor. The weekly and monthly samples shared 13 wallets. This sample describes the visible pages of each period.
+
+The 62 addresses were fixed before 06:22:56 UTC. Every wallet had the same 90-second forward window through 06:24:25 UTC. Starting 15 seconds after that window, the audit requested one wallet-specific BUY activity page per address and counted ordinary BUY rows whose timestamps fell inside the interval. All requests succeeded. Twelve wallets returned 61 observed BUY rows in total. One positive page was truncated, so 61 is a lower bound. Fifty wallets returned a complete page with no ordinary BUY. The index can update after retrieval.
+
+| Ranking period | Distinct wallets on two pages | Wallets with an observed BUY |
+| --- | ---: | ---: |
+| Day | 20 | 3 |
+| Week | 20 | 8 |
+| Month | 20 | 8 |
+| All time | 20 | 0 |
+
+Three concurrent readers completed the 62 activity requests in 12.814 seconds. Median request time was 541 ms and the 95th percentile was 940 ms. The audit used public endpoints with zero real spend. The measured times describe one host and interval. A provider rank describes earlier performance. One observed BUY does not establish timely capture, enough depth for a given budget, or a profitable follower return. The four rows overlap and cannot be added to obtain the distinct total.
+
 ## Prospective wallet selection on a second date
 
 On 28 November 2026 the public 0.12.0 executable repeated the earlier wallet-selection pilot in a new time period. A 100-row public BUY page yielded 78 eligible wallets under the two-minute lookback. The wallet with the most distinct transaction/outcome references and a hash-selected control were fixed before observation. Each used 30 simulated pUSD and a 5 pUSD cap. Six two-second windows aligned per wallet. The run made 41 public requests in about 130 seconds. Real spend was zero.
