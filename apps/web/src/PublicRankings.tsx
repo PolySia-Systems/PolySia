@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, ChevronLeft, ChevronRight, RefreshCw, Search, X } from 'lucide-react'
 import { api, type Account, errorMessage, validBuyBudget } from './api'
 import { PositionSnapshot, WalletValue } from './Workspace'
-import { PublicObservation, type BudgetTest, type WalletCheck } from './PublicObservation'
+import { checkPublicBuy, PublicObservation, type BudgetTest, type WalletCheck } from './PublicObservation'
 import { PublicHistory } from './PublicHistory'
 import './rankings.css'
 
@@ -35,7 +35,7 @@ function profitLabel(raw: string) {
   return (value > 0 ? '+' : '') + format.format(value)
 }
 const utc = (stamp: string) => new Date(stamp).toLocaleString('en-GB', { timeZone: 'UTC' }) + ' UTC'
-type PickedTrader = PublicTrader & { rankedAt: string }
+type PickedTrader = PublicTrader & { rankedAt: string; lastCheck?: WalletCheck }
 const evidenceLabels = {
   all: 'All wallets on this page',
   estimated: 'Modeled buy observed',
@@ -67,7 +67,21 @@ function readShortlist(period: Period): PickedTrader[] {
       typeof row.pnl === 'string' && /^-?\d+(?:\.\d+)?$/.test(row.pnl) && Number.isFinite(Number(row.pnl)) &&
       typeof row.volumeShares === 'string' && /^\d+(?:\.\d+)?$/.test(row.volumeShares) && Number.isFinite(Number(row.volumeShares)) &&
       typeof row.rankedAt === 'string' && Number.isFinite(Date.parse(row.rankedAt)))
-    return valid && new Set(rows.map(row => row.address)).size === rows.length ? rows : []
+    if (!valid || new Set(rows.map(row => row.address)).size !== rows.length) return []
+    return rows.map(row => {
+      const {lastCheck, ...trader} = row
+      const stamp = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) &&
+        value > 0 && Number.isFinite(new Date(value * 1000).getTime())
+      if (lastCheck && typeof lastCheck.budget === 'string' && validBuyBudget(lastCheck.budget) &&
+          ['estimated', 'skipped', 'inconclusive'].includes(lastCheck.outcome) &&
+          typeof lastCheck.result === 'string' && lastCheck.result.length <= 1500 &&
+          (lastCheck.windowEnd === null ? lastCheck.outcome === 'inconclusive' && lastCheck.windowStart == null :
+            stamp(lastCheck.windowEnd) && stamp(lastCheck.windowStart) && lastCheck.windowStart <= lastCheck.windowEnd) &&
+          (lastCheck.coverage === undefined || typeof lastCheck.coverage === 'string' && lastCheck.coverage.length <= 80)) {
+        return {...trader, lastCheck}
+      }
+      return trader
+    })
   } catch {
     return []
   }
@@ -94,16 +108,48 @@ function PublicComparison({
   close,
   inspect,
   checks,
+  budgetTest,
+  storageIssue,
 }: {
   traders: PickedTrader[]
   period: Period
   close: () => void
   inspect: (trader: PickedTrader) => void
   checks: Record<string, WalletCheck>
+  budgetTest: BudgetTest
+  storageIssue: boolean
 }) {
   const [reads, setReads] = useState<Record<string, ComparisonRead>>({})
   const heading = useRef<HTMLHeadingElement>(null)
   const [left, right] = traders
+  const [progress, setProgress] = useState('')
+  const [running, setRunning] = useState(false)
+  const active = useRef<{cancelled: boolean} | null>(null)
+  const {budget, setBudget, saveCheck} = budgetTest
+  useEffect(() => () => { active.current = null }, [])
+  async function checkPair() {
+    if (active.current || !validBuyBudget(budget)) return
+    const task = {cancelled: false}
+    active.current = task
+    setRunning(true)
+    let completed = 0
+    for (const trader of traders) {
+      setProgress(`Checking ${trader.name} · ${completed + 1} of 2`)
+      let check: WalletCheck
+      try {
+        check = (await checkPublicBuy(trader.address, budget)).check
+      } catch (cause) {
+        check = {budget, outcome: 'inconclusive', windowEnd: null, result: errorMessage(cause)}
+      }
+      if (active.current !== task) return
+      if (task.cancelled) break
+      saveCheck(trader.address, check)
+      completed++
+    }
+    active.current = null
+    setRunning(false)
+    setProgress(task.cancelled ? `Stopped after ${completed} of 2 checks.` : 'Both checks finished.')
+  }
   useEffect(() => {
     let current = true
     heading.current?.focus()
@@ -166,6 +212,25 @@ function PublicComparison({
           : 'Marked equity change net of external flows'}{' '}
         · Volume in shares. The rank, P/L and volume below are snapshots from the time each wallet was selected.
       </p>
+      <div className="stack wallet-check-summary">
+        <h3>Compare buying power</h3>
+        <p>Check one two-second window per wallet, one after the other. Market prices can change between checks.
+          Each check uses public data and spends no money. A quiet window leaves buying power unknown.</p>
+        <div className="observation-form">
+          <label className="field">Budget per buy (pUSD)
+            <input type="number" inputMode="decimal" min="1" max="1000" step=".01" value={budget} disabled={running}
+              onChange={e => { setBudget(e.target.value); setProgress('') }} />
+          </label>
+          <button className="btn primary" disabled={running || !validBuyBudget(budget)} onClick={checkPair}>Check both wallets</button>
+          {running && <button className="btn" disabled={active.current?.cancelled} onClick={() => {
+            if (active.current) active.current.cancelled = true
+            setProgress('Stopping. The public request already sent may finish.')
+          }}>Stop checking</button>}
+        </div>
+        {!validBuyBudget(budget) && <small>Enter 1 to 1,000 pUSD in whole cents.</small>}
+        {progress && <p role="status">{progress}</p>}
+        {storageIssue && <p role="status">Browser storage is unavailable. Results may be lost when you leave.</p>}
+      </div>
       <div className="comparison">
         {traders.map((trader) => {
           const read = reads[trader.address]
@@ -176,6 +241,14 @@ function PublicComparison({
             <article key={trader.address} className="compare-card public-compare-card">
               <h3>{trader.name}</h3>
               <code>{trader.address}</code>
+              <div className="wallet-check-summary">
+                <strong>{check ? 'Buy check · ' + check.budget + ' pUSD' : 'Buy check'}</strong>
+                {check && <div>{evidenceLabels[check.outcome]}</div>}
+                <p>{check ? check.result : 'No check at this budget.'}</p>
+                {check?.windowEnd != null && <small>Window ended {utc(new Date(check.windowEnd * 1000).toISOString())}</small>}
+                {check?.coverage && <small className="muted"> · {check.coverage}</small>}
+                {!check && trader.lastCheck && <small>Last saved check used {trader.lastCheck.budget} pUSD.</small>}
+              </div>
               <small className="muted">Rank read {utc(trader.rankedAt)}</small>
               <dl className="facts">
                 <div>
@@ -206,11 +279,6 @@ function PublicComparison({
                   <dt>Shared open markets</dt><dd>{shared.length} of {markets.size} shown</dd>
                 </div>}
               </dl>
-              <div className="wallet-check-summary">
-                <strong>{check ? 'Buy check · ' + check.budget + ' pUSD' : 'Buy check'}</strong>
-                <p>{check ? check.result : 'Open this wallet to test a simulated buy.'}</p>
-                {check?.windowEnd != null && <small>Window ended {utc(new Date(check.windowEnd * 1000).toISOString())}</small>}
-              </div>
               <p className="workspace-note muted">
                 {account?.observedAt
                   ? 'Retrieved ' +
@@ -338,10 +406,18 @@ export function PublicRankings() {
   const [budget, setBudget] = useState('10')
   const [checksByBudget, setChecksByBudget] = useState<Record<string, Record<string, WalletCheck>>>({})
   const [filter, setFilter] = useState<EvidenceFilter>('all')
-  const checks = validBuyBudget(budget) ? checksByBudget[Number(budget).toFixed(2)] ?? {} : {}
   const [query, setQuery] = useState('')
   const [selected, select] = useState<string | null>(null)
   const [picks, setPicks] = useState<PickedTrader[]>(() => readShortlist(period))
+  const latestPicks = useRef(picks)
+  latestPicks.current = picks
+  const activePeriod = useRef(period)
+  activePeriod.current = period
+  const checks = validBuyBudget(budget) ? {
+    ...Object.fromEntries(picks.filter(pick => pick.lastCheck && Number(pick.lastCheck.budget) === Number(budget))
+      .map(pick => [pick.address, pick.lastCheck!])),
+    ...checksByBudget[Number(budget).toFixed(2)],
+  } : {}
   const [storageIssue, setStorageIssue] = useState(false)
   const unsaved = useRef<Partial<Record<Period, PickedTrader[]>>>({})
   const [comparing, setComparing] = useState(false)
@@ -393,6 +469,7 @@ export function PublicRankings() {
     return () => window.removeEventListener('storage', sync)
   }, [period])
   function updatePicks(next: PickedTrader[]) {
+    latestPicks.current = next
     setPicks(next)
     try {
       if (next.length) localStorage.setItem(shortlistKey(period), JSON.stringify(next))
@@ -404,6 +481,14 @@ export function PublicRankings() {
       setStorageIssue(true)
     }
   }
+  function saveCheck(wallet: string, result: WalletCheck) {
+    const key = Number(result.budget).toFixed(2)
+    setChecksByBudget(old => ({...old, [key]: {...old[key], [wallet]: result}}))
+    if (period === activePeriod.current && latestPicks.current.some(pick => pick.address === wallet)) {
+      updatePicks(latestPicks.current.map(pick => pick.address === wallet ? {...pick, lastCheck: result} : pick))
+    }
+  }
+  const budgetTest = {budget, setBudget, saveCheck}
   // Snapshots only. Filtering never requests a new page, profile or observation.
   const filtering = filter !== 'all'
   const candidates = useMemo(() => {
@@ -576,7 +661,7 @@ export function PublicRankings() {
         {(board?.status === 'available' || (filtering && picks.length > 0)) && (
           <>
             {filtering && <p className="workspace-note" role="status">{validBuyBudget(budget)
-              ? `${matching.length} of ${candidates.length} browsed or shortlisted wallets match. Results use each wallet’s latest check at ${budget} pUSD in this visit.`
+              ? `${matching.length} of ${candidates.length} browsed or shortlisted wallets match. Results use the latest available check at ${budget} pUSD.`
               : 'Enter a budget from 1 to 1,000 pUSD in whole cents to filter checks.'}</p>}
             {matching.length ? (
               <div className="public-list" ref={list}>
@@ -609,7 +694,7 @@ export function PublicRankings() {
                               setComparing(false)
                               updatePicks(
                                 e.target.checked
-                                  ? [...picks, row]
+                                  ? [...picks, {...row, lastCheck: checks[row.address]}]
                                   : picks.filter((pick) => pick.address !== row.address),
                               )
                             }}
@@ -680,6 +765,8 @@ export function PublicRankings() {
           traders={picks}
           period={period}
           checks={checks}
+          budgetTest={budgetTest}
+          storageIssue={storageIssue}
           inspect={pick => openProfile(pick.address, compareButton.current, true)}
           close={() => {
             setComparing(false)
@@ -694,10 +781,7 @@ export function PublicRankings() {
           period={period}
           trader={trader}
           rankedAt={ranked?.rankedAt ?? picked?.rankedAt}
-          budgetTest={{budget, setBudget, saveCheck: (wallet, result) => {
-            const key = Number(result.budget).toFixed(2)
-            setChecksByBudget(old => ({...old, [key]: {...old[key], [wallet]: result}}))
-          }}}
+          budgetTest={budgetTest}
           close={() => {
             select(null)
             if (returnToComparison.current) setComparing(true)

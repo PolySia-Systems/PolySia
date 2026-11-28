@@ -870,6 +870,79 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     compare.click()
     expect(comparison.get_by_role("heading", name="Wallet comparison")).to_be_visible()
     expect(comparison.get_by_text("19,348.35", exact=True)).to_be_visible()
+    # Run the two saved wallets with the same cap while the board is offline.
+    pair_budget = comparison.get_by_label("Budget per buy (pUSD)")
+    pair_button = comparison.get_by_role("button", name="Check both wallets")
+    pair_budget.fill("0.5")
+    expect(pair_button).to_be_disabled()
+    pair_budget.fill("7.50")
+    held = []
+    def held_at(index):
+        deadline = time.monotonic() + 5
+        while len(held) <= index and time.monotonic() < deadline:
+            # A request event can precede delivery to the Playwright route handler.
+            page.wait_for_timeout(10)
+        assert len(held) > index, "The queued observation was never requested"
+        return held[index]
+
+    def hold_observation(route: Route):
+        assert route.request.method == "POST" and route.request.post_data_json == {"budget": "7.50"}
+        held.append(route)
+    page.route("**/api/v1/public/traders/*/observe", hold_observation)
+    with page.expect_request("**/observe"):
+        pair_button.click()
+    expect(comparison.get_by_text("Checking Fixture Lumen · 1 of 2")).to_be_visible()
+    expect(pair_budget).to_be_disabled()
+    comparison.get_by_role("button", name="Stop checking").click()
+    held_at(0).fulfill(status=503, json={"error": "Discarded response."})
+    expect(comparison.get_by_text("Stopped after 0 of 2 checks.")).to_be_visible()
+    assert len(held) == 1
+    with page.expect_request("**/observe"):
+        pair_button.click()
+    comparison.get_by_role("button", name="Back to rankings").click()
+    held_at(1).fulfill(status=503, json={"error": "Discarded response."})
+    compare.click()
+    expect(comparison.get_by_text("Discarded response.", exact=True)).to_have_count(0)
+    assert len(held) == 2
+    with page.expect_request("**/observe"):
+        pair_button.click()
+    assert urlsplit(held_at(2).request.url).path.endswith(wallet + "/observe")
+    first = {"schemaVersion": 2, "wallet": wallet, "researchBudget": "7.50",
+             "windowStartSeconds": sample_time, "windowEndSeconds": sample_time + 1,
+             "status": "observed", "reason": "Public BUY and book matched.",
+             "capacity": {"status": "estimated", "shares": "4", "budget": "7.50", "reason": "Displayed capacity estimate."},
+             "activityCoverage": {"rowsReturned": 1, "ordinaryBuyRows": 1, "complete": True}}
+    with page.expect_request("**/observe"):
+        held_at(2).fulfill(json=first)
+    expect(comparison.get_by_text("Checking Fixture Stone · 2 of 2")).to_be_visible()
+    assert urlsplit(held_at(3).request.url).path.endswith(other + "/observe")
+    second = {**first, "wallet": other, "windowStartSeconds": sample_time + 9, "windowEndSeconds": sample_time + 10,
+              "capacity": {"status": "skipped", "budget": "7.50", "reason": "The budget cannot cover the minimum shares."}}
+    held_at(3).fulfill(json=second)
+    expect(comparison.get_by_text("Both checks finished.")).to_be_visible()
+    expect(comparison.get_by_text("4 shares at the displayed prices")).to_be_visible()
+    expect(comparison.get_by_text("The budget cannot cover the minimum shares.")).to_be_visible()
+    page.set_viewport_size({"width": 390, "height": 844})
+    check_width(page)
+    capture(page, output, "public-paired-buy-checks-mobile")
+    page.reload()
+    compare.click()
+    expect(comparison.get_by_text("Last saved check used 7.50 pUSD.")).to_have_count(2)
+    pair_budget.fill("7.5")
+    expect(comparison.get_by_text("4 shares at the displayed prices")).to_be_visible()
+    expect(comparison.get_by_text("The budget cannot cover the minimum shares.")).to_be_visible()
+    pair_budget.fill("7.50")
+    with page.expect_request("**/observe"):
+        pair_button.click()
+    with page.expect_request("**/observe"):
+        held_at(4).fulfill(status=503, json={"error": "Public read interrupted."})
+    held_at(5).fulfill(json={**first, "wallet": other, "researchBudget": "19"})
+    expect(comparison.get_by_text("Inconclusive check", exact=True)).to_have_count(2)
+    expect(comparison.get_by_text("Public read interrupted.")).to_be_visible()
+    expect(comparison.get_by_text("The observation used a different budget.")).to_be_visible()
+    expect(comparison.get_by_text("4 shares at the displayed prices")).to_have_count(0)
+    expect(pair_budget).to_have_value("7.50")
+    page.unroute("**/api/v1/public/traders/*/observe", hold_observation)
     comparison.get_by_role("button", name="Back to rankings").click()
     page.set_viewport_size({"width": 390, "height": 844})
     shortlist.get_by_role("button", name="Remove Fixture Lumen from shortlist").click()

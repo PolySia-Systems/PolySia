@@ -88,6 +88,8 @@ export interface WalletCheck {
   outcome: 'estimated' | 'skipped' | 'inconclusive'
   budget: string
   windowEnd: number | null
+  windowStart?: number
+  coverage?: string
   result: string
 }
 
@@ -95,6 +97,33 @@ export interface BudgetTest {
   budget: string
   setBudget: (value: string) => void
   saveCheck: (address: string, check: WalletCheck) => void
+}
+
+export async function checkPublicBuy(address: string, budget: string, retryEmpty = false) {
+  const options = retryEmpty ? {budget, retryEmpty: true} : {budget}
+  const receipt = await api<Receipt>('public/traders/' + address + '/observe', 'POST', options)
+  if (receipt.wallet !== address) throw new Error('The observation identified a different wallet.')
+  const checkedBudget = receipt.researchBudget ?? receipt.capacity?.budget
+  if (checkedBudget !== undefined && (!validBuyBudget(checkedBudget) || Number(checkedBudget) !== Number(budget) ||
+      (receipt.capacity && Number(receipt.capacity.budget) !== Number(budget)))) {
+    throw new Error('The observation used a different budget.')
+  }
+  let check: WalletCheck = {budget, outcome: 'inconclusive', windowEnd: null,
+    result: 'The observation did not confirm the budget used.'}
+  if (checkedBudget !== undefined) {
+    if (!Number.isSafeInteger(receipt.windowEndSeconds) || !Number.isSafeInteger(receipt.windowStartSeconds) ||
+        receipt.windowStartSeconds <= 0 || receipt.windowEndSeconds < receipt.windowStartSeconds ||
+        !Number.isFinite(new Date(receipt.windowEndSeconds * 1000).getTime())) {
+      throw new Error('The observation has no valid window end time.')
+    }
+    const capacity = receipt.capacity
+    const page = receipt.activityCoverage
+    check = {budget: checkedBudget, windowStart: receipt.windowStartSeconds, windowEnd: receipt.windowEndSeconds,
+      outcome: capacity?.status === 'estimated' || capacity?.status === 'skipped' ? capacity.status : 'inconclusive',
+      result: capacity?.status === 'estimated' ? capacity.shares + ' shares at the displayed prices' : capacity?.reason ?? receipt.reason,
+      coverage: page ? (page.complete ? 'Complete activity page' : 'First activity page only') : 'Activity coverage unknown'}
+  }
+  return {receipt, check}
 }
 
 export function PublicObservation({ address, name, budget, setBudget, saveCheck }: { address: string; name: string } & BudgetTest) {
@@ -111,28 +140,9 @@ export function PublicObservation({ address, name, budget, setBudget, saveCheck 
     setReceipt(null)
     setBusy(true)
     try {
-      const options = retryEmpty ? { budget, retryEmpty: true } : { budget }
-      const result = await api<Receipt>('public/traders/' + address + '/observe', 'POST', options)
-      if (result.wallet !== address) throw new Error('The observation identified a different wallet.')
-      const checkedBudget = result.researchBudget ?? result.capacity?.budget
-      if (checkedBudget !== undefined && Number(checkedBudget) !== Number(budget)) {
-        throw new Error('The observation used a different budget.')
-      }
-      if (checkedBudget !== undefined) {
-        if (!Number.isSafeInteger(result.windowEndSeconds) || result.windowEndSeconds <= 0 ||
-            !Number.isFinite(new Date(result.windowEndSeconds * 1000).getTime())) {
-          throw new Error('The observation has no valid window end time.')
-        }
-        const capacity = result.capacity
-        const summary = capacity?.status === 'estimated' ? capacity.shares + ' shares at the displayed prices'
-          : capacity ? capacity.reason : result.reason
-        const outcome = capacity?.status === 'estimated' || capacity?.status === 'skipped' ? capacity.status : 'inconclusive'
-        saveCheck(address, {budget: checkedBudget, windowEnd: result.windowEndSeconds, result: summary, outcome})
-      } else {
-        saveCheck(address, {budget, outcome: 'inconclusive', windowEnd: null,
-          result: 'The observation did not confirm the budget used.'})
-      }
-      setReceipt(result)
+      const result = await checkPublicBuy(address, budget, retryEmpty)
+      saveCheck(address, result.check)
+      setReceipt(result.receipt)
     } catch (cause) {
       const message = errorMessage(cause)
       setError(message)
