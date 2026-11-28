@@ -10,7 +10,7 @@ from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from pathlib import Path
-from threading import Event, Thread
+from threading import Barrier, Event, Thread
 
 from apps.server import public_shadow
 from apps.server.archive import copy_workspace
@@ -513,6 +513,31 @@ class WorkspaceHttpTest(unittest.TestCase):
         destination = self.root / "completed.db"
         copy_workspace(store.path, destination)
         self.assertEqual(Workspace(destination).get_run(run["id"]), run)
+
+    def test_competing_backups_publish_one_verified_snapshot(self):
+        first = self.server.store
+        second = Workspace(self.root / "second.db")
+        second.set_theme(1, 0, "dark")
+        target = self.root / "shared-backup.db"
+        ready = Barrier(2)
+        publish = os.link
+
+        def publish_together(staging, destination):
+            ready.wait(timeout=5)
+            publish(staging, destination)
+
+        with patch("apps.server.archive.os.link", side_effect=publish_together), ThreadPoolExecutor(2) as pool:
+            jobs = [(store, pool.submit(copy_workspace, store.path, target)) for store in (first, second)]
+            winners = []
+            for store, job in jobs:
+                try:
+                    job.result(timeout=10)
+                    winners.append(store)
+                except FileExistsError:
+                    pass
+        self.assertEqual(len(winners), 1)
+        self.assertEqual(Workspace(target).read(), winners[0].read())
+        self.assertEqual(list(self.root.glob(".polysia-backup-*")), [])
 
     def test_online_backup_and_restore_to_new_database_preserve_workspace(self):
         env = {**os.environ, "POLYSIA_DB": str(self.root / "workspace.db")}

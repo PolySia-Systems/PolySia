@@ -220,3 +220,5 @@ class CapitalPoolTests(unittest.TestCase):
             db.execute("UPDATE pool_windows SET sequence=-sequence WHERE pool_id=?", ("d" * 32,))
         with self.assertRaisesRegex(ValueError, "commit order"):
             copy_workspace(self.store.path, self.store.path.with_suffix(".bad-order"))
+        self.assertFalse(self.store.path.with_suffix(".bad-order").exists())
+        self.assertEqual(list(self.store.path.parent.glob(".polysia-backup-*")), [])

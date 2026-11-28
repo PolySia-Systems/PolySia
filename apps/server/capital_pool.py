@@ -2,6 +2,7 @@
 
 import json
 import re
+from contextlib import closing
 from datetime import UTC, datetime
 from itertools import zip_longest
 
@@ -140,9 +141,9 @@ def verify(db):
         raise ValueError("A shared portfolio record has a missing reference.")
     previous = 0
     boundaries = {0} | {r[0] for r in db.execute("SELECT boundary FROM pool_controls")}
-    records = db.execute("""SELECT w.*,json_extract(d.receipt,'$.serverWorker') AS marker
-        FROM worker_windows w JOIN public_decisions d USING(run_id,revision) ORDER BY ordinal""")
-    for r in records:
+    records = """SELECT w.*,json_extract(d.receipt,'$.serverWorker') AS marker
+        FROM worker_windows w JOIN public_decisions d USING(run_id,revision) ORDER BY ordinal"""
+    for r in db.execute(records):
         expected = [r["ordinal"], r["claim"], r["opened"], r["completed"]]
         if (r["ordinal"] <= 0 or not re.fullmatch("[0-9a-f]{32}", r["claim"])
                 or type(r["opened"]) is not int or type(r["completed"]) is not int
@@ -188,7 +189,8 @@ def verify(db):
             if epoch < generation or revision <= revisions.get(run_id, 0):
                 raise ValueError("Shared observations are out of order.")
             generation, revisions[run_id] = epoch, revision
-    elected = db.execute(ELIGIBLE + " ORDER BY c.pool_id,w.ordinal")
-    saved = db.execute("SELECT pool_id,generation,run_id,revision FROM pool_windows ORDER BY pool_id,sequence")
-    if any(a != b for a, b in zip_longest(elected, saved)):
-        raise ValueError("Shared portfolio windows differ from the authorized background claims or their commit order.")
+    saved = "SELECT pool_id,generation,run_id,revision FROM pool_windows ORDER BY pool_id,sequence"
+    with (closing(db.execute(ELIGIBLE + " ORDER BY c.pool_id,w.ordinal")) as elected_rows,
+          closing(db.execute(saved)) as saved_rows):
+        if any(a != b for a, b in zip_longest(elected_rows, saved_rows)):
+            raise ValueError("Shared portfolio windows differ from the authorized background claims or their commit order.")
