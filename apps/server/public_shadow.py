@@ -138,9 +138,10 @@ def listing(db, before=None):
         if not row:
             raise ValueError("Unknown public run cursor.")
         cursor = row[0]
-    rows = db.execute("SELECT * FROM public_runs WHERE rowid < ? ORDER BY rowid DESC LIMIT ?",
+    rows = db.execute("""SELECT r.*, EXISTS(SELECT 1 FROM background_runs b WHERE b.run_id=r.id) AS sampling
+                      FROM public_runs r WHERE r.rowid < ? ORDER BY r.rowid DESC LIMIT ?""",
                       (cursor, PAGE + 1)).fetchall()
-    items = [_summary(row, _totals(db, row["id"])) for row in rows[:PAGE]]
+    items = [dict(_summary(row, _totals(db, row["id"])), backgroundEnabled=bool(row["sampling"])) for row in rows[:PAGE]]
     return {"runs": items, "nextCursor": items[-1]["id"] if len(rows) > PAGE else None}
 
 
@@ -464,6 +465,8 @@ def _decision(run, budget, receipt, recorded, seen):
 
 
 def record(db, run_id, revision, receipt):
+    if isinstance(receipt, dict) and "serverWorker" in receipt:
+        receipt = {key: value for key, value in receipt.items() if key != "serverWorker"}
     wallet, budget, _ = sampling_terms(db, run_id, revision)
     now = timestamp()
 
@@ -689,6 +692,8 @@ def verify_archive(db, version=WORKSPACE_VERSION):
                     raise ValueError("Unexpected receipt on a public shadow control.")
             else:
                 receipt = json.loads(item["receipt"])
+                if "serverWorker" in receipt and (version < 9 or not background_enabled or "exitScope" in receipt):
+                    raise ValueError("Source window was not authorized for background BUY sampling.")
                 if "exitScope" in receipt:
                     scope = receipt["exitScope"]
                     token = scope["tokenId"]

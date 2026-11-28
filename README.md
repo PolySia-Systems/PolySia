@@ -41,15 +41,21 @@ To follow multiple accounts, enter an optional wallet name and select **Save wal
 
 Open **System status → Shadow portfolio overview** to see how many portfolios use background sampling and which runs need review. Select a run name to inspect its decisions, simulated cash, fees and remaining positions.
 
+Open **Notifications** to find past observation warnings and simulated buys or sales across runs, including events recorded while your browser was closed. Repeated events are grouped by run and type. Open the linked run for the latest state and its full decision history.
+
 ## Try your first replay
 
 1. In **Discover**, choose **Try a shadow replay**, then **Start shadow**. Keep the default budget for this example.
 2. Select **Observe next signal** twice. The first fictional purchase fills. The second fills only partly. Look at the share count after each purchase.
 3. Choose **Stop run**. You can still see the shares you hold. To revisit the result later, open **Scenario replays**.
 
-To try a public wallet, open **Public rankings** and choose a period. Use **Next page** to explore more ranked wallets, or paste a wallet address. Set **Budget per buy** and open a trader. **Check next buy** tests one short window using public data. **Set up public shadow run** carries your wallet and per-buy cap into the simulation. Choose the total starting cash before creating the run. A quiet window leaves the wallet’s suitability unknown. You can also select two wallets across pages to compare their holdings and any buy checks from this visit.
+To try a public wallet, open **Public rankings** and choose a period. Use **Next page** to explore more ranked wallets, or paste a wallet address. Set **Budget per buy** and open a trader. **Check next buy** tests one short window using public data. **Set up public shadow run** carries your wallet and per-buy cap into the simulation. Choose the total starting cash before creating the run. A quiet window leaves the wallet’s suitability unknown. Select two wallets across pages, then choose **Compare wallets → Check both wallets** to test the same budget on each. The checks run one after the other. Read the time, page coverage and result on each wallet card. Your shortlist keeps the latest check for each saved wallet in this browser. Enter the same budget when you return to see those results again.
 
 ## Updates and help
+
+In a two-wallet comparison, **Compare holding periods** checks the scheduled market end dates on each returned positions page against the day you may need your cash. The comparison reports missing dates. Settlement time and the ability to sell early depend on the market.
+
+To follow several leaders prospectively with one simulated balance, enable background BUY sampling on runs for at least two different wallets. Open **Saved public runs → Follow leaders with one simulated balance**, choose the runs and starting cash, and start the shared portfolio. Close the browser while the server stays online. Reopen **Shared background portfolios** to inspect cash, entry cost, holdings and missed windows. Pausing or stopping the shared portfolio preserves its positions and each source run's settings. Shared portfolios currently model purchases only.
 
 In **Saved public runs**, choose **Replay buys with one shared budget** once you have two or more runs. Select the runs, enter one simulated starting balance and replay their recorded buys together. Each purchase uses the remaining cash and displayed shares. The replay leaves positions open and shows the modeled cost for each run.
 
@@ -62,6 +68,8 @@ In **Last seven days**, choose **Export this period** to save the displayed inte
 In a public run, **Add simulated cash** records a contribution separately from gains and fees. Adding cash preserves a pause. **Decision history → Recheck public activity** lets you revisit a quiet BUY window if the provider indexed trades later. A recheck keeps the original decision and portfolio balances intact.
 
 While a run is active or paused, **Withdraw simulated cash** removes up to the free cash shown. Shares stay open. Future purchases are limited by the cash left and the saved per-entry cap. Withdrawing below 1 pUSD turns off background sampling. The weekly report and its export show withdrawals separately from trading results.
+
+Under **Open simulated positions**, choose **Check final payout** for an outcome. A supported Polygon condition can show a positive payout, a final zero, or an unresolved result. The check shows gross collateral for simulated shares. The journal and cash balance change only through a recorded portfolio action.
 
 Public rankings remembers your two selected wallets for each ranking period in this browser. If the provider is unavailable, you can reopen the saved comparison and check its retrieval dates.
 

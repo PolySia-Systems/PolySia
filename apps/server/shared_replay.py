@@ -12,6 +12,11 @@ def replay(db, run_ids, capital):
             or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{32}", value) for value in run_ids)
             or len(set(run_ids)) != len(run_ids)):
         raise ValueError("Select two or more distinct saved public runs.")
+    return allocate(db, run_ids, capital)
+
+
+def allocate(db, run_ids, capital, *, pool=None):
+    """Price retained BUYs in receipt order, or in immutable forward-pool commit order."""
     cash = public_depth._micros(public_depth.budget_amount(capital))
     starting = cash
     placeholders = ",".join("?" for _ in run_ids)
@@ -20,13 +25,19 @@ def replay(db, run_ids, capital):
         runs[row["id"]] = {**dict(row), "recordedBuys": 0, "modeledBuys": 0, "sharesByToken": {}, "costMicros": 0}
     if len(runs) != len(run_ids):
         raise ValueError("One of the selected public runs is no longer available.")
-    covered = db.execute(f"""SELECT kind,count(*) FROM public_decisions WHERE run_id IN ({placeholders})
-        AND kind IN ('waiting','unavailable','incomplete','skipped','duplicate','exit') GROUP BY kind""", run_ids)
+    source = "public_decisions d"
+    order = "received,d.run_id,d.revision"
+    scope = f"d.run_id IN ({placeholders})"
+    values = run_ids
+    if pool is not None:
+        source += " JOIN pool_windows w ON w.run_id=d.run_id AND w.revision=d.revision"
+        scope, values, order = "w.pool_id=?", (pool,), "w.sequence"
+    covered = db.execute(f"""SELECT kind,count(*) FROM {source} WHERE {scope}
+        AND kind IN ('waiting','unavailable','incomplete','skipped','duplicate','exit') GROUP BY kind""", values)
     other = dict(covered)
     # Sort just identifiers and times. Receipts contain full books and are read one at a time.
-    buys = db.execute(f"""SELECT rowid, run_id, source_order, json_extract(receipt,'$.bookReceivedMs') AS received
-                          FROM public_decisions WHERE run_id IN ({placeholders}) AND kind='entry'
-                          ORDER BY received,run_id,revision""", run_ids)
+    buys = db.execute(f"""SELECT d.rowid, d.run_id, source_order, json_extract(receipt,'$.bookReceivedMs') AS received
+                          FROM {source} WHERE {scope} AND kind='entry' ORDER BY {order}""", values)
     used = {}
     seen = set()
     fees = duplicates = insufficient = missing = 0
@@ -34,9 +45,8 @@ def replay(db, run_ids, capital):
     for row in buys:
         run = runs[row["run_id"]]
         run["recordedBuys"] += 1
-        if first is None:
-            first = row["received"]
-        last = row["received"]
+        first = row["received"] if first is None else min(first, row["received"])
+        last = row["received"] if last is None else max(last, row["received"])
         key = (run["wallet"], row["source_order"])
         if key in seen:
             duplicates += 1

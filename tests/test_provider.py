@@ -24,6 +24,13 @@ def envelope(rows, more=False):
 
 
 class AccountReadTests(unittest.TestCase):
+    def test_optional_market_date_preserves_missing_evidence(self):
+        for value, expected in (("2028-02-29", "2028-02-29"), ("2027-02-29", None), (None, None)):
+            with self.subTest(value=value):
+                snapshot = self.read(envelope([row(end_date=value)]))
+                self.assertEqual(snapshot["status"], "available")
+                self.assertEqual(snapshot["positions"][0].get("endDate"), expected)
+
     def test_wallet_aggregate_keeps_reported_precision_and_real_zero(self):
         for raw in ("248434.9443", "100000000000000000000000.0001", "0.00"):
             with self.subTest(raw=raw), patch.object(provider, "build_opener") as opener:

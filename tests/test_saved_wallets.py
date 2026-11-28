@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from apps.server import background, public_shadow
+from apps.server import background, notifications, public_shadow
 from apps.server.store import Conflict, Workspace, verify_saved_wallets
 from test_public_shadow import ID, STARTED, WALLET, observed_buy
 
@@ -85,3 +85,17 @@ class SavedWalletTests(unittest.TestCase):
         summary = self.store.overview()
         self.assertEqual((summary["running"], summary["background"], summary["stopped"]), (0, 0, 1))
         self.assertEqual([(item["id"], item["kind"]) for item in summary["issues"]], [(ID, "exposure")])
+
+    def test_notifications_group_repeated_failures_and_retain_history_after_recovery(self):
+        with self.store.connection() as db:
+            run = public_shadow.create(db, ID, WALLET, "First run", "25", "10")
+            for kind in ("unavailable", "unavailable", "waiting"):
+                run = public_shadow.record(db, ID, run["revision"], {"status": kind, "reason": "Window " + kind,
+                                         "wallet": WALLET, "researchBudget": "10.00"})
+        self.assertEqual(self.store.overview()["issues"], [])
+        with Workspace(self.path).connection(write=False) as db:
+            item, = notifications.recent(db, "warnings")["items"]
+            self.assertEqual((item["id"], item["kind"], item["occurrences"], item["revision"]), (ID, "unavailable", 2, 3))
+            self.assertEqual(notifications.recent(db, "trades")["items"], [])
+            with self.assertRaises(ValueError):
+                notifications.recent(db, "other")

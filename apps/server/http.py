@@ -262,6 +262,31 @@ class Handler(BaseHTTPRequestHandler):
             return store.read()
         if path == API + "/workspace/overview" and method == "GET":
             return store.overview()
+        if path == API + "/workspace/notifications" and method == "GET":
+            from .notifications import recent
+            query = parse_qs(urlsplit(self.path).query, keep_blank_values=True, strict_parsing=True, max_num_fields=1)
+            if set(query) - {"category"}:
+                raise ValueError("Choose a supported notification category.")
+            with store.connection(write=False) as db:
+                return recent(db, query.get("category", ["warnings"])[0])
+        if path == API + "/capital-pools" or path.startswith(API + "/capital-pools/"):
+            from . import capital_pool
+            match = re.fullmatch(API + r"/capital-pools(?:/([0-9a-f]{32})(?:/(control))?)?", path)
+            if not match or urlsplit(self.path).query:
+                raise RequestError(404, "Unknown shared portfolio route.")
+            pool, control = match.groups()
+            if method == "GET" and not control:
+                with store.connection(write=False) as db:
+                    return capital_pool.report(db, pool) if pool else {"pools": capital_pool.listing(db)}
+            if method == "PUT" and pool and not control:
+                data = self.body(("name", "capital", "runIds"))
+                with store.connection() as db:
+                    return capital_pool.create(db, pool, data["name"], data["capital"], data["runIds"])
+            if method == "POST" and control:
+                data = self.body(("generation", "status"))
+                with store.connection() as db:
+                    return capital_pool.control(db, pool, data["generation"], data["status"])
+            raise RequestError(405, "Use a supported shared portfolio action.")
         if path == API + "/public-runs" or path.startswith(API + "/public-runs/"):
             return self.public_runs_api(path, method)
         if path == API + "/public/leaders" and self.command == "GET":
@@ -372,19 +397,20 @@ class Handler(BaseHTTPRequestHandler):
             self.body(())
             from .study import review_waiting_window
             return review_waiting_window(store, recheck[1], int(recheck[2]))
-        position = re.fullmatch(API + r"/public-runs/([0-9a-f]{32})/positions/([0-9]{1,78})/(mark|observe-sell)", path)
+        position = re.fullmatch(API + r"/public-runs/([0-9a-f]{32})/positions/([0-9]{1,78})/(mark|resolution|observe-sell)", path)
         if position:
             if method != "POST" or urlsplit(self.path).query:
                 raise RequestError(405, "Use the position action with the displayed run revision.")
             run_id, token, action = position.groups()
-            if action == "mark":
+            if action in ("mark", "resolution"):
+                from . import public_resolution
                 revision = self.body(("revision",))["revision"]
                 with store.connection(write=False) as db:
                     basis = public_shadow.position_basis(db, run_id, token, revision)
-                mark = public_marks.read_mark(basis)
+                result = public_marks.read_mark(basis) if action == "mark" else public_resolution.read(basis)
                 with store.connection(write=False) as db:
                     public_shadow.require_revision(db, run_id, revision)
-                return mark
+                return result
             body = self.body(("revision", "maxShares"))
             revision, limit = body["revision"], body["maxShares"]
             with store.connection(write=False) as db:

@@ -5,7 +5,7 @@ import sqlite3
 from time import time
 from uuid import uuid4
 
-from . import public_shadow
+from . import capital_pool, public_shadow
 from .store import Conflict
 
 INTERVAL = 15
@@ -52,6 +52,7 @@ def tick(store, sample, now=None):
             db.execute("DELETE FROM background_runs WHERE run_id=?", (run_id,))
             return
         claim = uuid4().hex
+        opened = capital_pool.control_boundary(db)
         db.execute("UPDATE background_runs SET due=?,claim=? WHERE run_id=?",
                    (started + CLAIM_SECONDS, claim, run_id))
 
@@ -77,6 +78,7 @@ def tick(store, sample, now=None):
         if receipt is not None:
             try:
                 result = public_shadow.record(db, run_id, revision, receipt)
+                capital_pool.capture(db, run_id, result["revision"], claim, opened)
                 if not result["nextBudget"]:
                     db.execute("DELETE FROM background_runs WHERE run_id=?", (run_id,))
                     return

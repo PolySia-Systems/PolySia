@@ -2,9 +2,11 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ArrowLeft, ArrowRight, Download, Pause, Play, Plus, ScanLine, Square } from 'lucide-react'
 import { api, apiResponse, errorMessage, validBuyBudget } from './api'
 import { SharedReplay } from './SharedReplay'
+import { CapitalPool, CapitalPoolSetup } from './CapitalPools'
 import './public-runs.css'
 
 interface Summary {
+  backgroundEnabled: boolean
   id: string
   name: string
   wallet: string
@@ -174,6 +176,7 @@ function Library() {
       <ArrowRight size={16} aria-hidden="true"/></a>)}</div>
     {list?.nextCursor && <button className="btn" disabled={busy} onClick={() => load(list.nextCursor!)}>Older runs</button>}
     {list && list.runs.length > 1 && <SharedReplay runs={list.runs} />}
+    {list && <CapitalPoolSetup runs={list.runs} />}
   </section>
 }
 
@@ -186,6 +189,40 @@ interface Mark {
   bookTimeMs: number | null
   checkedMs: number
   reason: string
+}
+
+interface Resolution {
+  status: 'resolved' | 'unresolved' | 'unavailable'
+  reason: string
+  numerator: string | null
+  denominator: string | null
+  payout: string | null
+  unit: string
+  blockNumber: number | null
+  blockTime: string | null
+}
+
+function PositionResolution({route, revision, token}: {route: string; revision: number; token: string}) {
+  const [result, setResult] = useState<Resolution | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  async function check() {
+    setResult(null)
+    setBusy(true)
+    setError('')
+    try { setResult(await api<Resolution>(route + '/positions/' + token + '/resolution', 'POST', {revision})) }
+    catch (cause) { setError(errorMessage(cause)) }
+    finally { setBusy(false) }
+  }
+  return <div className="paper-mark">
+    <button className="text-link" disabled={busy} onClick={check}>{busy ? 'Checking resolution…' : result ? 'Refresh resolution' : 'Check final payout'}</button>
+    <div role="status">{error || (result && <>
+      {result.status === 'resolved' && <p><b>{result.numerator === '0' ? 'Resolved with zero payout.' : 'Resolved with a positive payout.'}</b>
+        {' '}These simulated shares would pay {result.payout} {result.unit} before costs. No cash has been credited.</p>}
+      <p>{result.reason}</p>
+      {result.blockNumber !== null && result.blockTime && <small>Polygon finalized block {result.blockNumber} · {when(result.blockTime)}</small>}
+    </>)}</div>
+  </div>
 }
 
 function PositionMark({route, revision, token}: {route: string; revision: number; token: string}) {
@@ -632,6 +669,7 @@ function Detail({id}: {id: string}) {
             <div><b>{p.shares} shares</b><small>{p.cost} pUSD cost including fees</small></div>
           </div>{p.soldShares !== '0' && <small>{p.soldShares} shares sold to date · {p.realized} pUSD realized</small>}
             <PositionMark key={run.revision} route={route} revision={run.revision} token={p.tokenId}/>
+            <PositionResolution key={'resolution-' + run.revision} route={route} revision={run.revision} token={p.tokenId}/>
             {run.activeExitPolicy && run.status !== 'stopped' && <PositionSale shares={p.shares} policy={run.activeExitPolicy} cumulative={!!run.policy.saleSizing} busy={!!busy}
               observe={limit => act('sell', {token: p.tokenId, limit})}/>}
           </div>)}</div>}
@@ -681,6 +719,7 @@ function Detail({id}: {id: string}) {
 }
 
 export function PublicRuns({id}: {id?: string}) {
+  if (id?.startsWith('pool-')) return <CapitalPool key={id} id={id.slice(5)} />
   if (id === 'new') return <Setup/>
   return id ? <Detail key={id} id={id}/> : <Library/>
 }

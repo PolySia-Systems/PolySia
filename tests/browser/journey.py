@@ -251,6 +251,10 @@ def exercise(browser: Browser, origin: str, output: Path | None):
     expect(page.get_by_role("heading", name="Account scope")).to_be_visible()
     expect(holdings).to_have_count(0)
 
+    page.get_by_role("link", name="Notifications", exact=True).click()
+    expect(page.get_by_text("No observation warnings have been recorded.")).to_be_visible()
+    page.get_by_label("Show notifications").select_option("trades")
+    expect(page.get_by_text("No simulated buys or sales have been recorded.")).to_be_visible()
     page.get_by_role("link", name="Settings", exact=True).click()
     forest = page.get_by_role("button", name="Forest (default)", exact=True)
     ocean = page.get_by_role("button", name="Ocean", exact=True)
@@ -420,7 +424,8 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
         address = urlsplit(route.request.url).path.rsplit("/", 1)[1]
         assert route.request.method == "GET" and address in (wallet, other, unranked)
         profile_reads.append(address)
-        position = {"market": "Fixture opening day?", "conditionId": market_id, "outcome": "Yes", "shares": "7.125", "status": "OPEN"}
+        position = {"market": "Fixture opening day?", "conditionId": market_id, "outcome": "Yes", "shares": "7.125",
+                    "status": "OPEN", "endDate": "2026-12-12"}
         rows = [position]
         if address == other:
             if compare_case == "error":
@@ -547,6 +552,13 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
         expect(comparison.get_by_text(expected, exact=True)).to_be_visible()
         expect(comparison.get_by_text("19,348.35", exact=True)).to_be_visible()
         if compare_case == "shared":
+            comparison.get_by_text("Compare holding periods", exact=True).click()
+            horizon = comparison.get_by_label("When might you need cash?")
+            horizon.fill("2026-12-11")
+            expect(comparison.get_by_text("1 of 1 open positions shown", exact=False)).to_be_visible()
+            horizon.fill("2026-12-12")
+            expect(comparison.get_by_text("0 of 1 open positions shown", exact=False)).to_be_visible()
+            comparison.get_by_text("Compare holding periods", exact=True).click()
             expect(comparison.get_by_text("1 of 1 shown", exact=True)).to_have_count(2)
             expect(comparison.get_by_text("Fixture opening day?", exact=True)).to_have_count(1)
             expect(comparison.get_by_text("Fixture Lumen · Yes", exact=True)).to_be_visible()
@@ -866,6 +878,79 @@ def public_rankings_journey(browser: Browser, origin: str, output: Path | None):
     compare.click()
     expect(comparison.get_by_role("heading", name="Wallet comparison")).to_be_visible()
     expect(comparison.get_by_text("19,348.35", exact=True)).to_be_visible()
+    # Run the two saved wallets with the same cap while the board is offline.
+    pair_budget = comparison.get_by_label("Budget per buy (pUSD)")
+    pair_button = comparison.get_by_role("button", name="Check both wallets")
+    pair_budget.fill("0.5")
+    expect(pair_button).to_be_disabled()
+    pair_budget.fill("7.50")
+    held = []
+    def held_at(index):
+        deadline = time.monotonic() + 5
+        while len(held) <= index and time.monotonic() < deadline:
+            # A request event can precede delivery to the Playwright route handler.
+            page.wait_for_timeout(10)
+        assert len(held) > index, "The queued observation was never requested"
+        return held[index]
+
+    def hold_observation(route: Route):
+        assert route.request.method == "POST" and route.request.post_data_json == {"budget": "7.50"}
+        held.append(route)
+    page.route("**/api/v1/public/traders/*/observe", hold_observation)
+    with page.expect_request("**/observe"):
+        pair_button.click()
+    expect(comparison.get_by_text("Checking Fixture Lumen · 1 of 2")).to_be_visible()
+    expect(pair_budget).to_be_disabled()
+    comparison.get_by_role("button", name="Stop checking").click()
+    held_at(0).fulfill(status=503, json={"error": "Discarded response."})
+    expect(comparison.get_by_text("Stopped after 0 of 2 checks.")).to_be_visible()
+    assert len(held) == 1
+    with page.expect_request("**/observe"):
+        pair_button.click()
+    comparison.get_by_role("button", name="Back to rankings").click()
+    held_at(1).fulfill(status=503, json={"error": "Discarded response."})
+    compare.click()
+    expect(comparison.get_by_text("Discarded response.", exact=True)).to_have_count(0)
+    assert len(held) == 2
+    with page.expect_request("**/observe"):
+        pair_button.click()
+    assert urlsplit(held_at(2).request.url).path.endswith(wallet + "/observe")
+    first = {"schemaVersion": 2, "wallet": wallet, "researchBudget": "7.50",
+             "windowStartSeconds": sample_time, "windowEndSeconds": sample_time + 1,
+             "status": "observed", "reason": "Public BUY and book matched.",
+             "capacity": {"status": "estimated", "shares": "4", "budget": "7.50", "reason": "Displayed capacity estimate."},
+             "activityCoverage": {"rowsReturned": 1, "ordinaryBuyRows": 1, "complete": True}}
+    with page.expect_request("**/observe"):
+        held_at(2).fulfill(json=first)
+    expect(comparison.get_by_text("Checking Fixture Stone · 2 of 2")).to_be_visible()
+    assert urlsplit(held_at(3).request.url).path.endswith(other + "/observe")
+    second = {**first, "wallet": other, "windowStartSeconds": sample_time + 9, "windowEndSeconds": sample_time + 10,
+              "capacity": {"status": "skipped", "budget": "7.50", "reason": "The budget cannot cover the minimum shares."}}
+    held_at(3).fulfill(json=second)
+    expect(comparison.get_by_text("Both checks finished.")).to_be_visible()
+    expect(comparison.get_by_text("4 shares at the displayed prices")).to_be_visible()
+    expect(comparison.get_by_text("The budget cannot cover the minimum shares.")).to_be_visible()
+    page.set_viewport_size({"width": 390, "height": 844})
+    check_width(page)
+    capture(page, output, "public-paired-buy-checks-mobile")
+    page.reload()
+    compare.click()
+    expect(comparison.get_by_text("Last saved check used 7.50 pUSD.")).to_have_count(2)
+    pair_budget.fill("7.5")
+    expect(comparison.get_by_text("4 shares at the displayed prices")).to_be_visible()
+    expect(comparison.get_by_text("The budget cannot cover the minimum shares.")).to_be_visible()
+    pair_budget.fill("7.50")
+    with page.expect_request("**/observe"):
+        pair_button.click()
+    with page.expect_request("**/observe"):
+        held_at(4).fulfill(status=503, json={"error": "Public read interrupted."})
+    held_at(5).fulfill(json={**first, "wallet": other, "researchBudget": "19"})
+    expect(comparison.get_by_text("Inconclusive check", exact=True)).to_have_count(2)
+    expect(comparison.get_by_text("Public read interrupted.")).to_be_visible()
+    expect(comparison.get_by_text("The observation used a different budget.")).to_be_visible()
+    expect(comparison.get_by_text("4 shares at the displayed prices")).to_have_count(0)
+    expect(pair_budget).to_have_value("7.50")
+    page.unroute("**/api/v1/public/traders/*/observe", hold_observation)
     comparison.get_by_role("button", name="Back to rankings").click()
     page.set_viewport_size({"width": 390, "height": 844})
     shortlist.get_by_role("button", name="Remove Fixture Lumen from shortlist").click()
@@ -955,7 +1040,7 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
 
     sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(ROOT / "tests"))
-    from apps.server import public_marks, public_shadow
+    from apps.server import public_marks, public_resolution, public_shadow
     from apps.server.http import LocalServer
     from apps.server.store import Workspace
     from install_smoke import app
@@ -1015,6 +1100,17 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
             sample.click()
             expect(page.get_by_text("19 shares", exact=True)).to_be_visible()
             expect(page.locator("dd").filter(has_text="15.14256")).to_be_visible()
+            resolved = {"status": "resolved", "reason": "Final payout for the simulated shares, before any redemption costs.",
+                        "payout": "0", "numerator": "0", "denominator": "1", "unit": "USDC.e equivalent",
+                        "blockNumber": 98078743, "blockTime": "2026-11-27T23:53:13+00:00"}
+            public_run = route.rsplit("/", 1)[-1]
+            export_url = origin + "/api/v1/public-runs/" + public_run + "/export"
+            previous = page.request.get(export_url).json()
+            with patch.object(public_resolution, "read", return_value=resolved):
+                page.get_by_role("button", name="Check final payout").click()
+                expect(page.get_by_text("Resolved with zero payout.", exact=True)).to_be_visible()
+                expect(page.get_by_text("No cash has been credited.", exact=False)).to_be_visible()
+            assert page.request.get(export_url).json() == previous
             page.get_by_text("Observation details", exact=True).first.click()
             expect(page.get_by_text("Polygon exchange and source order", exact=True)).to_be_visible()
             mark_ms = int((recorded + timedelta(seconds=1)).timestamp() * 1000)
@@ -1222,6 +1318,93 @@ def public_shadow_journey(browser: Browser, cwd: Path, output: Path | None):
             page.close()
 
 
+def shared_background_journey(pw, cwd: Path):
+    """Create from the UI, close its entire browser, then return after two decisions and restart."""
+    from threading import Event, Thread
+    from unittest.mock import patch
+    from apps.server import background, public_depth, public_shadow
+    from apps.server.http import LocalServer
+    from apps.server.store import Workspace
+    from test_public_shadow import STARTED, observed_buy
+
+    store = Workspace(cwd / "shared-background.db")
+    wallets = ("0x" + "11" * 20, "0x" + "22" * 20)
+    with store.connection() as db, patch.object(public_shadow, "timestamp", return_value=STARTED):
+        for index, wallet in enumerate(wallets, 1):
+            public_shadow.create(db, str(index) * 32, wallet, "Source " + str(index), "50", "10")
+    server = LocalServer(0, store)
+    origin = f"http://127.0.0.1:{server.server_port}"
+    closed = Event()
+    def sample(wallet, budget, **options):
+        if not closed.is_set():
+            return {"status": "waiting", "reason": "Controlled quiet window.", "wallet": wallet, "researchBudget": budget}
+        receipt = observed_buy(wallet, budget)
+        receipt["book"]["bestAsks"] = [{"price": "0.50", "shares": "25"}]
+        receipt["capacity"] = public_depth.measure_depth(receipt, budget)
+        return receipt
+    chromium = os.environ.get("CHROMIUM_PATH") or shutil.which("chromium")
+    browser = pw.chromium.launch(executable_path=chromium)
+    thread = Thread(target=server.serve_forever)
+    with patch.object(server, "_background_buy", side_effect=sample), patch.object(background, "INTERVAL", 1):
+        thread.start()
+        try:
+            page = browser.new_page(viewport={"width": 1380, "height": 960})
+            page.goto(origin + "/#/paper")
+            for index in (1, 2):
+                page.get_by_role("link", name=re.compile("^Source " + str(index))).click()
+                page.get_by_role("button", name="Enable background sampling").click()
+                expect(page.get_by_role("button", name="Disable background sampling")).to_be_visible()
+                page.get_by_role("link", name="All public runs").click()
+            page.get_by_text("Follow leaders with one simulated balance", exact=True).click()
+            page.get_by_label("Portfolio name").fill("Weekend pool")
+            page.get_by_label("Shared cash (pUSD)").fill("25")
+            for label in ("Source 1", "Source 2"):
+                page.get_by_role("checkbox", name=re.compile("^" + label)).check()
+            page.get_by_role("button", name="Start shared portfolio").click()
+            expect(page.get_by_role("heading", name="Weekend pool")).to_be_visible()
+            pool_id = page.url.split("pool-")[-1]
+            browser.close()
+            closed.set()
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                with urlopen(origin + "/api/v1/capital-pools/" + pool_id, timeout=2) as reply:
+                    report = json.load(reply)
+                if all(run["modeledBuys"] == 1 for run in report["runs"]):
+                    break
+                time.sleep(.2)
+            assert report["cash"] == "12.1875", report
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+            browser.close()
+    server = LocalServer(0, Workspace(store.path))
+    origin = f"http://127.0.0.1:{server.server_port}"
+    with patch.object(server, "_background_buy", side_effect=sample):
+        thread = Thread(target=server.serve_forever)
+        thread.start()
+        browser = pw.chromium.launch(executable_path=chromium)
+        try:
+            page = browser.new_page(viewport={"width": 390, "height": 844})
+            page.goto(origin + "/#/paper")
+            page.get_by_role("link", name="Weekend pool", exact=True).click()
+            expect(page.get_by_text("12.1875", exact=False)).to_be_visible()
+            expect(page.get_by_text("6 shares · Outcome token 734", exact=True)).to_be_visible()
+            expect(page.get_by_text("19 shares · Outcome token 734", exact=True)).to_be_visible()
+            page.get_by_role("button", name="Pause shared buys").click()
+            expect(page.get_by_role("button", name="Resume shared buys")).to_be_visible()
+            page.get_by_role("button", name="Stop shared portfolio").click()
+            page.get_by_role("button", name="Confirm stop", exact=True).click()
+            expect(page.get_by_text("stopped", exact=True)).to_be_visible()
+            check_width(page)
+        finally:
+            browser.close()
+            server.shutdown()
+            thread.join()
+            server.server_close()
+    print("Two source runs shared 25 displayed asks while the operator browser was closed. Cash, holdings and stop survived the return.")
+
+
 def public_artifact_smoke(browser: Browser, cwd: Path, output: Path | None):
     """Opt-in. Inspect a real public ranking and persist one read-only watch."""
     # Reuse the installer test's launcher to exercise the actual shipped code.
@@ -1387,6 +1570,7 @@ def main():
                     public_rankings_journey(browser, origin, options.screenshots)
                     change_cap_journey(browser, origin)
                 public_shadow_journey(browser, Path(temp), options.screenshots)
+                shared_background_journey(pw, Path(temp))
         finally:
             browser.close()
 
